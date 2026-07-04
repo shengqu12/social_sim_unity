@@ -17,6 +17,7 @@ namespace SEAN.Scenario.Agents
 
         //private CapsuleCollider collisionCapsule;
         private Animator animator;
+        private IVelocityModulator modulator;
 
         //NAVIGATION
         NavMeshPath nmPath;
@@ -62,12 +63,16 @@ namespace SEAN.Scenario.Agents
             animator = GetComponent<Animator>();
             animator.applyRootMotion = applyRootMotion;
             animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            // Cached once here instead of doing GetComponent<IVelocityModulator>() every
+            // frame in ModulateVelocity() -- agents without a modulator (the common case)
+            // pay this cost exactly once.
+            modulator = GetComponent<IVelocityModulator>();
             base.Start();
         }
 
         void Update()
         {
-            velocity = UpdateVelocity();
+            velocity = ModulateVelocity(UpdateVelocity());
             //print(name + " velocity: " + velocity);
             Move();
 
@@ -157,6 +162,25 @@ namespace SEAN.Scenario.Agents
 
         #endregion
 
+        /// <summary>
+        /// Hook for an optional IVelocityModulator component (e.g. PedestrianModulator)
+        /// on this same GameObject to adjust the social-force velocity before it drives
+        /// rotation/animation in Move(). Agents without such a component (SFAgent/ORCA.Agent/
+        /// Playback.Agent by default) get modulator == null and this is a no-op passthrough.
+        /// </summary>
+        protected virtual Vector3 ModulateVelocity(Vector3 socialForceVelocity)
+        {
+            return modulator != null ? modulator.Modulate(socialForceVelocity, this) : socialForceVelocity;
+        }
+
+        public void TriggerAnimation(string triggerName)
+        {
+            if (animator != null)
+            {
+                animator.SetTrigger(triggerName);
+            }
+        }
+
         #region Private Functions
 
         protected Vector3 nearestGoalPoint
@@ -186,11 +210,14 @@ namespace SEAN.Scenario.Agents
                     //print(name + " destPos is zero");
                     return;
                 }
-                Vector3 goalDir = nearestGoalPoint - transform.position;
-                float goalWeight = 0.5f;
-                goalDir = goalWeight * goalDir.normalized + (1 - goalWeight) * velocity.normalized;
-                goalDir.y = 0;
-                angle = -Vector3.SignedAngle(goalDir, transform.forward, Vector3.up);
+                if (modulator == null || !modulator.IsRotationSuppressed())
+                {
+                    Vector3 goalDir = nearestGoalPoint - transform.position;
+                    float goalWeight = 0.5f;
+                    goalDir = goalWeight * goalDir.normalized + (1 - goalWeight) * velocity.normalized;
+                    goalDir.y = 0;
+                    angle = -Vector3.SignedAngle(goalDir, transform.forward, Vector3.up);
+                }
             }
             else
             {

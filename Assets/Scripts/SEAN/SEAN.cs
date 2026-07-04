@@ -27,6 +27,25 @@ namespace SEAN
         public Scenario.Agents.LowLevelControl AgentController;
         public Scenario.Agents.ControlledAgent ControlledAgent;
 
+        // 与 /SEAN/PedestrianBehaviors 下现有子物体名字一一对应（已用
+        // Assets/Resources/SEAN/PedestrianBehaviors.prefab 逐字核对，2026-07-01）。
+        // 新增/改名 PedestrianBehavior 子类时需要同步维护这个枚举。
+        public enum ScenarioSelection
+        {
+            None,
+            ConfigurableSpawner,
+            GraphNav,
+            HandcraftedSocialSituation,
+            LabStudy,
+            Playback,
+            Random,
+        }
+
+        [Tooltip("Play 开始时自动激活的 pedestrian scenario；同一时刻 /SEAN/PedestrianBehaviors "
+               + "下其余 scenario 会被强制关闭。命令行 -scenario 参数（如果传了）优先级更高，"
+               + "会在这之后覆盖这里的选择。")]
+        public ScenarioSelection selectedScenario = ScenarioSelection.GraphNav;
+
         public bool TopDownViewOnly = false;
         public bool PlayerControl = false;
         public bool EvaluationMode = false;
@@ -157,6 +176,19 @@ namespace SEAN
                 }
             }
 
+            // Play 模式下，Awake() 早于所有 PedestrianBehavior 子类自己的 Start()
+            // （Unity 保证同一次场景加载里所有激活对象的 Awake() 先跑完，才会开始跑
+            // 任意一个的 Start()）。在这里强制收敛成 1 个 active scenario，可以在任何
+            // 一个多余 scenario 的 spawn 逻辑被触发之前就把它关掉，从根源上避免
+            // "More than 1 Scenario is active" warning 以及随之而来的
+            // BaseAgentManager 单例竞争 / 强制类型转换崩溃风险。
+            // 用 Application.isPlaying 保护：SEAN 类是 [ExecuteAlways]，编辑模式下的
+            // Awake()（比如脚本重编译触发）不应该打断美术/策划手动摆场景数据的工作流。
+            if (Application.isPlaying)
+            {
+                TryActivateSelectedScenario();
+            }
+
             if (ControlledAgent == Scenario.Agents.ControlledAgent.Player)
             {
                 PlayerControl = true;
@@ -214,6 +246,26 @@ namespace SEAN
             {
                 throw new ArgumentException("Could not find scenario with name " + name + ", valid options are " + (from s in pedestrianBehaviors select s.name));
             }
+        }
+
+        // 先只读检查 selectedScenario 对应的子物体是否存在，确认存在了再调用
+        // SetPedestrianBehavior()，避免 SetPedestrianBehavior() 内部的
+        // ArgumentException 把整个 SEAN.Awake() 炸穿、导致场景初始化失败。
+        // 找不到时用 Debug.LogError 提示，且不触发任何 SetActive，保持现场不变。
+        private void TryActivateSelectedScenario()
+        {
+            string targetName = selectedScenario.ToString();
+            List<Scenario.PedestrianBehavior.Base> behaviors = pedestrianBehaviors;
+            bool exists = behaviors.Any(b => b.name == targetName);
+            if (!exists)
+            {
+                Debug.LogError("SEAN.selectedScenario is set to '" + targetName
+                    + "' but no matching child was found under /SEAN/PedestrianBehaviors. "
+                    + "Scenario activation left untouched; valid options are "
+                    + string.Join(", ", behaviors.Select(b => b.name)));
+                return;
+            }
+            SetPedestrianBehavior(targetName);
         }
 
         public Scenario.PedestrianBehavior.Base pedestrianBehavior
