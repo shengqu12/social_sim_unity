@@ -16,6 +16,23 @@ namespace SEAN.Scenario.Agents
         public PedestrianModulator.PersonalityType personality = PedestrianModulator.PersonalityType.Indifferent;
         public int count;
         public List<Transform> spawnPoints;
+
+        // Patrol is orthogonal to personality (not a PersonalityType case) -- e.g. a
+        // Surprised patroller still reacts to the robot, it just resumes ping-ponging
+        // between patrolPointA/patrolPointB afterwards. See PedestrianModulator.EnablePatrol().
+        public bool patrol = false;
+        public Transform patrolPointA;
+        public Transform patrolPointB;
+
+        // null => fall back to PedestrianSpawner.agentPrefab (see SpawnAgent()). Lets a group
+        // spawn a different appearance (e.g. an AppearanceAvatar container wrapping a
+        // special-character avatar) without affecting other groups.
+        public GameObject appearancePrefabOverride;
+
+        // Shares PedestrianModulator.walkSpeedMultiplier's modulation hook (Scale()) -- != 1.0f
+        // forces a PedestrianModulator onto this group even when Indifferent, since that's the
+        // common case for e.g. a slower-walking child appearance (see SpawnAgent()).
+        public float walkSpeedMultiplier = 1.0f;
     }
 
     /// <summary>
@@ -25,11 +42,13 @@ namespace SEAN.Scenario.Agents
     /// so spawned agents are visible to PositionPublisher/Metrics/GroupPublisher like any other
     /// scenario's agents (see design doc §1.6).
     ///
-    /// Appearance is fixed to "Simple" this pass: agentPrefab is expected to carry an
-    /// AppearanceAvatar component referencing the Rocketbox Female_Adult_01/02 array (see
-    /// Assets/Resources/Prefabs/SimpleAppearanceAgent.prefab). Personality supports Scared and
-    /// Curious; Indifferent groups spawn without a PedestrianModulator component at all (Base.cs's
-    /// ModulateVelocity() then no-ops); Surprised is reserved in the enum but not implemented.
+    /// agentPrefab is expected to carry an AppearanceAvatar component referencing an avatar
+    /// array (see Assets/Resources/Prefabs/SimpleAppearanceAgent.prefab) -- a group can override
+    /// this per-group via SpawnGroupConfig.appearancePrefabOverride (must be a prefab with its
+    /// own AppearanceAvatar component, not a bare avatar body -- see SpawnAgent()). Personality
+    /// supports Scared and Curious; Indifferent groups spawn without a PedestrianModulator
+    /// component at all (Base.cs's ModulateVelocity() then no-ops) unless walkSpeedMultiplier
+    /// requires one; Surprised is reserved in the enum but not implemented.
     /// </summary>
     public class PedestrianSpawner : BaseAgentManager
     {
@@ -101,23 +120,42 @@ namespace SEAN.Scenario.Agents
 
         IVI.INavigable SpawnAgent(SpawnGroupConfig group, string name, Pose pose)
         {
-            var container = Instantiate(agentPrefab, Vector3.zero, Quaternion.identity);
+            var prefabToUse = group.appearancePrefabOverride != null ? group.appearancePrefabOverride : agentPrefab;
+            var container = Instantiate(prefabToUse, Vector3.zero, Quaternion.identity);
             IVI.INavigable agent = container.GetComponentInChildren<IVI.INavigable>();
             agent.name = name;
             agent.transform.position = pose.position;
             agent.transform.rotation = pose.rotation;
             agent.transform.parent = agentsGO.transform;
 
+            bool patrolValid = group.patrol && group.patrolPointA != null && group.patrolPointB != null;
+            if (group.patrol && !patrolValid)
+            {
+                Debug.LogError("PedestrianSpawner: group '" + group.label + "' has patrol enabled but patrolPointA/patrolPointB is missing, falling back to random walk.");
+            }
+
             // Indifferent = no modulator component at all, Base.ModulateVelocity() then
-            // no-ops via a null GetComponent<IVelocityModulator>() result.
-            if (group.personality != PedestrianModulator.PersonalityType.Indifferent)
+            // no-ops via a null GetComponent<IVelocityModulator>() result. Patrol groups
+            // attach the modulator even when Indifferent -- Indifferent modulation is a
+            // passthrough (Modulate()'s Indifferent case just returns
+            // Scale(socialForceVelocity)), and the patrol ping-pong check runs ahead of
+            // that switch regardless of personality (see PedestrianModulator.Modulate()).
+            // Also force a modulator when walkSpeedMultiplier != 1.0f -- an Indifferent group
+            // (e.g. slower-walking children) still needs Scale() to apply the speed scaling.
+            if (group.personality != PedestrianModulator.PersonalityType.Indifferent || patrolValid
+                || group.walkSpeedMultiplier != 1.0f)
             {
                 var modulator = agent.gameObject.AddComponent<PedestrianModulator>();
                 modulator.personality = group.personality;
+                modulator.walkSpeedMultiplier = group.walkSpeedMultiplier;
+                if (patrolValid)
+                {
+                    modulator.EnablePatrol(group.patrolPointA.position, group.patrolPointB.position);
+                }
             }
 
             agents.Add(agent);
-            agent.InitDest(Util.Navmesh.RandomPose().position);
+            agent.InitDest(patrolValid ? group.patrolPointA.position : Util.Navmesh.RandomPose().position);
             return agent;
         }
     }

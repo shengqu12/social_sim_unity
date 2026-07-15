@@ -89,6 +89,14 @@ namespace SEAN.Scenario.Agents
         // the sibling SFAgent once, not re-applied every Modulate() call.
         private bool assertiveInitialized = false;
 
+        // Patrol: ping-pongs destPos between two fixed points. Orthogonal to personality --
+        // not a PersonalityType case, so e.g. Surprised can react AND patrol (see
+        // EnablePatrol() and the arrival check at the top of Modulate()).
+        private bool patrolEnabled = false;
+        private Vector3 patrolA;
+        private Vector3 patrolB;
+        private int patrolTarget = 0;
+
         [Header("Scared")]
         public float scaredRadius = 3.0f;
         public float scaredStrength = 1.5f;
@@ -124,16 +132,44 @@ namespace SEAN.Scenario.Agents
         public float walkSpeedMultiplier = 1.0f;
 
         /// <summary>
-        /// True while Curious is in Approach or Follow and is actively driving destPos via
-        /// InitDest() -- lets PedestrianSpawner.Update() skip its random-walk retarget for this
-        /// agent (V2 §2.6) so the two don't fight over destPos.
+        /// True while patrolling, or while Curious is in Approach or Follow and is actively
+        /// driving destPos via InitDest() -- lets PedestrianSpawner.Update() skip its
+        /// random-walk retarget for this agent (V2 §2.6) so the two don't fight over destPos.
         /// </summary>
         public bool IsControllingDestination =>
-            personality == PersonalityType.Curious &&
-            (curiousState == CuriousState.Approach || curiousState == CuriousState.Follow);
+            patrolEnabled ||
+            (personality == PersonalityType.Curious &&
+            (curiousState == CuriousState.Approach || curiousState == CuriousState.Follow));
+
+        /// <summary>
+        /// Turns on patrol ping-pong between two fixed points. Orthogonal to personality --
+        /// safe to call regardless of PersonalityType (see Modulate()'s arrival check).
+        /// </summary>
+        public void EnablePatrol(Vector3 a, Vector3 b)
+        {
+            patrolEnabled = true;
+            patrolA = a;
+            patrolB = b;
+            patrolTarget = 0;
+        }
 
         public Vector3 Modulate(Vector3 socialForceVelocity, Base self)
         {
+            // Patrol arrival check runs ahead of the personality switch below, and ahead of
+            // the robot lookup, since patrol doesn't need the robot and must keep ping-ponging
+            // regardless of personality (Surprised's freeze zeroes velocity but never clears
+            // destPos, so it just resumes toward the current patrol point once unfrozen; same
+            // for Scared -- its flee force perturbs the path but the patrol dest re-anchors it).
+            // Skipped while Curious is actively driving destPos itself (Approach/Follow) so the
+            // two never fight over InitDest() in the same frame.
+            bool curiousControllingDest = personality == PersonalityType.Curious &&
+                (curiousState == CuriousState.Approach || curiousState == CuriousState.Follow);
+            if (patrolEnabled && !curiousControllingDest && self.CloseEnough())
+            {
+                patrolTarget = 1 - patrolTarget;
+                self.InitDest(patrolTarget == 0 ? patrolA : patrolB);
+            }
+
             Scenario.Robot robot;
             try
             {
