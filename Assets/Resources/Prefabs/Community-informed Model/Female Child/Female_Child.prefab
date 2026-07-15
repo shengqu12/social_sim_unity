@@ -10,8 +10,6 @@ GameObject:
   m_Component:
   - component: {fileID: 1540214815926623996}
   - component: {fileID: 5386714091412081012}
-  - component: {fileID: 170661237876588435}
-  - component: {fileID: 297418663313371421}
   - component: {fileID: 6106517530769436040}
   m_Layer: 0
   m_Name: Female_Child
@@ -27,13 +25,14 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 5903106443318615734}
+  serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 7342360618841127784}
   m_Father: {fileID: 0}
-  m_RootOrder: 0
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!136 &5386714091412081012
 CapsuleCollider:
@@ -43,86 +42,21 @@ CapsuleCollider:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 5903106443318615734}
   m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
   m_IsTrigger: 0
+  m_ProvidesContacts: 0
   m_Enabled: 1
+  serializedVersion: 2
   m_Radius: 0.19759038
   m_Height: 0.63291883
   m_Direction: 1
   m_Center: {x: 0, y: 0.28741276, z: -0.047690183}
---- !u!114 &170661237876588435
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 5903106443318615734}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1c19610482eb06543aa9acbc1aa7d22e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  objectId: 
---- !u!114 &297418663313371421
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 5903106443318615734}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 82986ae7dfa33654295162cffcb1b085, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  moveSpeed: 1.5
-  rotationSpeed: 180
-  toggleModeKey: 303
-  useWASD: 1
-  startInManualMode: 0
-  enableJoystick: 1
-  joystickHorizontalAxis: LogitechTwist
-  joystickVerticalAxis: joystickVerticalAxis
-  joystickStartAxis: L1
-  joystickToggleModeAxis: 
-  joystickDeadzone: 0.03
-  joystickStartupDeadzone: 0.03
-  joystickLinearFullThrow: 0.1
-  joystickAngularFullThrow: 1
-  joystickLinearSensitivity: 1
-  joystickAngularSensitivity: 1
-  joystickLinearResponseExponent: 1.6
-  joystickAngularResponseExponent: 1.2
-  invertJoystickHorizontal: 0
-  invertJoystickVertical: 1
-  stickToGround: 1
-  groundMask:
-    serializedVersion: 2
-    m_Bits: 1
-  groundOffset: 0
-  groundRayStartHeight: 2.5
-  groundRayDistance: 6
-  blockStepHeight: 1
-  maxStepHeight: 0.3
-  slideAlongSteps: 1
-  brakeStopThreshold: 0.02
-  sPressesToEnableReverse: 2
-  sPressWindowSec: 0.6
-  manualAcceleration: 4
-  manualDeceleration: 3
-  manualAngularAcceleration: 1200
-  debugSBrakePressCount: 0
-  debugAnimatorFound: 0
-  debugAnimatorTarget: 
-  debugForward: 0
-  debugStrafe: 0
-  debugTurn: 0
-  isManualMode: 0
-  debugJoystickRawHorizontal: 0
-  debugJoystickRawVertical: 0
-  debugJoystickHorizontalCenter: 0
-  debugJoystickVerticalCenter: 0
-  debugJoystickProcessedHorizontal: 0
-  debugJoystickProcessedVertical: 0
 --- !u!54 &6106517530769436040
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -130,10 +64,21 @@ Rigidbody:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 5903106443318615734}
-  serializedVersion: 2
+  serializedVersion: 4
   m_Mass: 1
   m_Drag: 0
   m_AngularDrag: 0.05
+  m_CenterOfMass: {x: 0, y: 0, z: 0}
+  m_InertiaTensor: {x: 1, y: 1, z: 1}
+  m_InertiaRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ImplicitCom: 1
+  m_ImplicitTensor: 1
   m_UseGravity: 1
   m_IsKinematic: 1
   m_Interpolate: 0
@@ -144,6 +89,7 @@ PrefabInstance:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Modification:
+    serializedVersion: 3
     m_TransformParent: {fileID: 1540214815926623996}
     m_Modifications:
     - target: {fileID: -8679921383154817045, guid: 6c3155a7bb0cfee4087ce1f4b90ce510,
@@ -227,6 +173,9 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 9100000, guid: 92db63c5cfc544658ae9c245c758169e, type: 2}
     m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: 6c3155a7bb0cfee4087ce1f4b90ce510, type: 3}
 --- !u!4 &7342360618841127784 stripped
 Transform:

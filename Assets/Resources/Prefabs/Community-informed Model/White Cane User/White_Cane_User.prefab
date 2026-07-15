@@ -10,8 +10,6 @@ GameObject:
   m_Component:
   - component: {fileID: 859523122380438077}
   - component: {fileID: -2403644966261961636}
-  - component: {fileID: 8110535903205435714}
-  - component: {fileID: -6070732463054680792}
   - component: {fileID: -7936345842397505541}
   - component: {fileID: 7475256922286419574}
   - component: {fileID: 6699803365610036356}
@@ -29,15 +27,16 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 3977508065817665654}
+  serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0.10452846, w: 0.9945219}
   m_LocalPosition: {x: -0.191, y: -0.223, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 4654992008091602519}
   - {fileID: 6266380379656263782}
   - {fileID: 6129114895708985587}
   m_Father: {fileID: 0}
-  m_RootOrder: 0
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 12}
 --- !u!136 &-2403644966261961636
 CapsuleCollider:
@@ -47,86 +46,21 @@ CapsuleCollider:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 3977508065817665654}
   m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
   m_IsTrigger: 0
+  m_ProvidesContacts: 0
   m_Enabled: 1
+  serializedVersion: 2
   m_Radius: 0.7200673
   m_Height: 2.0192592
   m_Direction: 1
   m_Center: {x: -0.0069494843, y: 0.8385724, z: 0}
---- !u!114 &8110535903205435714
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 3977508065817665654}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1c19610482eb06543aa9acbc1aa7d22e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  objectId: 
---- !u!114 &-6070732463054680792
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 3977508065817665654}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 82986ae7dfa33654295162cffcb1b085, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  moveSpeed: 2
-  rotationSpeed: 180
-  toggleModeKey: 303
-  useWASD: 1
-  startInManualMode: 0
-  enableJoystick: 1
-  joystickHorizontalAxis: LogitechTwist
-  joystickVerticalAxis: joystickVerticalAxis
-  joystickStartAxis: L1
-  joystickToggleModeAxis: 
-  joystickDeadzone: 0.03
-  joystickStartupDeadzone: 0.03
-  joystickLinearFullThrow: 0.1
-  joystickAngularFullThrow: 1
-  joystickLinearSensitivity: 1
-  joystickAngularSensitivity: 1
-  joystickLinearResponseExponent: 1.6
-  joystickAngularResponseExponent: 1.2
-  invertJoystickHorizontal: 0
-  invertJoystickVertical: 1
-  stickToGround: 1
-  groundMask:
-    serializedVersion: 2
-    m_Bits: 1
-  groundOffset: 0.1
-  groundRayStartHeight: 2.5
-  groundRayDistance: 6
-  blockStepHeight: 1
-  maxStepHeight: 0.3
-  slideAlongSteps: 1
-  brakeStopThreshold: 0.02
-  sPressesToEnableReverse: 2
-  sPressWindowSec: 0.6
-  manualAcceleration: 4
-  manualDeceleration: 3
-  manualAngularAcceleration: 1200
-  debugSBrakePressCount: 0
-  debugAnimatorFound: 0
-  debugAnimatorTarget: 
-  debugForward: 0
-  debugStrafe: 0
-  debugTurn: 0
-  isManualMode: 0
-  debugJoystickRawHorizontal: 0
-  debugJoystickRawVertical: 0
-  debugJoystickHorizontalCenter: 0
-  debugJoystickVerticalCenter: 0
-  debugJoystickProcessedHorizontal: 0
-  debugJoystickProcessedVertical: 0
 --- !u!54 &-7936345842397505541
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -134,10 +68,21 @@ Rigidbody:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 3977508065817665654}
-  serializedVersion: 2
+  serializedVersion: 4
   m_Mass: 1
   m_Drag: 0
   m_AngularDrag: 0.05
+  m_CenterOfMass: {x: 0, y: 0, z: 0}
+  m_InertiaTensor: {x: 1, y: 1, z: 1}
+  m_InertiaRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ImplicitCom: 1
+  m_ImplicitTensor: 1
   m_UseGravity: 1
   m_IsKinematic: 1
   m_Interpolate: 1
@@ -226,12 +171,13 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 6085985367649186320}
+  serializedVersion: 2
   m_LocalRotation: {x: -0.45439017, y: 0.19802988, z: -0.24172828, w: 0.83419496}
   m_LocalPosition: {x: 0.402, y: 0.55, z: 0.66}
   m_LocalScale: {x: 10, y: 10, z: 10}
+  m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 859523122380438077}
-  m_RootOrder: 1
   m_LocalEulerAnglesHint: {x: -41.48, y: 47.242, z: -51.126}
 --- !u!33 &558359243129735001
 MeshFilter:
@@ -252,6 +198,7 @@ MeshRenderer:
   m_CastShadows: 1
   m_ReceiveShadows: 1
   m_DynamicOccludee: 1
+  m_StaticShadowCaster: 0
   m_MotionVectors: 1
   m_LightProbeUsage: 1
   m_ReflectionProbeUsage: 1
@@ -288,6 +235,7 @@ PrefabInstance:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Modification:
+    serializedVersion: 3
     m_TransformParent: {fileID: 859523122380438077}
     m_Modifications:
     - target: {fileID: -8679921383154817045, guid: 00ec0384fff78d7418fc08387fc75440,
@@ -366,6 +314,9 @@ PrefabInstance:
       value: fbxGlasses
       objectReference: {fileID: 0}
     m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: 00ec0384fff78d7418fc08387fc75440, type: 3}
 --- !u!4 &4654992008091602519 stripped
 Transform:
@@ -378,6 +329,7 @@ PrefabInstance:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Modification:
+    serializedVersion: 3
     m_TransformParent: {fileID: 859523122380438077}
     m_Modifications:
     - target: {fileID: -8679921383154817045, guid: dc548c50db7be304bb1ba97cb3d5ed48,
@@ -450,7 +402,15 @@ PrefabInstance:
       propertyPath: m_Controller
       value: 
       objectReference: {fileID: 9100000, guid: 527e827c9d23d00478f18a26039aa94f, type: 2}
+    - target: {fileID: 5866666021909216657, guid: dc548c50db7be304bb1ba97cb3d5ed48,
+        type: 3}
+      propertyPath: m_ApplyRootMotion
+      value: 0
+      objectReference: {fileID: 0}
     m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: dc548c50db7be304bb1ba97cb3d5ed48, type: 3}
 --- !u!4 &6129114895708985587 stripped
 Transform:

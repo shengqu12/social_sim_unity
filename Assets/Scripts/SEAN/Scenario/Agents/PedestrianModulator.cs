@@ -173,12 +173,28 @@ namespace SEAN.Scenario.Agents
             return false;
         }
 
+        // True while the Animator is in (or crossfading into) SurprisedReaction -- covers the
+        // gap between frozenUntil expiring (freezeDuration=1.5s) and the clip actually finishing
+        // (SurprisedReaction runs 4.0s, exit transition doesn't start until 3.6s in), so rotation
+        // suppression doesn't release mid-reaction (see SURPRISED_ROOTMOTION_DIAGNOSIS.md).
+        // Checks both current and next state: during the 0.25s entry crossfade, SurprisedReaction
+        // is only the "next" state, not yet "current".
+        bool SurpriseAnimationActive()
+        {
+            if (animator == null) { return false; }
+            var cur = animator.GetCurrentAnimatorStateInfo(0);
+            var next = animator.GetNextAnimatorStateInfo(0);
+            return cur.IsName("SurprisedReaction") || next.IsName("SurprisedReaction");
+        }
+
         // Tells Base.Move() to skip its own goalDir/RotateAround turning entirely while frozen
         // Surprised, so OnAnimatorMove()'s robot-facing Slerp above is the only thing writing
-        // transform.rotation that frame (see SURPRISED_TURN_DIAGNOSIS.md).
+        // transform.rotation that frame (see SURPRISED_TURN_DIAGNOSIS.md). Extended past
+        // frozenUntil for as long as SurpriseAnimationActive() -- otherwise this flips false
+        // mid-clip and Move()'s own steering resumes turning the pedestrian away from the robot.
         public bool IsRotationSuppressed()
         {
-            return personality == PersonalityType.Surprised && Time.time < frozenUntil;
+            return personality == PersonalityType.Surprised && (Time.time < frozenUntil || SurpriseAnimationActive());
         }
 
         // Implementing this callback anywhere on this GameObject switches Unity's root motion
@@ -201,7 +217,8 @@ namespace SEAN.Scenario.Agents
         {
             if (animator == null) { return; }
 
-            bool frozenSurprised = personality == PersonalityType.Surprised && Time.time < frozenUntil;
+            // Same extended condition as IsRotationSuppressed() -- see that method's comment.
+            bool frozenSurprised = personality == PersonalityType.Surprised && (Time.time < frozenUntil || SurpriseAnimationActive());
 
             if (!frozenSurprised)
             {
@@ -384,6 +401,15 @@ namespace SEAN.Scenario.Agents
             {
                 frozenUntil = now + freezeDuration;
                 cooldownUntil = frozenUntil + cooldownDuration;
+
+                // Snap facing to the robot immediately: a ~180° approach-from-behind turn
+                // cannot complete within freezeDuration via OnAnimatorMove()'s Slerp alone,
+                // so the pedestrian would otherwise appear to face the wrong way mid-turn.
+                Vector3 snapDir = robot.position - self.transform.position;
+                snapDir.y = 0f;
+                if (snapDir.sqrMagnitude > 1e-6f)
+                    self.transform.rotation = Quaternion.LookRotation(snapDir.normalized, Vector3.up);
+
                 self.TriggerAnimation("Surprised");
             }
             wasInSurpriseRadius = inRadius;
