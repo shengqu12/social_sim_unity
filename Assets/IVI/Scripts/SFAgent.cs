@@ -24,6 +24,17 @@ namespace IVI
 
         //ROBOT REPULSION
         private float robotRepulsion;
+        private bool robotRepulsionExplicitlySet = false;
+
+        public float RobotRepulsion
+        {
+            get { return robotRepulsion; }
+            set
+            {
+                robotRepulsion = value;
+                robotRepulsionExplicitlySet = true;
+            }
+        }
 
         protected override void Start()
         {
@@ -46,7 +57,10 @@ namespace IVI
             perceptionSphere.isTrigger = true;
             perceptionSphere.radius = PERCEPTION_RADIUS;
 
-            robotRepulsion = Random.value * (Parameters.ROBOT_REPULSION_DAMPENING_MAX - Parameters.ROBOT_REPULSION_DAMPENING_MIN) + Parameters.ROBOT_REPULSION_DAMPENING_MIN;
+            if (!robotRepulsionExplicitlySet)
+            {
+                robotRepulsion = Random.value * (Parameters.ROBOT_REPULSION_DAMPENING_MAX - Parameters.ROBOT_REPULSION_DAMPENING_MIN) + Parameters.ROBOT_REPULSION_DAMPENING_MIN;
+            }
         }
 
         protected override Vector3 UpdateVelocity()

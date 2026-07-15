@@ -34,6 +34,7 @@ namespace SEAN.Scenario.Agents
             Curious,
             Surprised,
             Indifferent,
+            Assertive,
         }
 
         public PersonalityType personality = PersonalityType.Indifferent;
@@ -42,9 +43,15 @@ namespace SEAN.Scenario.Agents
         // component GetComponent<Animator>()s the same GameObject once instead of every call.
         private Animator animator;
 
+        // Cached for ModulateAssertive() -- resolves the sibling SFAgent once instead of
+        // GetComponent<IVI.SFAgent>() every call. Modulator and SFAgent live on the same
+        // GameObject (see PedestrianSpawner.SpawnAgent()).
+        private IVI.SFAgent sfAgent;
+
         void Awake()
         {
             animator = GetComponent<Animator>();
+            sfAgent = GetComponent<IVI.SFAgent>();
         }
 
         // Only Curious uses a three-phase state machine (V2 §2.2); Scared/Surprised/Indifferent
@@ -71,6 +78,10 @@ namespace SEAN.Scenario.Agents
         private float frozenUntil = -1f;
         private float cooldownUntil = -1f;
 
+        // Assertive: guards the one-time robotRepulsion suppression so it's only pushed to
+        // the sibling SFAgent once, not re-applied every Modulate() call.
+        private bool assertiveInitialized = false;
+
         [Header("Scared")]
         public float scaredRadius = 3.0f;
         public float scaredStrength = 1.5f;
@@ -93,6 +104,12 @@ namespace SEAN.Scenario.Agents
         // How fast (LookRotation Slerp factor per second) a frozen Surprised pedestrian turns
         // to face the robot in OnAnimatorMove() -- see class doc comment above.
         public float facingTurnSpeed = 10f;
+
+        [Header("Assertive")]
+        // Robot repulsion damping pushed onto the sibling SFAgent on first Modulate() call --
+        // 0 = fully ignores the robot's repulsion force, higher = partially yields (see
+        // SFAgent.RobotRepulsion / ModulateAssertive() below).
+        public float assertiveRobotRepulsion = 0f;
 
         [Header("General")]
         // Appearance-driven walk speed scaling, shares this same modulation hook per
@@ -133,6 +150,8 @@ namespace SEAN.Scenario.Agents
                     return ModulateCurious(socialForceVelocity, self, robot);
                 case PersonalityType.Surprised:
                     return ModulateSurprised(socialForceVelocity, self, robot);
+                case PersonalityType.Assertive:
+                    return ModulateAssertive(socialForceVelocity, self, robot);
                 case PersonalityType.Indifferent:
                 default:
                     return Scale(socialForceVelocity);
@@ -354,6 +373,25 @@ namespace SEAN.Scenario.Agents
             {
                 return Vector3.zero;
             }
+            return Scale(socialForceVelocity);
+        }
+
+        // Assertive holds its own route and doesn't yield to the robot: on first call, suppress
+        // the sibling SFAgent's robotRepulsion damping (see SFAgent.CalculateAgentForce()) so the
+        // robot-repulsion term stops being dampened for this agent -- the robot must plan around
+        // it instead. No velocity-space reaction here; the suppression happens upstream in
+        // SFAgent's own force computation, so the social-force velocity passes straight through.
+        private Vector3 ModulateAssertive(Vector3 socialForceVelocity, Base self, Scenario.Robot robot)
+        {
+            if (!assertiveInitialized)
+            {
+                if (sfAgent != null)
+                {
+                    sfAgent.RobotRepulsion = assertiveRobotRepulsion;
+                }
+                assertiveInitialized = true;
+            }
+
             return Scale(socialForceVelocity);
         }
 
