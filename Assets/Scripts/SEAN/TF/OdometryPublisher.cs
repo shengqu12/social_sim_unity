@@ -49,27 +49,33 @@ namespace SEAN.TF
 
         private void UpdateMessage()
         {
-            float deltaTime = Time.realtimeSinceStartup - previousRealTime;
             timeElapsed += Time.deltaTime;
+            if (timeElapsed <= publishMessageFrequency)
+            {
+                return;
+            }
+            timeElapsed = 0;
 
-            Vector3 linearVelocity = (PublishedTransform.position - previousPosition) / deltaTime;
+            if (SEAN.instance == null || SEAN.instance.clock == null)
+            {
+                return;
+            }
+
+            float deltaTime = Time.realtimeSinceStartup - previousRealTime;
+            Vector3 worldDelta = PublishedTransform.position - previousPosition;
+            Vector3 linearVelocity = PublishedTransform.InverseTransformVector(worldDelta) / deltaTime;
             Vector3 angularVelocity = (PublishedTransform.rotation.eulerAngles - previousRotation.eulerAngles) / deltaTime;
 
             previousRealTime = Time.realtimeSinceStartup;
             previousPosition = PublishedTransform.position;
             previousRotation = PublishedTransform.rotation;
 
-            if (timeElapsed <= publishMessageFrequency)
-            {
-                return;
-            }
             SEAN.instance.clock.UpdateMHeader(message.header);
             message.twist.twist.linear = Util.Geometry.GetGeometryVector3(linearVelocity.To<FLU>());
             message.twist.twist.angular = Util.Geometry.GetGeometryVector3(-angularVelocity.To<FLU>());
             message.pose.pose.position = Util.Geometry.GetGeometryPoint(PublishedTransform.position.To<FLU>());
             message.pose.pose.orientation = Util.Geometry.GetGeometryQuaternion(PublishedTransform.rotation.To<FLU>());
             ros.Send(topicName, message);
-            timeElapsed = 0;
         }
     }
 }

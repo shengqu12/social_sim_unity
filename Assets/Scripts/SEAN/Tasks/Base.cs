@@ -27,6 +27,7 @@ namespace SEAN.Tasks
         private float taskStartTime = 0f;
 
         private float timer = 0.0f;
+        [SerializeField]
         private int publishInterval = 10;
 
         private GameObject cube;

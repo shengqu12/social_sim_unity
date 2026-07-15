@@ -4157,6 +4157,7 @@ GameObject:
   - component: {fileID: 4114075833736300022}
   - component: {fileID: 1534369626594572703}
   - component: {fileID: 755552067498987294}
+  - component: {fileID: 2050165416742430139}
   m_Layer: 0
   m_Name: trunk
   m_TagString: Untagged
@@ -4300,6 +4301,22 @@ MonoBehaviour:
   jointName: floating_base
   EffortLimit: 1000
   VelocityLimit: 1000
+--- !u!114 &2050165416742430139
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5321973802767782810}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 329623ccf2f364bcc8d307ae5fee54c3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  publishMessageFrequency: 0.05
+  topicName: /robot_odom
+  PublishedTransform: {fileID: 6130081621183770414}
+  FrameId: map
 --- !u!1 &5324120909761380873
 GameObject:
   m_ObjectHideFlags: 0
