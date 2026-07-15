@@ -31,6 +31,30 @@ namespace SEAN.Scenario.Agents
         private float idleSpeed = 0.5f;
         private bool applyRootMotion = true;
 
+        // Set in Start() once the locomotion Animator is resolved. False when that Animator
+        // lives on a nested child (e.g. White_Cane_User's Male_Adult_12) rather than this
+        // GameObject -- Unity only dispatches OnAnimatorMove() to scripts co-located with the
+        // Animator, so in that case neither this class nor PedestrianModulator ever receives
+        // it. LateUpdate() below uses this to explicitly apply root motion only when Unity's
+        // own dispatch can't reach us, and to otherwise stay out of the way entirely.
+        private bool animatorOnRoot = true;
+
+        // True for avatars whose Animator produces no usable root motion at all -- e.g. a
+        // wheelchair looping a static seated-idle clip, where deltaPosition is always zero and
+        // root-motion-driven translation can never move the agent. When true, Move() bypasses
+        // animation-driven translation/animation-parameter feeding entirely and applies the
+        // social-force `velocity` straight to the transform instead, while the Animator keeps
+        // playing its own clip for posture only (see Move()). Defaults false so every existing
+        // root-motion-driven agent is unaffected. Set via AppearanceAvatar.directVelocityDrive
+        // (see DirectVelocityDrive below) -- not intended to be hand-authored per prefab.
+        [SerializeField] private bool directVelocityDrive = false;
+
+        public bool DirectVelocityDrive
+        {
+            get => directVelocityDrive;
+            set => directVelocityDrive = value;
+        }
+
         #region Unity Functions
 
         protected override void Start()
@@ -60,9 +84,32 @@ namespace SEAN.Scenario.Agents
             collisionCapsule.height = agentHeight;
             collisionCapsule.center = Vector3.up * agentHeight / 2f;
 
-            animator = GetComponent<Animator>();
-            animator.applyRootMotion = applyRootMotion;
-            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            // Some character packages (e.g. White_Cane_User) put the Animator on a nested
+            // child instead of the root -- use the shared self/children/parent lookup so both
+            // layouts work (see AppearanceAvatar.cs / AvatarAnimatorUtility.cs).
+            animator = IVI.AvatarAnimatorUtility.GetLocomotionAnimator(gameObject);
+            if (animator != null)
+            {
+                animator.applyRootMotion = applyRootMotion;
+                animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+
+                // Nested case: keep applyRootMotion enabled above (so deltaPosition/deltaRotation
+                // keep getting computed) but stop Unity from auto-applying that delta to the
+                // child's own transform, which would slide the mesh out from under the agent
+                // root -- LateUpdate() below applies it to the root explicitly instead. A no-op
+                // OnAnimatorMove() on the Animator's own GameObject is what switches Unity from
+                // "auto-apply" to "only apply if something reads deltaPosition/deltaRotation".
+                animatorOnRoot = animator.gameObject == gameObject;
+                if (!animatorOnRoot && animator.gameObject.GetComponent<RootMotionSink>() == null)
+                {
+                    animator.gameObject.AddComponent<RootMotionSink>();
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[Base] No Animator found anywhere under '{name}' -- "
+                    + $"spawning unanimated so navigation/TrackedTrajectory setup still runs.", this);
+            }
             // Cached once here instead of doing GetComponent<IVelocityModulator>() every
             // frame in ModulateVelocity() -- agents without a modulator (the common case)
             // pay this cost exactly once.
@@ -86,6 +133,49 @@ namespace SEAN.Scenario.Agents
 
             //    StopAnimator();
             //}
+        }
+
+        // Only does anything when the resolved Animator is on a nested child (animatorOnRoot
+        // false, see Start()). When the Animator is on this GameObject, Unity's own
+        // OnAnimatorMove() dispatch (handled by PedestrianModulator when present, or Unity's
+        // default auto-apply when there's no modulator at all) already applies root motion --
+        // adding another application here would double it, so this is a no-op in that case.
+        void LateUpdate()
+        {
+            // directVelocityDrive agents take translation ONLY from Move()'s
+            // velocity * Time.deltaTime application -- applying the nested Animator's
+            // root motion delta here on top of that would double-drive the root (see
+            // cyclist: rider clip has un-baked XZ root motion, rocketed ahead of social force).
+            if (animator == null || animatorOnRoot || directVelocityDrive) { return; }
+
+            var pedestrianModulator = modulator as PedestrianModulator;
+            if (pedestrianModulator != null)
+            {
+                // Reuse the exact same logic Unity would have called via OnAnimatorMove() if
+                // the Animator were on this GameObject, including the frozen-Surprised
+                // facing-only override -- see PedestrianModulator.ApplyAnimatorRootMotion().
+                pedestrianModulator.ApplyAnimatorRootMotion();
+            }
+            else
+            {
+                // No modulator (Indifferent personality never gets one, see ModulateVelocity())
+                // -- reproduce Unity's default root motion application, which the nested
+                // Animator's own GameObject can no longer do now that RootMotionSink is on it.
+                transform.position += animator.deltaPosition;
+                transform.rotation *= animator.deltaRotation;
+            }
+        }
+
+        // No-op OnAnimatorMove() sink added (see Start()) to the resolved Animator's own
+        // GameObject only when that Animator is on a nested child. Implementing OnAnimatorMove()
+        // anywhere on a GameObject tells Unity to stop auto-applying that GameObject's root
+        // motion to its own transform and call this instead -- since this is intentionally
+        // empty, the child's transform simply stops moving on its own, leaving
+        // animator.deltaPosition/deltaRotation available for Base.LateUpdate() to read and
+        // apply to the agent root instead.
+        private class RootMotionSink : MonoBehaviour
+        {
+            void OnAnimatorMove() { }
         }
 
         #endregion
@@ -242,19 +332,33 @@ namespace SEAN.Scenario.Agents
             //angle = Mathf.Sign(angle) * Mathf.Min(ANGULAR_SPEED, Mathf.Abs(angle)) * Time.deltaTime;
             transform.RotateAround(transform.position, Vector3.up, angle);
 
-            // Motion
-            Vector3 animParams = Quaternion.Euler(0, -transform.eulerAngles.y, 0) * velocity;
-            animParams *= animationScale;
-            var idle = animParams.magnitude < idleSpeed && !applyRootMotion;
-
-            animator.SetBool("Idling", idle);
-            if (!GetType().Equals(typeof(PlayerAgent)))
+            if (directVelocityDrive)
             {
-                animator.speed = velocity.magnitude;
-
+                // No usable root motion from this avatar's Animator (e.g. a wheelchair's
+                // looping seated-idle has zero deltaPosition every frame) -- drive the
+                // transform directly from the social-force velocity instead. Deliberately
+                // skips the whole animation-parameter block below rather than relying on it
+                // being harmless: animator.speed is a real playback-rate knob (not a named
+                // parameter like Forward/Strafe/Idling), and setting it to velocity.magnitude
+                // would freeze this avatar's idle loop at 0 speed whenever it's stationary.
+                transform.position += velocity * Time.deltaTime;
             }
-            animator.SetFloat("Forward", animParams.z/ANIMATION_SMOOTHING);
-            animator.SetFloat("Strafe", animParams.x/ANIMATION_SMOOTHING);
+            else
+            {
+                // Motion
+                Vector3 animParams = Quaternion.Euler(0, -transform.eulerAngles.y, 0) * velocity;
+                animParams *= animationScale;
+                var idle = animParams.magnitude < idleSpeed && !applyRootMotion;
+
+                animator.SetBool("Idling", idle);
+                if (!GetType().Equals(typeof(PlayerAgent)))
+                {
+                    animator.speed = velocity.magnitude;
+
+                }
+                animator.SetFloat("Forward", animParams.z/ANIMATION_SMOOTHING);
+                animator.SetFloat("Strafe", animParams.x/ANIMATION_SMOOTHING);
+            }
 
             if (ShowDebug)
             {

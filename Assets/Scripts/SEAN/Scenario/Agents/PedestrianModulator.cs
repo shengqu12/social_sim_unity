@@ -17,14 +17,21 @@ namespace SEAN.Scenario.Agents
     /// component intentionally has no Unity Update() of its own, to avoid an unspecified
     /// execution-order dependency against Base.Update()/SFAgent.
     ///
-    /// Surprised facing is the one exception and lives in OnAnimatorMove() instead (see below):
-    /// the Surprised reaction clip's root rotation delta was fighting any rotation set from
-    /// Update()/LateUpdate(), because with no OnAnimatorMove() implemented anywhere on this
-    /// GameObject, Unity auto-applies root motion on its own schedule -- not reliably before or
-    /// after any particular script's LateUpdate() (see SURPRISED_FACING_V2_DIAGNOSIS.md).
+    /// Surprised facing is the one exception and lives in ApplyAnimatorRootMotion() instead
+    /// (see below): the Surprised reaction clip's root rotation delta was fighting any rotation
+    /// set from Update()/LateUpdate(), because with no OnAnimatorMove() implemented anywhere on
+    /// this GameObject, Unity auto-applies root motion on its own schedule -- not reliably
+    /// before or after any particular script's LateUpdate() (see SURPRISED_FACING_V2_DIAGNOSIS.md).
     /// Implementing OnAnimatorMove() here takes that scheduling question off the table
     /// entirely: Unity stops auto-applying root motion for this GameObject and calls this
     /// method instead, so this is the only place root motion gets applied at all.
+    ///
+    /// That only works when the Animator is on this same GameObject, which is where Unity
+    /// dispatches OnAnimatorMove(). Character packages that put the Animator on a nested child
+    /// instead (e.g. White_Cane_User) never trigger this callback at all -- for those,
+    /// Base.LateUpdate() calls ApplyAnimatorRootMotion() directly once it detects the mismatch
+    /// (see Base.cs's animatorOnRoot/RootMotionSink), reusing this exact same logic instead of
+    /// duplicating it.
     /// </summary>
     public class PedestrianModulator : MonoBehaviour, IVelocityModulator
     {
@@ -50,7 +57,7 @@ namespace SEAN.Scenario.Agents
 
         void Awake()
         {
-            animator = GetComponent<Animator>();
+            animator = IVI.AvatarAnimatorUtility.GetLocomotionAnimator(gameObject);
             sfAgent = GetComponent<IVI.SFAgent>();
         }
 
@@ -178,7 +185,19 @@ namespace SEAN.Scenario.Agents
         // handling from "auto-applied on Unity's own schedule" to "only applied here" -- so the
         // else-branch below has to manually reproduce the default behavior (position + rotation
         // delta), or every other personality/state loses root-motion-driven movement entirely.
+        // Only fires when the Animator is on this same GameObject (see class doc comment) --
+        // the nested-Animator case calls ApplyAnimatorRootMotion() directly from
+        // Base.LateUpdate() instead, since Unity never dispatches this callback there.
         void OnAnimatorMove()
+        {
+            ApplyAnimatorRootMotion();
+        }
+
+        // Extracted from OnAnimatorMove() so Base.LateUpdate() can invoke the exact same logic
+        // explicitly when the resolved Animator lives on a nested child GameObject and Unity's
+        // OnAnimatorMove() dispatch therefore never reaches this component (see class doc
+        // comment and Base.cs's animatorOnRoot/RootMotionSink).
+        public void ApplyAnimatorRootMotion()
         {
             if (animator == null) { return; }
 
