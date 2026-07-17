@@ -57,6 +57,10 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import trial_lib
+import overlay
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent  # .../social_sim_unity
 DOCKER_CONTAINER = "ros"
 DEFAULT_OUT_ROOT = Path.home() / "Desktop" / "research" / "social_navigation" / "trial_outputs"
@@ -365,20 +369,44 @@ def warmup_ros_session():
     Also happens to set oscillation_timeout=3.0 live (harmless per Cell 3/4; kept for continuity
     with Session 4-6's evidence trail, not because it's been shown necessary).
 
-    Idempotent: skipped if the session is already warm (dynamic_reconfigure server registered),
-    so a batch of trials sharing one reused ROS session only pays this cost once, on the first
-    (fresh-ros) call.
+    Idempotent, keyed on a positive probe (Session 6's own discovery: /move_base/set_parameters
+    registers iff a real nav cycle has been processed) rather than on session-reuse -- a session
+    that was merely reused, not actually primed by this tool, must not slip through. Session 9
+    hardening: also cross-checks the live registry hit against `/run_id` (roslaunch's own fresh
+    per-bringup UUID) via a local marker of the last run_id THIS tool actually primed, since a
+    registry query alone can't distinguish "this instance was primed" from "a same-named service
+    from an earlier, now-dead instance is still (spuriously) listed" -- rosmaster does not always
+    prune registrations synchronously when a node is killed rather than cleanly shut down. Tested
+    live this session across a teardown+fresh-relaunch boundary and did NOT reproduce a stale
+    registration (the registry correctly showed unregistered on the new instance) -- but priming
+    is cheap and idempotent, so this check errs toward re-priming whenever run_id is unknown or
+    mismatched rather than trusting the registry query alone.
     """
+    run_id = read_rosparam("/run_id")
+    marker = Path("/tmp/run_trial_warmed_run_id.txt")
+    warmed_run_id = marker.read_text().strip() if marker.exists() else None
+    if run_id and run_id == warmed_run_id:
+        eprint("[run_trial] warmup: run_id {} already primed by this tool, skipping.".format(run_id))
+        return
+
     services = docker_exec("rosservice list", timeout=15).stdout
     if "/move_base/set_parameters" in services:
-        eprint("[run_trial] warmup: /move_base/set_parameters already registered -- session already warm, skipping.")
-        return
-    eprint("[run_trial] warmup: priming move_base with a guarded DiagCmdVel nav cycle (15s)...")
+        if run_id:
+            eprint("[run_trial] warmup: /move_base/set_parameters registered but run_id {} isn't "
+                   "one this tool primed -- treating as unverified (possible stale registration "
+                   "from a prior instance) and priming anyway.".format(run_id))
+        else:
+            eprint("[run_trial] warmup: /move_base/set_parameters registered but /run_id unreadable "
+                   "-- priming anyway to be safe.")
+
+    eprint("[run_trial] warmup: priming move_base (run_id={}) with a guarded DiagCmdVel nav cycle (15s)...".format(run_id))
     run_diag_cmdvel(15.0)
     eprint("[run_trial] warmup: setting oscillation_timeout=3.0 live via dynparam...")
     docker_exec("rosrun dynamic_reconfigure dynparam set /move_base oscillation_timeout 3.0", timeout=30)
     val = docker_exec("rosparam get /move_base/oscillation_timeout", timeout=10).stdout.strip()
     eprint("[run_trial] warmup: verified live oscillation_timeout={}".format(val))
+    if run_id:
+        marker.write_text(run_id)
 
 
 def prepare_reused_ros_for_new_trial():
@@ -503,41 +531,6 @@ def assemble_video(frame_dir, prefix, fps, out_path):
     return True
 
 
-def find_near_spans(frames_csv_path, near_dist):
-    spans = []
-    with open(frames_csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-    in_span = False
-    start_t = None
-    for row in rows:
-        try:
-            md = float(row["min_dist"])
-        except (ValueError, KeyError):
-            md = None
-        t = float(row["t"])
-        near = md is not None and md < near_dist
-        if near and not in_span:
-            in_span = True
-            start_t = t
-        elif not near and in_span:
-            in_span = False
-            spans.append((start_t, prev_t))
-        prev_t = t
-    if in_span:
-        spans.append((start_t, prev_t))
-    return spans
-
-
-def cut_clip(src_video, out_path, start, end, pad=2.0):
-    ss = max(0.0, start - pad)
-    duration = (end - start) + 2 * pad
-    cmd = ["ffmpeg", "-y", "-ss", str(ss), "-i", str(src_video), "-t", str(duration),
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out_path)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    return result.returncode == 0
-
-
 def frame_sanity_check(pov_dir, tp_dir, sample_n=8):
     """Statistical black-frame check via PIL. Returns (ok: bool, detail: str)."""
     from PIL import Image
@@ -609,13 +602,13 @@ def post_process(out_dir, fps, near_dist, keep_full):
     if not (ok_pov and ok_tp):
         return {"ok": False, "reason": "ffmpeg assembly failed"}
 
-    spans = find_near_spans(out_dir / "frames.csv", near_dist)
+    spans = trial_lib.find_near_spans(out_dir / "frames.csv", near_dist)
     near_clips = []
     for i, (start, end) in enumerate(spans):
         pov_clip = out_dir / "pov_near_{:02d}.mp4".format(i)
         tp_clip = out_dir / "tp_near_{:02d}.mp4".format(i)
-        cut_clip(pov_full, pov_clip, start, end)
-        cut_clip(tp_full, tp_clip, start, end)
+        trial_lib.cut_clip(pov_full, pov_clip, start, end)
+        trial_lib.cut_clip(tp_full, tp_clip, start, end)
         near_clips.append({"index": i, "start": start, "end": end, "pov": pov_clip.name, "tp": tp_clip.name})
 
     if not keep_full:
@@ -675,6 +668,10 @@ def main():
                    help="prime a fresh ROS session with a real nav cycle before the batch "
                         "(Session 8 operational recipe) -- default on")
     p.add_argument("--no-warmup", dest="warmup", action="store_false")
+    p.add_argument("--overlay", dest="overlay", action="store_true", default=True,
+                   help="burn a per-frame telemetry overlay onto this trial's videos "
+                        "(tools/overlay.py, Session 9) -- default on")
+    p.add_argument("--no-overlay", dest="overlay", action="store_false")
     args = p.parse_args()
 
     if args.compile_check:
@@ -742,6 +739,10 @@ def main():
     if not result["ok"]:
         eprint("[run_trial] post-processing FAILED: {}".format(result["reason"]))
         sys.exit(1)
+
+    if args.overlay:
+        ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist)
+        eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
     n_frames, min_dist = summarize(out_dir)
     print("=== trial complete ===")
