@@ -23,6 +23,14 @@ Pipeline:
      the captured JPGs and cut near-pedestrian clips from frames.csv (min_dist < --near-dist, ±2s
      padding). Raw JPGs are deleted afterward unless --keep-full.
 
+Session 6 instrumentation: after a successful trial, meta.json (written by Unity's
+TrialController.WriteMetaJson) is read back and augmented with host-known, ROS-side facts this
+script observes but never sets: the live /move_base/oscillation_timeout value, the ROS run_id and
+bringup mode (fresh/reused) for this trial, how old the current roscore process is in wall-clock
+seconds, and this trial's position (1-based) within its sequential run. This script contains no
+code that calls `rosparam set` / `dynparam set` on oscillation_timeout or any other move_base
+param -- every value recorded here is read live via `rosparam get`, never assigned.
+
 Canonical ROS bringup (read-only extracted from social_sim_ros's sean_navstack.launch and
 map_server.launch -- never edited by this script):
 
@@ -342,6 +350,60 @@ def prepare_reused_ros_for_new_trial():
     docker_exec("rosservice call /move_base/clear_costmaps", timeout=10)
 
 
+def read_rosparam(name):
+    """Read-only `rosparam get` -- never used to set anything. Returns the trimmed stdout string,
+    or None if the param doesn't exist / the container isn't reachable."""
+    result = docker_exec("rosparam get {}".format(name), timeout=10)
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value if value else None
+
+
+def read_ros_session_age_sec():
+    """Elapsed wall-clock seconds since the current roscore (rosmaster) process started, via
+    `ps -o etimes=` inside the container -- a live, read-only measurement, not a value this
+    script tracks or persists itself. Returns None if rosmaster isn't found (e.g. container down)
+    or if multiple rosmaster processes are somehow running (ambiguous, not guessed at)."""
+    result = docker_exec("pgrep -f 'rosmaster --core'", timeout=10)
+    pids = [p for p in result.stdout.split() if p]
+    if result.returncode != 0 or len(pids) != 1:
+        return None
+    etimes = docker_exec("ps -o etimes= -p {}".format(pids[0]), timeout=10)
+    if etimes.returncode != 0:
+        return None
+    try:
+        return int(etimes.stdout.strip())
+    except ValueError:
+        return None
+
+
+def augment_trial_meta(out_dir, bringup_mode, trial_position):
+    """Reads meta.json (written by Unity's TrialController before it exits) and records
+    host-observed ROS instrumentation into it. Every value here is read live -- this function
+    never calls rosparam/dynparam *set* on anything."""
+    meta_path = out_dir / "meta.json"
+    if not meta_path.exists():
+        eprint("[run_trial] WARNING: meta.json missing, cannot record instrumentation.")
+        return
+
+    data = json.loads(meta_path.read_text())
+
+    live_osc = read_rosparam("/move_base/oscillation_timeout")
+    try:
+        live_osc = float(live_osc) if live_osc is not None else None
+    except ValueError:
+        pass  # leave as the raw string if rosparam returned something non-numeric
+
+    data["liveOscillationTimeout"] = live_osc
+    data["bringupRunId"] = read_rosparam("/run_id")
+    data["bringupMode"] = bringup_mode
+    data["rosSessionAgeSec"] = read_ros_session_age_sec()
+    data["trialPosition"] = trial_position
+
+    meta_path.write_text(json.dumps(data, indent=2))
+
+
 def run_single_trial(args, out_dir, windowed=False, reused_ros=True):
     """Returns (success: bool, reason: str)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +624,9 @@ def main():
     p.add_argument("--chase-height", type=float, default=2.0)
     p.add_argument("--chase-look-height", type=float, default=1.0)
     p.add_argument("--jpg-quality", type=int, default=85)
+    p.add_argument("--trial-position", type=int, default=1,
+                   help="1-based position of this trial within its sequential run on one shared "
+                        "bringup -- recorded into meta.json, never inferred (default: 1)")
     p.add_argument("--compile-check", action="store_true",
                    help="diagnostic mode: guarded -batchmode -quit launch to force recompilation, then exit")
     p.add_argument("--diag-cmdvel", type=float, metavar="SECONDS", default=None,
@@ -610,6 +675,8 @@ def main():
     else:
         out_dir = Path(args.out)
 
+    bringup_mode = "fresh" if args.fresh_ros else "reused"
+
     windowed = args.windowed
     success, reason = run_single_trial(args, out_dir, windowed=windowed, reused_ros=args.reused_ros and not args.fresh_ros)
     if not success:
@@ -628,6 +695,8 @@ def main():
         sanity_ok, sanity_detail = frame_sanity_check(out_dir / "pov", out_dir / "tp")
         eprint("[run_trial] windowed frame sanity: {} ({})".format("OK" if sanity_ok else "FAILED", sanity_detail))
         windowed = True
+
+    augment_trial_meta(out_dir, bringup_mode, args.trial_position)
 
     result = post_process(out_dir, args.fps, args.near_dist, args.keep_full)
     if not result["ok"]:
