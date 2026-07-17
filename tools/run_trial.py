@@ -341,6 +341,46 @@ def guarded_unity_run(cmd, timeout, extra_env=None):
     return proc.returncode, timed_out
 
 
+def run_diag_cmdvel(seconds, windowed=False):
+    """Guarded launch of DiagCmdVel for `seconds`, then exit. Returns (returncode, timed_out, log_text)."""
+    log_path = Path("/tmp/run_trial_diag_cmdvel.log")
+    cmd = build_unity_cmd(log_path, windowed=windowed, extra_args=[
+        "-executeMethod", "SEAN.AutoTrial.AutoTrialEditorRunner.EnterPlay",
+    ])
+    returncode, timed_out = guarded_unity_run(cmd, timeout=seconds + 60, extra_env={"DIAG_CMDVEL": "1"})
+    text = log_path.read_text(errors="replace") if log_path.exists() else ""
+    return returncode, timed_out, text
+
+
+def warmup_ros_session():
+    """Operational recipe; mechanism under investigation (REPORT.md Session 8).
+
+    Session 8 found that priming a fresh bringup with one real move_base navigation cycle before
+    the first batch trial -- independent of oscillation_timeout's value -- is what actually
+    prevents oscillation-aborts (Cell 3: primed, timeout left at file's 1.0 -> 0/6 aborts; Cell 4:
+    primed + dynparam 3.0 -> 0/6, reproducing Session 6's Cell 2). Unprimed bringups aborted 5-6/6
+    regardless of whether oscillation_timeout was 1.0 or 3.0 (Session 6 Cell 1, Session 7 N=6).
+    Landing oscillation_timeout=3.0 in sim_ws is therefore NOT required; this function is the real
+    fix, encoded here so the recording pipeline doesn't depend on remembering the dance by hand.
+    Also happens to set oscillation_timeout=3.0 live (harmless per Cell 3/4; kept for continuity
+    with Session 4-6's evidence trail, not because it's been shown necessary).
+
+    Idempotent: skipped if the session is already warm (dynamic_reconfigure server registered),
+    so a batch of trials sharing one reused ROS session only pays this cost once, on the first
+    (fresh-ros) call.
+    """
+    services = docker_exec("rosservice list", timeout=15).stdout
+    if "/move_base/set_parameters" in services:
+        eprint("[run_trial] warmup: /move_base/set_parameters already registered -- session already warm, skipping.")
+        return
+    eprint("[run_trial] warmup: priming move_base with a guarded DiagCmdVel nav cycle (15s)...")
+    run_diag_cmdvel(15.0)
+    eprint("[run_trial] warmup: setting oscillation_timeout=3.0 live via dynparam...")
+    docker_exec("rosrun dynamic_reconfigure dynparam set /move_base oscillation_timeout 3.0", timeout=30)
+    val = docker_exec("rosparam get /move_base/oscillation_timeout", timeout=10).stdout.strip()
+    eprint("[run_trial] warmup: verified live oscillation_timeout={}".format(val))
+
+
 def prepare_reused_ros_for_new_trial():
     """Inter-trial hygiene when reusing a ROS session across multiple Unity launches (Session 3):
     cancel any goal left over from the previous trial and clear both costmaps, so this trial's
@@ -631,6 +671,10 @@ def main():
                    help="diagnostic mode: guarded -batchmode -quit launch to force recompilation, then exit")
     p.add_argument("--diag-cmdvel", type=float, metavar="SECONDS", default=None,
                    help="diagnostic mode: guarded launch of DiagCmdVel for SECONDS, then exit")
+    p.add_argument("--warmup", dest="warmup", action="store_true", default=True,
+                   help="prime a fresh ROS session with a real nav cycle before the batch "
+                        "(Session 8 operational recipe) -- default on")
+    p.add_argument("--no-warmup", dest="warmup", action="store_false")
     args = p.parse_args()
 
     if args.compile_check:
@@ -646,14 +690,8 @@ def main():
 
     if args.diag_cmdvel is not None:
         check_editor_lock()
-        log_path = Path("/tmp/run_trial_diag_cmdvel.log")
-        cmd = build_unity_cmd(log_path, windowed=args.windowed, extra_args=[
-            "-executeMethod", "SEAN.AutoTrial.AutoTrialEditorRunner.EnterPlay",
-        ])
-        returncode, timed_out = guarded_unity_run(cmd, timeout=args.diag_cmdvel + 60,
-                                                   extra_env={"DIAG_CMDVEL": "1"})
-        print("diag-cmdvel: returncode={} timed_out={} log={}".format(returncode, timed_out, log_path))
-        text = log_path.read_text(errors="replace") if log_path.exists() else ""
+        returncode, timed_out, text = run_diag_cmdvel(args.diag_cmdvel, windowed=args.windowed)
+        print("diag-cmdvel: returncode={} timed_out={}".format(returncode, timed_out))
         for line in text.splitlines():
             if "[Diag]" in line:
                 print(line)
@@ -668,6 +706,8 @@ def main():
 
     check_editor_lock()
     ensure_ros_healthy(args.fresh_ros)
+    if args.warmup:
+        warmup_ros_session()
 
     if args.out is None:
         ts = time.strftime("%Y%m%d_%H%M%S")
