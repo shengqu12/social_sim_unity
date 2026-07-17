@@ -16,6 +16,21 @@ Mechanism: generate one .ass subtitle track per trial and burn it in with a sing
 column defines its subtitle window [t_i, t_{i+1}); nominal/configured fps is never used for
 timing (Session 1's achieved-vs-configured-fps lesson applies here too -- see run_trial.py's own
 actual_achieved_fps()).
+
+VLM-purity norm (Session 9): *_ov.mp4 files are for HUMAN review only. Any VLM/model-based scoring
+or evaluation pipeline must consume the non-overlaid originals (pov_full.mp4 / tp_full.mp4 /
+pov_near_NN.mp4 / tp_near_NN.mp4), never the *_ov.mp4 siblings. The overlay burns in
+dist_to_pedestrian, running min-distance, and a near/far color cue directly onto the pixels --
+exactly the kind of signal a proximity or social-navigation-quality judgment task would ask a model
+to infer from the scene itself. Feeding it the overlaid version lets the model read the answer off
+the frame instead of judging the scene, silently corrupting the eval. Keep the two video sets
+strictly separated in any scoring pipeline built on top of this tool.
+
+--all archive-dir convention (Session 9): a top-level subdirectory of the scanned root is treated
+as an internal/archive dir -- and excluded from a bare --all scan -- if its name starts with `_`
+(e.g. _s6_cell1, _s7_landing, _s7_n6_verification). This keeps --all's default scope matched to
+what index.html actually links (the named batch dirs) rather than also silently retrofitting every
+forensics/cell archive this project has accumulated. Pass --include-archives to scan everything.
 """
 import argparse
 import csv
@@ -179,14 +194,23 @@ def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False):
     return True, "{} near clip(s) re-cut".format(len(spans))
 
 
-def find_trial_dirs(root):
-    """A directory counts as a trial dir if it directly contains frames.csv + meta.json."""
+def find_trial_dirs(root, include_archives=False):
+    """A directory counts as a trial dir if it directly contains frames.csv + meta.json.
+
+    Unless include_archives, skips anything under a top-level subdirectory of `root` whose name
+    starts with `_` (the internal/archive-dir convention -- see module docstring)."""
     root = Path(root)
     found = []
     for meta in sorted(root.rglob("meta.json")):
         d = meta.parent
-        if (d / "frames.csv").exists() and (d / "pov_full.mp4").exists():
-            found.append(d)
+        if not ((d / "frames.csv").exists() and (d / "pov_full.mp4").exists()):
+            continue
+        if not include_archives:
+            rel = d.relative_to(root)
+            top = rel.parts[0] if rel.parts else ""
+            if top.startswith("_"):
+                continue
+        found.append(d)
     return found
 
 
@@ -227,7 +251,12 @@ def update_index_html(index_path, near_dist=DEFAULT_NEAR_DIST):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("trial_dir", nargs="?", help="a single trial directory")
-    p.add_argument("--all", metavar="ROOT", help="process every trial dir found under ROOT")
+    p.add_argument("--all", metavar="ROOT",
+                   help="process every trial dir found under ROOT, EXCEPT top-level subdirs whose "
+                        "name starts with `_` (internal/archive-dir convention -- pass "
+                        "--include-archives to scan those too)")
+    p.add_argument("--include-archives", action="store_true",
+                   help="with --all, also scan `_`-prefixed archive/forensics dirs")
     p.add_argument("--near-dist", type=float, default=DEFAULT_NEAR_DIST)
     p.add_argument("--force", action="store_true", help="redo even if *_ov.mp4 already exists")
     p.add_argument("--index", metavar="INDEX_HTML", default=None,
@@ -237,7 +266,7 @@ def main():
     if not args.trial_dir and not args.all:
         p.error("give a trial_dir or --all ROOT")
 
-    dirs = find_trial_dirs(args.all) if args.all else [Path(args.trial_dir)]
+    dirs = find_trial_dirs(args.all, include_archives=args.include_archives) if args.all else [Path(args.trial_dir)]
     if not dirs:
         eprint("[overlay] no trial dirs found.")
         sys.exit(1)
