@@ -36,6 +36,14 @@ namespace SEAN.AutoTrial
         public bool hasGoalPose = false;
         public PoseXYZYaw goalPose;
 
+        // Optional pedestrian destination override (Session 10, D4). Same on/off convention as
+        // goalPose above. Ignored (dest falls back to spawnPos, the pre-Session-10 behavior) when
+        // false -- see AutoTrialBootstrap.SpawnPedestrian(). Drives INavigable.InitDest() on both
+        // Zone A and Zone B; orthogonal to personality/patrol, exactly like the existing
+        // patrolWaypoints[0] destination Zone A already uses when patrol is enabled.
+        public bool hasPedGoalPose = false;
+        public PoseXYZYaw pedGoalPose;
+
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;
     }
@@ -82,9 +90,19 @@ namespace SEAN.AutoTrial
         public float povOffsetY = 0f;
         public float povOffsetZ = 0f;
 
-        // Chase camera follow geometry, recomputed every capture tick in TrialController.
-        public float chaseDistance = 3f;
-        public float chaseHeight = 2f;
-        public float chaseLookHeight = 1f;
+        // Session 10 (D5): the chase/third-person camera is removed from the rig entirely --
+        // POV only, per the output-format spec. No chase fields remain; see REPORT.md Session 10.
+
+        // Session 10 (D2 treatment): soft-mounted POV camera. The camera stays a child transform
+        // of robot.camera_first (unchanged parenting, adjustment #6 still honored) but
+        // PovCameraSmoother (new file) overrides its *local* pose every LateUpdate with a
+        // low-pass-filtered version of the mount's motion instead of inheriting it rigidly.
+        // Time constants in seconds -- larger = smoother/laggier. rigidMount=true forces all taus
+        // to ~0 (an every-frame snap to the raw mount pose) so the exact same code path serves as
+        // the rigid-mount comparison case the brief asks for, rather than a second implementation.
+        public float posSmoothTau = 0.12f;
+        public float yawSmoothTau = 0.15f;
+        public float pitchSmoothTau = 0.20f;
+        public bool rigidMount = false;
     }
 }

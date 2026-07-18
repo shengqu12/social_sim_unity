@@ -110,6 +110,19 @@ namespace SEAN.AutoTrial
                 yield break;
             }
 
+            // Session 10 (D1/D3): must run synchronously, before this coroutine's first yield --
+            // RuntimeInitializeOnLoadMethod(AfterSceneLoad) (which is what got us here, see Init()
+            // above) fires after the scene's own Awake()/OnEnable() calls but before its Start()
+            // calls (confirmed by this exact ordering already being load-bearing for the
+            // SEAN.instance wait below, which routinely finds SEAN's own Start() not yet run).
+            // Disabling these components here, before any yield, means their Start() methods --
+            // which is where the actual harm happens (PlanVisualizer creates + enables its line
+            // renderer; ConfigurableSpawner/PedestrianSpawner spawns agents) -- never fire at all,
+            // rather than firing-then-being-cleaned-up. See REPORT.md Session 10 for the empirical
+            // verification of this timing assumption (a compile-check-style probe run that logs
+            // whether Start() ran on any of these after the disable pass).
+            DisableSceneHygieneHazards();
+
             if (!ResolveAppearance(config.appearance, out GameObject appearancePrefab, out string zone, out string resourcePath))
             {
                 Fail("Unknown --appearance '" + config.appearance + "'. Zone B (preset) options: "
@@ -149,6 +162,13 @@ namespace SEAN.AutoTrial
             }
 
             Transform pedestrianTransform = SpawnPedestrian(config, zone, appearancePrefab, personalityType);
+
+            // Session 10 (D3, belt-and-suspenders half): the disable pass above should mean no
+            // stray spawner ever fired, but assert it rather than assume it -- census every
+            // INavigable in the scene, destroy anything that isn't the one pedestrian AutoTrial
+            // itself just spawned, and record the full census (including what was destroyed) into
+            // meta.json so a failed assertion is visible in the trial output, not silent.
+            List<string> agentCensus = CensusAndDestroyStrayAgents(pedestrianTransform);
 
             Tasks.Base activeTask = null;
             waitStart = Time.time;
@@ -219,11 +239,105 @@ namespace SEAN.AutoTrial
                 yield break;
             }
 
-            BuildCameraRig(robot, config, out Camera povCam, out Camera chaseCam);
+            Camera povCam = BuildPovCamera(robot, config);
 
             var controllerGO = new GameObject("AutoTrialController");
             var controller = controllerGO.AddComponent<TrialController>();
-            controller.Initialize(config, robot, povCam, chaseCam, pedestrianTransform, zone, resourcePath);
+            controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus);
+        }
+
+        /// <summary>
+        /// Session 10 (D1/D3): disables every scene component known to inject something into the
+        /// POV capture that AutoTrial doesn't want -- the ROS global-plan line renderer (D1) and
+        /// every pedestrian scenario/spawner component (D3) -- before their own Start() can fire.
+        /// Runtime-only: nothing here is a scene/prefab edit, every change is undone implicitly by
+        /// the next Editor domain reload (these are runtime-instantiated/-toggled component
+        /// states, never serialized back to disk -- unlike the ROSConnectionPrefab/Outdoor.unity
+        /// dirtying bug Sessions 1/2 hit and fixed via run_trial.py's snapshot/revert guard, which
+        /// is unrelated to this and still the backstop if anything here ever misbehaves).
+        /// </summary>
+        private void DisableSceneHygieneHazards()
+        {
+            // Bare "Display...." (not "SEAN.Display...."): class SEAN (Assets/Scripts/SEAN/SEAN.cs)
+            // shares its simple name with the root namespace SEAN, exactly the same shadowing
+            // gotcha GetConfigPath()'s comment already documents for SEAN.Environment vs
+            // System.Environment -- "SEAN.Display" would resolve the class first and then fail to
+            // find a nested type "Display" on it. Unqualified "Display"/"Scenario" (used
+            // elsewhere in this file) resolve correctly via the enclosing SEAN.AutoTrial ->
+            // SEAN namespace search.
+            int planVizCount = 0;
+            foreach (var pv in UnityEngine.Object.FindObjectsOfType<Display.PlanVisualizer>(true))
+            {
+                pv.enabled = false;
+                var lsb = pv.GetComponent<Display.VolumetricLine.VolumetricLineStripBehavior>();
+                if (lsb != null)
+                {
+                    lsb.enabled = false;
+                }
+                planVizCount++;
+            }
+
+            int scenarioCount = 0;
+            foreach (var b in UnityEngine.Object.FindObjectsOfType<Scenario.PedestrianBehavior.Base>(true))
+            {
+                b.enabled = false;
+                scenarioCount++;
+            }
+
+            int spawnerCount = 0;
+            foreach (var sp in UnityEngine.Object.FindObjectsOfType<Scenario.Agents.PedestrianSpawner>(true))
+            {
+                sp.enabled = false;
+                spawnerCount++;
+            }
+
+            Debug.Log("[AutoTrial] scene hygiene: disabled " + planVizCount + " PlanVisualizer(s), "
+                + scenarioCount + " PedestrianBehavior scenario component(s), " + spawnerCount
+                + " PedestrianSpawner(s) before their Start() could run.");
+        }
+
+        /// <summary>
+        /// Session 10 (D3): finds every IVI.INavigable in the scene (the interface every
+        /// pedestrian agent class implements, per Agents.Base/RandomABNavAgentManager/Handcrafted
+        /// -- confirmed by read-only recon, none of those files edited) and destroys every one
+        /// except the Transform AutoTrial's own SpawnPedestrian() just created and returned.
+        /// Robot is never at risk: nothing robot-side implements INavigable (confirmed by recon --
+        /// only the three pedestrian-agent files above do). Returns a human-readable census for
+        /// meta.json, including anything that had to be destroyed (which should be empty if the
+        /// disable pass above worked as intended -- surfaced, not hidden, either way).
+        /// </summary>
+        private List<string> CensusAndDestroyStrayAgents(Transform ownPedestrian)
+        {
+            var census = new List<string>();
+            var strays = new List<GameObject>();
+            foreach (var mb in UnityEngine.Object.FindObjectsOfType<MonoBehaviour>(true))
+            {
+                if (!(mb is IVI.INavigable nav))
+                {
+                    continue;
+                }
+                bool isOwn = nav.transform == ownPedestrian;
+                census.Add((isOwn ? "AutoTrial: " : "STRAY (destroyed): ") + nav.transform.name
+                    + " [" + mb.GetType().FullName + "]");
+                if (!isOwn)
+                {
+                    strays.Add(nav.transform.gameObject);
+                }
+            }
+            foreach (var go in strays)
+            {
+                UnityEngine.Object.Destroy(go);
+            }
+            if (strays.Count > 0)
+            {
+                Debug.LogWarning("[AutoTrial] census: destroyed " + strays.Count + " stray pedestrian agent(s) "
+                    + "that survived the pre-Start disable pass -- see meta.json agentCensus for detail.");
+            }
+            else
+            {
+                Debug.Log("[AutoTrial] census: exactly one pedestrian agent present (AutoTrial's own) -- as expected.");
+            }
+            return census;
         }
 
         /// <summary>
@@ -394,7 +508,11 @@ namespace SEAN.AutoTrial
                 IVI.INavigable navAgent = instance.GetComponentInChildren<IVI.INavigable>();
                 navAgent.transform.position = spawnPos;
                 navAgent.transform.rotation = spawnRot;
-                navAgent.InitDest(spawnPos);
+                // Session 10 (D4): dest defaults to spawnPos (net-zero displacement, the pre-
+                // existing bug) unless a pedestrian goal was explicitly given. hasPedGoalPose is
+                // orthogonal to the Zone B personality/patrol lock above -- InitDest() is the raw
+                // INavigable API, not something PedestrianModulator gates.
+                navAgent.InitDest(config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos);
                 return navAgent.transform;
             }
             else
@@ -425,33 +543,46 @@ namespace SEAN.AutoTrial
                     }
                 }
 
-                navAgent.InitDest(patrolValid ? config.patrolWaypoints[0].ToVector3() : spawnPos);
+                // Session 10 (D4): same dest-defaults-to-spawn fix as Zone B above. Patrol (if
+                // requested) still wins, matching the pre-existing precedent for this branch.
+                Vector3 zoneADest = patrolValid
+                    ? config.patrolWaypoints[0].ToVector3()
+                    : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos);
+                navAgent.InitDest(zoneADest);
                 return navAgent.transform;
             }
         }
 
-        private void BuildCameraRig(Scenario.Robot robot, AutoTrialConfig config, out Camera povCam, out Camera chaseCam)
+        private Camera BuildPovCamera(Scenario.Robot robot, AutoTrialConfig config)
         {
             // POV: a NEW child camera on the robot's existing first-person camera transform, at
             // zero local offset, copying only FOV/near/far -- per adjustment #6 (2026-07-15) this
             // must not retarget or share robot.camera_first itself, since that camera may back the
-            // live /robot_firstperson_rgb publisher.
+            // live /robot_firstperson_rgb publisher. Session 10 (D5): the chase/third-person
+            // camera that used to be built alongside this one is gone -- POV only, per the
+            // output-format spec (REPORT.md Session 10).
             Camera existing = robot.camera_first;
             var povGO = new GameObject("AutoTrialPovCamera");
             povGO.transform.SetParent(existing.transform, false);
             povGO.transform.localPosition = new Vector3(config.camera.povOffsetX, config.camera.povOffsetY, config.camera.povOffsetZ);
             povGO.transform.localRotation = Quaternion.identity;
-            povCam = povGO.AddComponent<Camera>();
+            Camera povCam = povGO.AddComponent<Camera>();
             povCam.fieldOfView = existing.fieldOfView;
             povCam.nearClipPlane = existing.nearClipPlane;
             povCam.farClipPlane = existing.farClipPlane;
             povCam.enabled = false; // rendered manually via Camera.Render() at each capture tick
 
-            // Chase: standalone camera, not parented to the robot -- its transform is recomputed
-            // every capture tick in TrialController from config.camera.chase* (behind/above/lookAt).
-            var chaseGO = new GameObject("AutoTrialChaseCamera");
-            chaseCam = chaseGO.AddComponent<Camera>();
-            chaseCam.enabled = false;
+            // Session 10 (D2 treatment b): soft mount. Parenting is kept (for lifecycle/cleanup
+            // convenience) but PovCameraSmoother overrides this transform's WORLD position/
+            // rotation every frame with a low-pass-filtered version of the mount's motion, so the
+            // rigid parent-child link never actually determines the rendered pose. See
+            // PovCameraSmoother.cs for the smoothing math, why it runs in Update() rather than the
+            // more conventional LateUpdate() (timing relative to TrialController's capture
+            // coroutine), and the rigidMount=true passthrough case used for direct comparison.
+            var smoother = povGO.AddComponent<PovCameraSmoother>();
+            smoother.Initialize(existing.transform, config.camera);
+
+            return povCam;
         }
 
         private static bool TryPublishNowBestEffort(Tasks.Base task)

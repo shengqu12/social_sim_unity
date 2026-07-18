@@ -70,6 +70,20 @@ ZONE_B_APPEARANCES = [
     "phone_user", "scooter_user", "wheelchair_user", "white_cane_user",
 ]
 PERSONALITIES = ["scared", "curious", "surprised", "indifferent", "assertive"]
+
+# Session 10 (D4): canonical head-on-encounter geometry, used whenever --spawn/--goal/--ped-goal
+# are omitted. ROBOT_START is not itself a CLI-settable pose -- it's the scene's own teleport
+# target (Tasks.Base.UpdatePositions(), confirmed across Sessions 1-9 as deterministic and
+# scene-authored, robot_nav_A), recorded here only so PED_GOAL ("robot's start pose, slightly past
+# it") and the printed resolved-pose summary have something to compute against. ROBOT_GOAL is
+# robot_nav_B, the far end of the same confirmed-clear corridor. PED_SPAWN sits on that corridor,
+# between the two, facing the oncoming robot (yaw 90 ~= facing +x, opposite the robot's yaw-270
+# ~= facing -x travel direction -- both conventions empirically confirmed via frames.csv
+# robot_yaw_deg in prior sessions' census data, not assumed).
+ROBOT_START = (-1.058, 0.0007, -109.424)
+DEFAULT_ROBOT_GOAL = (-44.659, 0.0007, -108.947, 0.0)
+DEFAULT_PED_SPAWN = (-15.0, 0.0007, -109.2, 90.0)
+DEFAULT_PED_GOAL = (2.0, 0.0007, -109.424)
 # Zone A is validated by convention (snake_case -> Rocketbox PascalCase), not enumerated here --
 # Unity's Resources.Load is authoritative. This regex just catches obvious typos early.
 ZONE_A_PATTERN = re.compile(r"^[a-z]+(_[a-z0-9]+)*$")
@@ -248,11 +262,14 @@ def build_config(args, out_dir):
         "outDir": str(out_dir),
         "hasGoalPose": args.goal is not None,
         "goalPose": pose(*args.goal) if args.goal is not None else pose(0, 0, 0, 0),
+        "hasPedGoalPose": args.ped_goal is not None,
+        "pedGoalPose": pose(args.ped_goal[0], args.ped_goal[1], args.ped_goal[2], 0.0) if args.ped_goal is not None else pose(0, 0, 0, 0),
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
-            "chaseDistance": args.chase_distance,
-            "chaseHeight": args.chase_height,
-            "chaseLookHeight": args.chase_look_height,
+            "posSmoothTau": args.pos_smooth_tau,
+            "yawSmoothTau": args.yaw_smooth_tau,
+            "pitchSmoothTau": args.pitch_smooth_tau,
+            "rigidMount": args.rigid_mount,
         },
         "jpgQuality": args.jpg_quality,
     }
@@ -531,8 +548,9 @@ def assemble_video(frame_dir, prefix, fps, out_path):
     return True
 
 
-def frame_sanity_check(pov_dir, tp_dir, sample_n=8):
-    """Statistical black-frame check via PIL. Returns (ok: bool, detail: str)."""
+def frame_sanity_check(pov_dir, sample_n=8):
+    """Statistical black-frame check via PIL. Returns (ok: bool, detail: str). Session 10 (D5):
+    POV only -- the chase/third-person camera and its `tp` frame dir no longer exist."""
     from PIL import Image
     import statistics
 
@@ -551,20 +569,30 @@ def frame_sanity_check(pov_dir, tp_dir, sample_n=8):
         return means, stdevs
 
     pov_stats = sample_stats(pov_dir)
-    tp_stats = sample_stats(tp_dir)
-    if pov_stats is None or tp_stats is None:
+    if pov_stats is None:
         return False, "no JPGs found to sample"
 
-    detail_lines = []
-    ok = True
-    for name, (means, stdevs) in (("pov", pov_stats), ("tp", tp_stats)):
-        avg_mean = sum(means) / len(means)
-        avg_std = sum(stdevs) / len(stdevs)
-        detail_lines.append("{}: mean_brightness={:.2f} mean_stdev={:.2f} (n={})".format(name, avg_mean, avg_std, len(means)))
-        # Near-black or perfectly flat frames indicate a batchmode rendering failure.
-        if avg_mean < 3.0 or avg_std < 1.0:
-            ok = False
-    return ok, "; ".join(detail_lines)
+    means, stdevs = pov_stats
+    avg_mean = sum(means) / len(means)
+    avg_std = sum(stdevs) / len(stdevs)
+    detail = "pov: mean_brightness={:.2f} mean_stdev={:.2f} (n={})".format(avg_mean, avg_std, len(means))
+    # Near-black or perfectly flat frames indicate a batchmode rendering failure.
+    ok = avg_mean >= 3.0 and avg_std >= 1.0
+    return ok, detail
+
+
+def green_pixel_fraction(jpg_path, g_dominance=1.5, g_min=120):
+    """Session 10 (D1 verification): fraction of pixels where G > g_dominance*max(R,B) and
+    G > g_min -- the pixel-level signature of the plan-line green this session disables. Used to
+    compare a pre-fix frame (still on disk from an existing trial) against a post-fix frame."""
+    from PIL import Image
+    img = Image.open(jpg_path).convert("RGB")
+    pixels = list(img.getdata())
+    hits = 0
+    for r, g, b in pixels:
+        if g > g_dominance * max(r, b) and g > g_min:
+            hits += 1
+    return hits / len(pixels)
 
 
 def actual_achieved_fps(frames_csv_path, configured_fps):
@@ -587,35 +615,47 @@ def actual_achieved_fps(frames_csv_path, configured_fps):
 
 
 def post_process(out_dir, fps, near_dist, keep_full):
+    """Session 10 (D5): POV only, near-clips only. Builds pov_full.mp4 internally (needed both
+    for clean-clip cutting here AND for overlay.py to burn+re-cut its own *_ov near clips from,
+    since overlay always re-derives spans from frames.csv rather than trusting these clip
+    boundaries) -- overlay.py must run before cleanup_full_video() below deletes it. Final
+    per-trial deliverable is pov_near_NN.mp4 (+ pov_near_NN_ov.mp4, produced by overlay.py) only,
+    unless --keep-full."""
     pov_dir = out_dir / "pov"
-    tp_dir = out_dir / "tp"
     pov_full = out_dir / "pov_full.mp4"
-    tp_full = out_dir / "tp_full.mp4"
 
     real_fps = actual_achieved_fps(out_dir / "frames.csv", fps)
     if abs(real_fps - fps) > 0.5:
         eprint("[run_trial] achieved capture rate {:.2f} fps differs from configured {} fps -- "
                "assembling at the achieved rate to keep real-time pacing.".format(real_fps, fps))
 
-    ok_pov = assemble_video(pov_dir, "pov", real_fps, pov_full)
-    ok_tp = assemble_video(tp_dir, "tp", real_fps, tp_full)
-    if not (ok_pov and ok_tp):
+    if not assemble_video(pov_dir, "pov", real_fps, pov_full):
         return {"ok": False, "reason": "ffmpeg assembly failed"}
 
     spans = trial_lib.find_near_spans(out_dir / "frames.csv", near_dist)
     near_clips = []
     for i, (start, end) in enumerate(spans):
         pov_clip = out_dir / "pov_near_{:02d}.mp4".format(i)
-        tp_clip = out_dir / "tp_near_{:02d}.mp4".format(i)
         trial_lib.cut_clip(pov_full, pov_clip, start, end)
-        trial_lib.cut_clip(tp_full, tp_clip, start, end)
-        near_clips.append({"index": i, "start": start, "end": end, "pov": pov_clip.name, "tp": tp_clip.name})
+        near_clips.append({"index": i, "start": start, "end": end, "pov": pov_clip.name})
 
     if not keep_full:
         shutil.rmtree(pov_dir, ignore_errors=True)
-        shutil.rmtree(tp_dir, ignore_errors=True)
 
-    return {"ok": True, "near_clips": near_clips, "pov_full": pov_full.name, "tp_full": tp_full.name}
+    return {"ok": True, "near_clips": near_clips, "pov_full": pov_full.name}
+
+
+def cleanup_full_video(out_dir, keep_full):
+    """Deletes pov_full.mp4/pov_full_ov.mp4 (the internal span-cutting scratch videos) once both
+    run_trial.py's own near-clip cutting AND overlay.py's *_ov near-clip cutting are done -- must
+    run after overlay, not as part of post_process(), since overlay re-cuts from the overlaid full
+    which itself is burned from pov_full.mp4."""
+    if keep_full:
+        return
+    for name in ("pov_full.mp4", "pov_full_ov.mp4"):
+        p = out_dir / name
+        if p.exists():
+            p.unlink()
 
 
 def summarize(out_dir):
@@ -649,13 +689,36 @@ def main():
     p.add_argument("--reused-ros", dest="reused_ros", action="store_true", default=True,
                    help="run inter-trial ROS hygiene (cancel+clear costmaps) before launching -- default on")
     p.add_argument("--no-reused-ros-hygiene", dest="reused_ros", action="store_false")
-    p.add_argument("--spawn", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"))
-    p.add_argument("--goal", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None)
+    p.add_argument("--spawn", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None,
+                   help="pedestrian spawn pose; default (Session 10, D4): a point on the confirmed-"
+                        "clear robot_nav_A<->robot_nav_B corridor, facing the oncoming robot")
+    p.add_argument("--goal", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None,
+                   help="robot goal override; default (Session 10, D4): robot_nav_B, the far end "
+                        "of the census corridor -- pass an empty override with e.g. "
+                        "--goal 0 0 0 0 only if you explicitly want hasGoalPose still computed "
+                        "from that value (there is no way to request hasGoalPose=false other than "
+                        "not asking for a default, i.e. this flag now always resolves to a value)")
+    p.add_argument("--no-goal", action="store_true",
+                   help="explicitly request hasGoalPose=false (robot keeps whatever the scene's "
+                        "own active task does by default) instead of the Session 10 default goal")
+    p.add_argument("--ped-goal", type=float, nargs=3, metavar=("X", "Y", "Z"), default=None,
+                   help="pedestrian destination (Session 10, D4); default: the robot's own start "
+                        "pose, slightly past it (a head-on pass-through). Drives INavigable."
+                        "InitDest() on both Zone A and Zone B. Pass --no-ped-goal for the pre-"
+                        "Session-10 behavior (dest == spawn, net-zero displacement).")
+    p.add_argument("--no-ped-goal", action="store_true",
+                   help="explicitly request hasPedGoalPose=false (pedestrian dest == spawn, the "
+                        "pre-Session-10 default) instead of the Session 10 default head-on goal")
     p.add_argument("--patrol", type=float, nargs=3, action="append", metavar=("X", "Y", "Z"),
                    help="repeatable; first two given are used (ping-pong)")
-    p.add_argument("--chase-distance", type=float, default=3.0)
-    p.add_argument("--chase-height", type=float, default=2.0)
-    p.add_argument("--chase-look-height", type=float, default=1.0)
+    p.add_argument("--pos-smooth-tau", type=float, default=0.12,
+                   help="Session 10 (D2 treatment): POV camera position low-pass time constant, "
+                        "seconds. 0 = rigid (see also --rigid-mount).")
+    p.add_argument("--yaw-smooth-tau", type=float, default=0.15)
+    p.add_argument("--pitch-smooth-tau", type=float, default=0.20)
+    p.add_argument("--rigid-mount", action="store_true",
+                   help="Session 10 (D2): force all camera smoothing taus to 0 (the pre-Session-10 "
+                        "rigid-mount behavior), for direct before/after comparison")
     p.add_argument("--jpg-quality", type=int, default=85)
     p.add_argument("--trial-position", type=int, default=1,
                    help="1-based position of this trial within its sequential run on one shared "
@@ -694,12 +757,33 @@ def main():
                 print(line)
         sys.exit(0)
 
-    if not args.appearance or not args.spawn:
-        p.error("--appearance and --spawn are required unless --compile-check or --diag-cmdvel is given")
+    if not args.appearance:
+        p.error("--appearance is required unless --compile-check or --diag-cmdvel is given")
 
     validate_appearance_friendly(args.appearance)
     if args.personality.lower() not in PERSONALITIES:
         raise SystemExit("--personality '{}' invalid. Valid: {}".format(args.personality, PERSONALITIES))
+
+    # Session 10 (D4 QoL patch): --spawn/--goal/--ped-goal are all optional now, defaulting to the
+    # canonical head-on-encounter geometry -- resolved here (not in argparse defaults) so
+    # --no-goal/--no-ped-goal can still suppress them, and so the resolved poses can be printed
+    # before launch regardless of which path (explicit flag vs. default) produced them.
+    if args.spawn is None:
+        args.spawn = list(DEFAULT_PED_SPAWN)
+    if args.no_goal:
+        args.goal = None
+    elif args.goal is None:
+        args.goal = list(DEFAULT_ROBOT_GOAL)
+    if args.no_ped_goal:
+        args.ped_goal = None
+    elif args.ped_goal is None:
+        args.ped_goal = list(DEFAULT_PED_GOAL)
+
+    print("=== resolved poses ===")
+    print("robot start (scene teleport target, not CLI-settable): {}".format(ROBOT_START))
+    print("robot goal: {}".format(args.goal if args.goal is not None else "(none -- hasGoalPose=false, robot follows the scene's own active task)"))
+    print("pedestrian spawn: {}".format(args.spawn))
+    print("pedestrian goal: {}".format(args.ped_goal if args.ped_goal is not None else "(none -- hasPedGoalPose=false, dest==spawn)"))
 
     check_editor_lock()
     ensure_ros_healthy(args.fresh_ros)
@@ -720,7 +804,7 @@ def main():
         eprint("[run_trial] trial FAILED: {}".format(reason))
         sys.exit(1)
 
-    sanity_ok, sanity_detail = frame_sanity_check(out_dir / "pov", out_dir / "tp")
+    sanity_ok, sanity_detail = frame_sanity_check(out_dir / "pov")
     eprint("[run_trial] frame sanity: {} ({})".format("OK" if sanity_ok else "FAILED", sanity_detail))
     if not sanity_ok and not windowed:
         eprint("[run_trial] batchmode frames look black/flat -- retrying in --windowed mode.")
@@ -729,7 +813,7 @@ def main():
         if not success:
             eprint("[run_trial] windowed retry FAILED: {}".format(reason))
             sys.exit(1)
-        sanity_ok, sanity_detail = frame_sanity_check(out_dir / "pov", out_dir / "tp")
+        sanity_ok, sanity_detail = frame_sanity_check(out_dir / "pov")
         eprint("[run_trial] windowed frame sanity: {} ({})".format("OK" if sanity_ok else "FAILED", sanity_detail))
         windowed = True
 
@@ -744,6 +828,17 @@ def main():
         ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
+    # Session 10 (D5): only after both run_trial.py's own clean near-clips AND overlay.py's *_ov
+    # near-clips have been cut from it does the internal full-video scratch file get deleted.
+    cleanup_full_video(out_dir, args.keep_full)
+
+    # Session 10 (D5 output-format spec: "exactly the near pairs + frames.csv + meta.json +
+    # unity.log"): config.json is Unity's *input* for this trial, but everything in it is also
+    # embedded verbatim in meta.json's own "config" field (TrialController.WriteMetaJson) -- safe
+    # to drop as a final-output artifact once the run that needed it as an input is done.
+    if not args.keep_full:
+        (out_dir / "config.json").unlink(missing_ok=True)
+
     n_frames, min_dist = summarize(out_dir)
     print("=== trial complete ===")
     print("out_dir: {}".format(out_dir))
@@ -751,10 +846,10 @@ def main():
     print("frames: {}".format(n_frames))
     print("near-spans: {}".format(len(result["near_clips"])))
     print("min_dist reached: {}".format(min_dist))
-    print("pov_full: {}".format(out_dir / result["pov_full"]))
-    print("tp_full: {}".format(out_dir / result["tp_full"]))
     for c in result["near_clips"]:
-        print("near clip {}: {} / {}".format(c["index"], out_dir / c["pov"], out_dir / c["tp"]))
+        ov_name = "pov_near_{:02d}_ov.mp4".format(c["index"])
+        print("near clip {}: {}{}".format(c["index"], out_dir / c["pov"],
+              "  (+ {})".format(out_dir / ov_name) if (out_dir / ov_name).exists() else ""))
 
 
 if __name__ == "__main__":

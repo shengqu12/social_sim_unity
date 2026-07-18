@@ -6,10 +6,12 @@ Standalone post-processor: burns a per-frame telemetry overlay onto trial videos
     python tools/overlay.py --all trial_outputs/      # every trial dir found under a root
 
 Reads frames.csv + meta.json from a trial directory (as written by run_trial.py) and produces
-*_ov.mp4 siblings of pov_full.mp4 / tp_full.mp4 with a burned-in subtitle overlay, then re-cuts
-near-pedestrian clips from the *overlaid* fulls using the same span logic as run_trial.py
+pov_full_ov.mp4 (burned-in subtitle overlay of pov_full.mp4, an internal scratch file -- see
+run_trial.py's post_process()/cleanup_full_video()), then re-cuts near-pedestrian clips
+(pov_near_NN_ov.mp4) from that overlaid full using the same span logic as run_trial.py
 (trial_lib.find_near_spans / cut_clip -- re-derived from frames.csv, not copied from the
-originals, so it stays correct if near_dist ever changes).
+originals, so it stays correct if near_dist ever changes). Session 10 (D5): POV only -- the
+chase/third-person camera no longer exists.
 
 Mechanism: generate one .ass subtitle track per trial and burn it in with a single ffmpeg pass
 (libass -vf, not per-frame image compositing) -- zero frame re-rendering. Each row's own `t`
@@ -17,14 +19,14 @@ column defines its subtitle window [t_i, t_{i+1}); nominal/configured fps is nev
 timing (Session 1's achieved-vs-configured-fps lesson applies here too -- see run_trial.py's own
 actual_achieved_fps()).
 
-VLM-purity norm (Session 9): *_ov.mp4 files are for HUMAN review only. Any VLM/model-based scoring
-or evaluation pipeline must consume the non-overlaid originals (pov_full.mp4 / tp_full.mp4 /
-pov_near_NN.mp4 / tp_near_NN.mp4), never the *_ov.mp4 siblings. The overlay burns in
-dist_to_pedestrian, running min-distance, and a near/far color cue directly onto the pixels --
-exactly the kind of signal a proximity or social-navigation-quality judgment task would ask a model
-to infer from the scene itself. Feeding it the overlaid version lets the model read the answer off
-the frame instead of judging the scene, silently corrupting the eval. Keep the two video sets
-strictly separated in any scoring pipeline built on top of this tool.
+VLM-purity norm (Session 9, unchanged): *_ov.mp4 files are for HUMAN review only. Any VLM/model-
+based scoring or evaluation pipeline must consume the non-overlaid originals (pov_near_NN.mp4),
+never the *_ov.mp4 siblings. The overlay burns in dist_to_pedestrian, running min-distance, and a
+near/far color cue directly onto the pixels -- exactly the kind of signal a proximity or social-
+navigation-quality judgment task would ask a model to infer from the scene itself. Feeding it the
+overlaid version lets the model read the answer off the frame instead of judging the scene,
+silently corrupting the eval. Keep the two video sets strictly separated in any scoring pipeline
+built on top of this tool.
 
 --all archive-dir convention (Session 9): a top-level subdirectory of the scanned root is treated
 as an internal/archive dir -- and excluded from a bare --all scan -- if its name starts with `_`
@@ -75,7 +77,9 @@ def ass_time(t):
 def build_ass(frames_csv, meta, near_dist, video_duration, trial_label, out_path):
     """One dialogue event per frames.csv row (timed on that row's own `t`, window =
     [t_i, t_{i+1}), last row extended to the real video duration from ffprobe) plus one static
-    footer event spanning the whole video."""
+    footer event spanning the whole video. Session 10 (D5): fields = t, robot speed, appearance,
+    personality, dist, min_dist -- top-left (ASS Alignment=7, already the style's value before
+    this session; unchanged)."""
     with open(frames_csv, newline="") as f:
         rows = list(csv.DictReader(f))
     if not rows:
@@ -124,7 +128,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         dist_str = "{:.2f}m".format(dist_f) if dist_f is not None else "n/a"
         min_str = "{:.2f}m".format(running_min) if running_min is not None else "n/a"
-        text = "t={:.2f}s  speed={:.2f}m/s  dist={}  min_so_far={}\\N{} / {}".format(
+        text = "t={:.2f}s  speed={:.2f}m/s  dist={}  min_dist={}\\N{} / {}".format(
             t, speed, dist_str, min_str, appearance, personality)
 
         lines.append("Dialogue: 0,{},{},{},,0,0,0,,{}".format(
@@ -153,49 +157,57 @@ def burn_overlay(src_mp4, ass_path, out_mp4):
 
 
 def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False):
-    """Returns (ok: bool, detail: str)."""
+    """Returns (ok: bool, detail: str). Session 10 (D5): POV only -- no chase/third-person camera
+    exists anymore. Must run while pov_full.mp4 (the internal span-cutting scratch file) still
+    exists; run_trial.py's cleanup_full_video() deletes it only after this returns."""
     trial_dir = Path(trial_dir)
     frames_csv = trial_dir / "frames.csv"
     meta_path = trial_dir / "meta.json"
     pov_full = trial_dir / "pov_full.mp4"
-    tp_full = trial_dir / "tp_full.mp4"
-
-    if not (frames_csv.exists() and meta_path.exists() and pov_full.exists() and tp_full.exists()):
-        return False, "missing frames.csv/meta.json/pov_full.mp4/tp_full.mp4"
-
     pov_ov = trial_dir / "pov_full_ov.mp4"
-    tp_ov = trial_dir / "tp_full_ov.mp4"
-    if pov_ov.exists() and tp_ov.exists() and not force:
-        eprint("[overlay] {}: *_ov.mp4 already present, skipping (use --force to redo).".format(trial_dir.name))
+
+    # Checked before requiring pov_full.mp4 to exist: a trial that already completed its overlay
+    # pass (via run_trial.py's own default-on --overlay step) has pov_full.mp4 already deleted by
+    # cleanup_full_video() (Session 10, D5) -- that is a valid "already done" state, not a missing-
+    # input failure. Only a re-run (--force) or a trial that was never overlaid needs pov_full.
+    existing_near_ov = sorted(trial_dir.glob("pov_near_*_ov.mp4"))
+    if existing_near_ov and not force:
+        eprint("[overlay] {}: pov_near_*_ov.mp4 already present, skipping (use --force to redo).".format(trial_dir.name))
         return True, "already overlaid"
 
-    meta = json.loads(meta_path.read_text())
+    if not (frames_csv.exists() and meta_path.exists() and pov_full.exists()):
+        return False, "missing frames.csv/meta.json/pov_full.mp4"
 
+    meta = json.loads(meta_path.read_text())
     pov_duration = ffprobe_duration(pov_full)
-    tp_duration = ffprobe_duration(tp_full)
 
     ass_pov = trial_dir / "overlay_pov.ass"
-    ass_tp = trial_dir / "overlay_tp.ass"
     build_ass(frames_csv, meta, near_dist, pov_duration, trial_dir.name, ass_pov)
-    build_ass(frames_csv, meta, near_dist, tp_duration, trial_dir.name, ass_tp)
 
-    ok_pov = burn_overlay(pov_full, ass_pov, pov_ov)
-    ok_tp = burn_overlay(tp_full, ass_tp, tp_ov)
-    if not (ok_pov and ok_tp):
+    if not burn_overlay(pov_full, ass_pov, pov_ov):
         return False, "ffmpeg burn-in failed"
 
     spans = trial_lib.find_near_spans(frames_csv, near_dist)
     for i, (start, end) in enumerate(spans):
         pov_near_ov = trial_dir / "pov_near_{:02d}_ov.mp4".format(i)
-        tp_near_ov = trial_dir / "tp_near_{:02d}_ov.mp4".format(i)
         trial_lib.cut_clip(pov_ov, pov_near_ov, start, end)
-        trial_lib.cut_clip(tp_ov, tp_near_ov, start, end)
+
+    # Session 10 (D5 output-format spec: "exactly the near pairs + frames.csv + meta.json +
+    # unity.log"): the .ass subtitle track is a pure ffmpeg-burn scratch artifact, not a
+    # deliverable -- clean it up like pov_full.mp4/pov_full_ov.mp4 (deleted separately, by
+    # run_trial.py's cleanup_full_video(), since this function doesn't own those).
+    ass_pov.unlink(missing_ok=True)
 
     return True, "{} near clip(s) re-cut".format(len(spans))
 
 
 def find_trial_dirs(root, include_archives=False):
-    """A directory counts as a trial dir if it directly contains frames.csv + meta.json.
+    """A directory counts as a trial dir if it directly contains frames.csv + meta.json, and
+    either pov_full.mp4 (not yet cleaned up -- process_trial_dir() can still build the overlay)
+    or at least one pov_near_*.mp4 (already post-processed and cleaned up -- Session 10 (D5):
+    pov_full.mp4 is an ephemeral scratch file by design, deleted by run_trial.py's
+    cleanup_full_video() unless --keep-full, so requiring it unconditionally would make
+    find_trial_dirs() go blind on every already-completed trial).
 
     Unless include_archives, skips anything under a top-level subdirectory of `root` whose name
     starts with `_` (the internal/archive-dir convention -- see module docstring)."""
@@ -203,7 +215,9 @@ def find_trial_dirs(root, include_archives=False):
     found = []
     for meta in sorted(root.rglob("meta.json")):
         d = meta.parent
-        if not ((d / "frames.csv").exists() and (d / "pov_full.mp4").exists()):
+        has_full = (d / "pov_full.mp4").exists()
+        has_near = any(d.glob("pov_near_*.mp4"))
+        if not ((d / "frames.csv").exists() and (has_full or has_near)):
             continue
         if not include_archives:
             rel = d.relative_to(root)
@@ -214,38 +228,107 @@ def find_trial_dirs(root, include_archives=False):
     return found
 
 
-def update_index_html(index_path, near_dist=DEFAULT_NEAR_DIST):
-    import re
+def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_archives=False):
+    """Session 10 (D5): the index generator itself, rewritten for the near-only output format --
+    this fully regenerates index_path from the trial dirs found under root, rather than
+    regex-patching an existing hand-authored file (the old update_index_html() approach, which
+    assumed pov_full/tp_full <video> blocks that no longer exist). Each trial lists its near clips
+    only: pov_near_NN.mp4 (VLM-purity: clean, model input) next to pov_near_NN_ov.mp4 (human
+    review only) when present. Trials with zero near-spans are listed with an explicit note, not
+    silently omitted."""
+    import html as html_mod
+
+    root = Path(root)
+    dirs = find_trial_dirs(root, include_archives=include_archives)
     index_path = Path(index_path)
-    if not index_path.exists():
-        eprint("[overlay] {} not found, skipping index update.".format(index_path))
-        return
-    html = index_path.read_text()
-    root = index_path.parent
 
-    pattern = re.compile(
-        r'(<div class="video-block"><div class="label">([^<]*)</div>'
-        r'<video controls preload="metadata" src="([^"]+\.mp4)"></video></div>)'
-    )
+    def esc(s):
+        return html_mod.escape(str(s))
 
-    def repl(m):
-        block, label, src = m.group(1), m.group(2), m.group(3)
-        src_path = root / src
-        ov_name = src_path.stem + "_ov" + src_path.suffix
-        ov_path = src_path.parent / ov_name
-        if not ov_path.exists():
-            return block
-        ov_src = "{}/{}".format(Path(src).parent.as_posix(), ov_name)
-        ov_block = ('<div class="video-block"><div class="label">{} (overlay)</div>'
-                    '<video controls preload="metadata" src="{}"></video></div>').format(label, ov_src)
-        return block + ov_block
+    blocks = []
+    for d in dirs:
+        rel = d.relative_to(index_path.parent) if index_path.parent in d.parents or index_path.parent == d.parent else d
+        meta = {}
+        meta_path = d / "meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                meta = {}
+        cfg = meta.get("config", {})
+        appearance = cfg.get("appearance", "?")
+        personality = cfg.get("personality", "?")
+        termination = meta.get("terminationReason", "?")
+        min_dist = meta.get("minDistanceMeters", None)
+        census = meta.get("agentCensus", [])
+        stray_count = sum(1 for c in census if c.startswith("STRAY"))
 
-    new_html = pattern.sub(repl, html)
-    if new_html != html:
-        index_path.write_text(new_html)
-        eprint("[overlay] {} updated with overlay video blocks.".format(index_path))
-    else:
-        eprint("[overlay] {}: no matching overlay files found, left unchanged.".format(index_path))
+        near_clips = sorted(d.glob("pov_near_*.mp4"))
+        near_clips = [c for c in near_clips if "_ov" not in c.stem]
+
+        clip_html = []
+        for clip in near_clips:
+            idx = clip.stem.split("_")[-1]
+            ov = d / (clip.stem + "_ov.mp4")
+            rel_clip = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(clip.name))
+            block = ['<div class="video-block"><div class="label">near clip {}</div>'
+                     '<video controls preload="metadata" src="{}"></video></div>'.format(idx, rel_clip)]
+            if ov.exists():
+                rel_ov = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(ov.name))
+                block.append('<div class="video-block"><div class="label">near clip {} (overlay, human review only)</div>'
+                             '<video controls preload="metadata" src="{}"></video></div>'.format(idx, rel_ov))
+            clip_html.append("".join(block))
+
+        stray_flag = '<span class="flag">D3: {} STRAY agent(s)</span>'.format(stray_count) if stray_count else '<span class="flag ok">D3: clean census</span>'
+
+        if not clip_html:
+            body = '<p class="stats">No near-pedestrian spans (min_dist={} m, near-dist threshold not crossed).</p>'.format(esc(min_dist))
+        else:
+            body = '<div class="video-grid">' + "".join(clip_html) + '</div>'
+
+        blocks.append("""
+<div class="trial">
+  <h2>{name}</h2>
+  <div class="stats">{appearance} &times; {personality} &middot; termination: {termination} &middot; min_dist: {min_dist} m {stray_flag}</div>
+  {body}
+</div>""".format(name=esc(d.name), appearance=esc(appearance), personality=esc(personality),
+                  termination=esc(termination), min_dist=esc(min_dist), stray_flag=stray_flag, body=body))
+
+    html_out = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutoTrial review index (near clips only)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {{ color-scheme: light dark; --bg:#fff; --fg:#1a1a1a; --muted:#666; --card:#f6f6f8; --border:#ddd; --accent:#2563eb; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --bg:#14161a; --fg:#e8e8e8; --muted:#9aa0a6; --card:#1e2126; --border:#333; --accent:#7aa2ff; }} }}
+  * {{ box-sizing: border-box; }}
+  body {{ background: var(--bg); color: var(--fg); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 0 auto; padding: 24px 20px 80px; line-height: 1.5; }}
+  h1 {{ font-size: 1.5rem; }}
+  .subtitle {{ color: var(--muted); margin-bottom: 20px; }}
+  .trial {{ border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 22px; background: var(--card); }}
+  .trial h2 {{ margin: 0 0 6px; font-size: 1.1rem; }}
+  .stats {{ color: var(--muted); font-size: 0.88rem; margin-bottom: 10px; }}
+  .video-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }}
+  .video-block {{ background: rgba(127,127,127,0.06); border-radius: 8px; padding: 8px; }}
+  .video-block .label {{ font-size: 0.8rem; color: var(--muted); margin-bottom: 5px; font-weight: 600; }}
+  video {{ width: 100%; border-radius: 6px; display: block; background: #000; }}
+  .flag {{ display: inline-block; font-size: 0.75rem; background: #caa23a; color: #1a1a1a; border-radius: 4px; padding: 1px 6px; margin-left: 6px; font-weight: 600; }}
+  .flag.ok {{ background: #3ecf6b; }}
+</style>
+</head>
+<body>
+<h1>AutoTrial review index -- near clips only</h1>
+<div class="subtitle">Session 10 near-only output format. Clean pov_near_NN.mp4 = model/VLM input;
+_ov siblings = human review only (per the VLM-purity norm, unchanged since Session 9).</div>
+{blocks}
+</body>
+</html>
+""".format(blocks="".join(blocks))
+
+    index_path.write_text(html_out)
+    eprint("[overlay] {} generated ({} trial(s)).".format(index_path, len(dirs)))
 
 
 def main():
@@ -280,7 +363,8 @@ def main():
         fail_count += not ok
 
     if args.index:
-        update_index_html(args.index, near_dist=args.near_dist)
+        index_root = Path(args.all) if args.all else Path(args.trial_dir).parent
+        generate_index_html(index_root, args.index, near_dist=args.near_dist, include_archives=args.include_archives)
 
     print("overlay: {} ok, {} failed".format(ok_count, fail_count))
     sys.exit(0 if fail_count == 0 else 1)
