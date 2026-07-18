@@ -54,17 +54,6 @@ def eprint(*a, **kw):
     sys.stderr.flush()
 
 
-def ffprobe_duration(video_path):
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-        capture_output=True, text=True)
-    try:
-        return float(result.stdout.strip())
-    except ValueError:
-        return None
-
-
 def ass_time(t):
     if t < 0:
         t = 0.0
@@ -156,7 +145,8 @@ def burn_overlay(src_mp4, ass_path, out_mp4):
     return True
 
 
-def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False):
+def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
+                       near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC):
     """Returns (ok: bool, detail: str). Session 10 (D5): POV only -- no chase/third-person camera
     exists anymore. Must run while pov_full.mp4 (the internal span-cutting scratch file) still
     exists; run_trial.py's cleanup_full_video() deletes it only after this returns."""
@@ -179,7 +169,7 @@ def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False):
         return False, "missing frames.csv/meta.json/pov_full.mp4"
 
     meta = json.loads(meta_path.read_text())
-    pov_duration = ffprobe_duration(pov_full)
+    pov_duration = trial_lib.ffprobe_duration(pov_full)
 
     ass_pov = trial_dir / "overlay_pov.ass"
     build_ass(frames_csv, meta, near_dist, pov_duration, trial_dir.name, ass_pov)
@@ -187,7 +177,7 @@ def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False):
     if not burn_overlay(pov_full, ass_pov, pov_ov):
         return False, "ffmpeg burn-in failed"
 
-    spans = trial_lib.find_near_spans(frames_csv, near_dist)
+    spans = trial_lib.find_near_spans(frames_csv, near_dist, min_duration_sec=near_clip_min_sec)
     for i, (start, end) in enumerate(spans):
         pov_near_ov = trial_dir / "pov_near_{:02d}_ov.mp4".format(i)
         trial_lib.cut_clip(pov_ov, pov_near_ov, start, end)
@@ -265,14 +255,35 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
 
         near_clips = sorted(d.glob("pov_near_*.mp4"))
         near_clips = [c for c in near_clips if "_ov" not in c.stem]
+        # Round 3 (THE PERMANENT GATE, part b): meta.json.nearClips (written by run_trial.py's
+        # augment_trial_meta_with_gate()) carries each clip's duration/gate verdict/contact-sheet
+        # filename, keyed by index -- absent on trials captured before Round 3, handled gracefully.
+        near_clips_meta = {c["index"]: c for c in meta.get("nearClips", [])}
 
         clip_html = []
         for clip in near_clips:
             idx = clip.stem.split("_")[-1]
+            idx_int = int(idx)
+            clip_meta = near_clips_meta.get(idx_int, {})
             ov = d / (clip.stem + "_ov.mp4")
             rel_clip = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(clip.name))
-            block = ['<div class="video-block"><div class="label">near clip {}</div>'
-                     '<video controls preload="metadata" src="{}"></video></div>'.format(idx, rel_clip)]
+            dur = clip_meta.get("durationSec")
+            gate_ok = clip_meta.get("contentGateOk")
+            label_extra = ""
+            if dur is not None:
+                label_extra += " &middot; {:.1f}s".format(dur)
+            if gate_ok is not None:
+                label_extra += ' &middot; <span class="flag {}">gate: {}</span>'.format(
+                    "ok" if gate_ok else "", "PASS" if gate_ok else "FAIL")
+            block = ['<div class="video-block"><div class="label">near clip {}{}</div>'
+                     '<video controls preload="metadata" src="{}"></video></div>'.format(idx, label_extra, rel_clip)]
+
+            sheet_name = clip_meta.get("contactSheet") or "contact_sheet_{}.png".format(idx)
+            if (d / sheet_name).exists():
+                rel_sheet = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(sheet_name))
+                block.append('<div class="video-block contact-sheet"><div class="label">contact sheet (8 frames, one glance)</div>'
+                             '<img loading="lazy" src="{}" alt="contact sheet for near clip {}"></div>'.format(rel_sheet, idx))
+
             if ov.exists():
                 rel_ov = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(ov.name))
                 block.append('<div class="video-block"><div class="label">near clip {} (overlay, human review only)</div>'
@@ -313,6 +324,8 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
   .video-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }}
   .video-block {{ background: rgba(127,127,127,0.06); border-radius: 8px; padding: 8px; }}
   .video-block .label {{ font-size: 0.8rem; color: var(--muted); margin-bottom: 5px; font-weight: 600; }}
+  .contact-sheet {{ grid-column: 1 / -1; overflow-x: auto; }}
+  .contact-sheet img {{ display: block; height: 130px; width: auto; max-width: none; border-radius: 6px; }}
   video {{ width: 100%; border-radius: 6px; display: block; background: #000; }}
   .flag {{ display: inline-block; font-size: 0.75rem; background: #caa23a; color: #1a1a1a; border-radius: 4px; padding: 1px 6px; margin-left: 6px; font-weight: 600; }}
   .flag.ok {{ background: #3ecf6b; }}
@@ -341,6 +354,9 @@ def main():
     p.add_argument("--include-archives", action="store_true",
                    help="with --all, also scan `_`-prefixed archive/forensics dirs")
     p.add_argument("--near-dist", type=float, default=DEFAULT_NEAR_DIST)
+    p.add_argument("--near-clip-min-sec", type=float, default=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
+                   help="Round 3: must match the value run_trial.py cut the clean pov_near_NN.mp4 "
+                        "clips with, or the *_ov re-cut spans will disagree with them.")
     p.add_argument("--force", action="store_true", help="redo even if *_ov.mp4 already exists")
     p.add_argument("--index", metavar="INDEX_HTML", default=None,
                    help="regenerate this index.html with overlay video blocks after processing")
@@ -356,7 +372,8 @@ def main():
 
     ok_count, fail_count = 0, 0
     for d in dirs:
-        ok, detail = process_trial_dir(d, near_dist=args.near_dist, force=args.force)
+        ok, detail = process_trial_dir(d, near_dist=args.near_dist, force=args.force,
+                                        near_clip_min_sec=args.near_clip_min_sec)
         status = "OK" if ok else "FAILED"
         eprint("[overlay] {}: {} ({})".format(d, status, detail))
         ok_count += ok

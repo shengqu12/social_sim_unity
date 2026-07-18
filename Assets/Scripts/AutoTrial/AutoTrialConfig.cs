@@ -93,16 +93,19 @@ namespace SEAN.AutoTrial
         // Session 10 (D5): the chase/third-person camera is removed from the rig entirely --
         // POV only, per the output-format spec. No chase fields remain; see REPORT.md Session 10.
 
-        // Session 10 (D2 treatment): soft-mounted POV camera. The camera stays a child transform
-        // of robot.camera_first (unchanged parenting, adjustment #6 still honored) but
-        // PovCameraSmoother (new file) overrides its *local* pose every LateUpdate with a
-        // low-pass-filtered version of the mount's motion instead of inheriting it rigidly.
-        // Time constants in seconds -- larger = smoother/laggier. rigidMount=true forces all taus
-        // to ~0 (an every-frame snap to the raw mount pose) so the exact same code path serves as
-        // the rigid-mount comparison case the brief asks for, rather than a second implementation.
-        public float posSmoothTau = 0.12f;
-        public float yawSmoothTau = 0.15f;
-        public float pitchSmoothTau = 0.20f;
+        // Round 3 fix (Session 10's decomposition of the mount's own rotation into eulerAngles.x/.z
+        // for "pitch"/"roll" was the bug -- see PovCameraSmoother.cs class doc): position is now
+        // always rigidly snapped to the mount (no tau, no field for it). Rotation is a world-frame
+        // horizon lock with zero dependency on the mount's own orientation: roll is hardcoded to 0,
+        // pitch is the constant below (sign convention: positive = tilt up, negative = tilt down),
+        // and only yaw is derived from a transform (the robot chassis, not the camera mount) with
+        // this low-pass time constant. rigidMount=true forces yawSmoothTau to ~0 (an every-frame
+        // snap to the raw chassis yaw, no filtering) for direct before/after comparison.
+        // yawSmoothTau default (0.5s) is empirically chosen, not the brief's Session 10 value (0.15,
+        // which was tuned against the buggy pitch/roll-corrupted implementation and re-verified
+        // Round 3 to be insufficient on its own -- see REPORT.md Round 3 Step 2 for the tau sweep).
+        public float yawSmoothTau = 0.5f;
+        public float fixedPitchDeg = -5f;
         public bool rigidMount = false;
     }
 }

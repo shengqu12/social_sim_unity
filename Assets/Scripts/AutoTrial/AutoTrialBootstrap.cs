@@ -572,15 +572,17 @@ namespace SEAN.AutoTrial
             povCam.farClipPlane = existing.farClipPlane;
             povCam.enabled = false; // rendered manually via Camera.Render() at each capture tick
 
-            // Session 10 (D2 treatment b): soft mount. Parenting is kept (for lifecycle/cleanup
+            // Round 3 fix (D2 re-earned): soft mount. Parenting is kept (for lifecycle/cleanup
             // convenience) but PovCameraSmoother overrides this transform's WORLD position/
-            // rotation every frame with a low-pass-filtered version of the mount's motion, so the
-            // rigid parent-child link never actually determines the rendered pose. See
-            // PovCameraSmoother.cs for the smoothing math, why it runs in Update() rather than the
-            // more conventional LateUpdate() (timing relative to TrialController's capture
-            // coroutine), and the rigidMount=true passthrough case used for direct comparison.
+            // rotation every frame, so the rigid parent-child link never actually determines the
+            // rendered pose. Position rigidly follows the mount (existing.transform); rotation is a
+            // world-frame horizon lock whose yaw is low-passed off the ROBOT CHASSIS's own heading
+            // (robot.transform), not the mount's -- see PovCameraSmoother.cs class doc for why
+            // decomposing the mount's own rotation was the Session-10 bug, why it runs in Update()
+            // rather than the more conventional LateUpdate() (timing relative to TrialController's
+            // capture coroutine), and the rigidMount=true passthrough case used for direct comparison.
             var smoother = povGO.AddComponent<PovCameraSmoother>();
-            smoother.Initialize(existing.transform, config.camera);
+            smoother.Initialize(existing.transform, robot.transform, config.camera);
 
             return povCam;
         }

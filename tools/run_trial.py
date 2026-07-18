@@ -266,9 +266,8 @@ def build_config(args, out_dir):
         "pedGoalPose": pose(args.ped_goal[0], args.ped_goal[1], args.ped_goal[2], 0.0) if args.ped_goal is not None else pose(0, 0, 0, 0),
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
-            "posSmoothTau": args.pos_smooth_tau,
             "yawSmoothTau": args.yaw_smooth_tau,
-            "pitchSmoothTau": args.pitch_smooth_tau,
+            "fixedPitchDeg": args.fixed_pitch_deg,
             "rigidMount": args.rigid_mount,
         },
         "jpgQuality": args.jpg_quality,
@@ -491,6 +490,15 @@ def augment_trial_meta(out_dir, bringup_mode, trial_position):
 
 def run_single_trial(args, out_dir, windowed=False, reused_ros=True):
     """Returns (success: bool, reason: str)."""
+    # Round 3 bug fix: an --out pointed at a directory from a PREVIOUS trial (e.g. re-running the
+    # acceptance battery in place) left stale pov_near_*_ov.mp4/contact_sheet_*.png/etc. on disk.
+    # overlay.py's own "already overlaid" short-circuit (keyed only on pov_near_*_ov.mp4 existing,
+    # not on it actually matching this run's clip) then silently kept the OLD overlay video paired
+    # with the NEW pov_near_00.mp4 -- caught during this round's own acceptance battery (stale
+    # 8.5s pre-fix overlay sitting next to a fresh 15.0s post-fix clip). A trial's out_dir is wholly
+    # owned by that one trial's output; wipe it before writing anything new.
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     config = build_config(args, out_dir)
     config_path = out_dir / "config.json"
@@ -614,7 +622,7 @@ def actual_achieved_fps(frames_csv_path, configured_fps):
     return achieved
 
 
-def post_process(out_dir, fps, near_dist, keep_full):
+def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC):
     """Session 10 (D5): POV only, near-clips only. Builds pov_full.mp4 internally (needed both
     for clean-clip cutting here AND for overlay.py to burn+re-cut its own *_ov near clips from,
     since overlay always re-derives spans from frames.csv rather than trusting these clip
@@ -632,7 +640,7 @@ def post_process(out_dir, fps, near_dist, keep_full):
     if not assemble_video(pov_dir, "pov", real_fps, pov_full):
         return {"ok": False, "reason": "ffmpeg assembly failed"}
 
-    spans = trial_lib.find_near_spans(out_dir / "frames.csv", near_dist)
+    spans = trial_lib.find_near_spans(out_dir / "frames.csv", near_dist, min_duration_sec=near_clip_min_sec)
     near_clips = []
     for i, (start, end) in enumerate(spans):
         pov_clip = out_dir / "pov_near_{:02d}.mp4".format(i)
@@ -643,6 +651,55 @@ def post_process(out_dir, fps, near_dist, keep_full):
         shutil.rmtree(pov_dir, ignore_errors=True)
 
     return {"ok": True, "near_clips": near_clips, "pov_full": pov_full.name}
+
+
+def run_content_gate(out_dir, near_clips):
+    """THE PERMANENT GATE (Round 3), wired into acceptance forever -- not a one-off check. For
+    every near clip: (a) samples >=8 frames and requires luminance std AND edge density above
+    scene thresholds (trial_lib.check_clip_content -- any uniform gray/black sample fails the
+    clip), and (b) writes an 8-frame contact-sheet PNG into out_dir so a human reviewer can QA the
+    whole clip's scene content in one glance instead of scrubbing every video (surfaced in
+    index.html by overlay.py's generate_index_html()). Mutates each near_clips entry in place with
+    its own gate result + contact sheet filename. Returns (all_ok: bool, detail: str)."""
+    all_ok = True
+    details = []
+    for clip in near_clips:
+        clip_path = out_dir / clip["pov"]
+        ok, detail, samples = trial_lib.check_clip_content(clip_path)
+        sheet_name = "contact_sheet_{:02d}.png".format(clip["index"])
+        sheet_ok = trial_lib.build_contact_sheet(clip_path, out_dir / sheet_name)
+        clip["contentGateOk"] = ok
+        clip["contentGateDetail"] = detail
+        clip["contentSamples"] = samples
+        clip["contactSheet"] = sheet_name if sheet_ok else None
+        all_ok = all_ok and ok
+        details.append("{}: {}".format(clip["pov"], detail))
+    return all_ok, "; ".join(details)
+
+
+def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips):
+    """Records the permanent gate's verdict and every near clip's final (post-growth/merge)
+    window + contact sheet into meta.json, so a trial's pass/fail is inspectable without re-running
+    anything."""
+    meta_path = out_dir / "meta.json"
+    if not meta_path.exists():
+        return
+    data = json.loads(meta_path.read_text())
+    data["contentGateOk"] = gate_ok
+    data["nearClips"] = [
+        {
+            "index": c["index"],
+            "start": c["start"],
+            "end": c["end"],
+            "durationSec": c["end"] - c["start"],
+            "pov": c["pov"],
+            "contactSheet": c.get("contactSheet"),
+            "contentGateOk": c.get("contentGateOk"),
+            "contentGateDetail": c.get("contentGateDetail"),
+        }
+        for c in near_clips
+    ]
+    meta_path.write_text(json.dumps(data, indent=2))
 
 
 def cleanup_full_video(out_dir, keep_full):
@@ -682,6 +739,10 @@ def main():
     p.add_argument("--duration", type=float, default=90.0)
     p.add_argument("--fps", type=int, default=15)
     p.add_argument("--near-dist", type=float, default=3.0)
+    p.add_argument("--near-clip-min-sec", type=float, default=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
+                   help="Round 3: every near clip is grown symmetrically around its own "
+                        "minimum-distance moment (bounded by trial length) until it reaches at "
+                        "least this many seconds; overlapping spans after growth are merged.")
     p.add_argument("--out", default=None, help="output directory (default: trial_outputs/<appearance>_<personality>_<timestamp>)")
     p.add_argument("--windowed", action="store_true", help="drop -batchmode (black-frame fallback)")
     p.add_argument("--keep-full", action="store_true")
@@ -711,14 +772,19 @@ def main():
                         "pre-Session-10 default) instead of the Session 10 default head-on goal")
     p.add_argument("--patrol", type=float, nargs=3, action="append", metavar=("X", "Y", "Z"),
                    help="repeatable; first two given are used (ping-pong)")
-    p.add_argument("--pos-smooth-tau", type=float, default=0.12,
-                   help="Session 10 (D2 treatment): POV camera position low-pass time constant, "
-                        "seconds. 0 = rigid (see also --rigid-mount).")
-    p.add_argument("--yaw-smooth-tau", type=float, default=0.15)
-    p.add_argument("--pitch-smooth-tau", type=float, default=0.20)
+    p.add_argument("--yaw-smooth-tau", type=float, default=0.5,
+                   help="Round 3 (D2 fix): POV camera yaw low-pass time constant, seconds -- the "
+                        "only smoothed axis. Position is always rigid to the mount; pitch/roll are "
+                        "constants (see --fixed-pitch-deg). Default (0.5) is empirically re-tuned "
+                        "this round -- see REPORT.md Round 3 Step 2. 0 = no smoothing (--rigid-mount).")
+    p.add_argument("--fixed-pitch-deg", type=float, default=-5.0,
+                   help="Round 3 (D2 fix): constant camera downtilt in degrees (positive = up, "
+                        "negative = down; default -5 = slight downtilt). Never derived from any "
+                        "transform -- this replaces Session 10's buggy mount-rotation decomposition.")
     p.add_argument("--rigid-mount", action="store_true",
-                   help="Session 10 (D2): force all camera smoothing taus to 0 (the pre-Session-10 "
-                        "rigid-mount behavior), for direct before/after comparison")
+                   help="Round 3 (D2): force yaw smoothing tau to 0 (raw chassis yaw every frame, "
+                        "no filtering) for direct before/after comparison. Position was already "
+                        "always rigid; pitch/roll are always constants regardless of this flag.")
     p.add_argument("--jpg-quality", type=int, default=85)
     p.add_argument("--trial-position", type=int, default=1,
                    help="1-based position of this trial within its sequential run on one shared "
@@ -819,13 +885,19 @@ def main():
 
     augment_trial_meta(out_dir, bringup_mode, args.trial_position)
 
-    result = post_process(out_dir, args.fps, args.near_dist, args.keep_full)
+    result = post_process(out_dir, args.fps, args.near_dist, args.keep_full, near_clip_min_sec=args.near_clip_min_sec)
     if not result["ok"]:
         eprint("[run_trial] post-processing FAILED: {}".format(result["reason"]))
         sys.exit(1)
 
+    # THE PERMANENT GATE (Round 3): runs on every trial forever, not just this acceptance battery.
+    gate_ok, gate_detail = run_content_gate(out_dir, result["near_clips"])
+    eprint("[run_trial] content gate: {} ({})".format("OK" if gate_ok else "FAILED", gate_detail))
+    augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"])
+
     if args.overlay:
-        ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist)
+        ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist,
+                                                       near_clip_min_sec=args.near_clip_min_sec)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
     # Session 10 (D5): only after both run_trial.py's own clean near-clips AND overlay.py's *_ov
@@ -846,10 +918,21 @@ def main():
     print("frames: {}".format(n_frames))
     print("near-spans: {}".format(len(result["near_clips"])))
     print("min_dist reached: {}".format(min_dist))
+    print("content gate: {}".format("PASS" if gate_ok else "FAIL"))
     for c in result["near_clips"]:
         ov_name = "pov_near_{:02d}_ov.mp4".format(c["index"])
-        print("near clip {}: {}{}".format(c["index"], out_dir / c["pov"],
-              "  (+ {})".format(out_dir / ov_name) if (out_dir / ov_name).exists() else ""))
+        print("near clip {} ({:.1f}s, gate={}): {}{}".format(
+            c["index"], c["end"] - c["start"], "OK" if c.get("contentGateOk") else "FAILED",
+            out_dir / c["pov"],
+            "  (+ {})".format(out_dir / ov_name) if (out_dir / ov_name).exists() else ""))
+
+    # THE PERMANENT GATE (Round 3): full artifact set (frames.csv, meta.json, contact sheets,
+    # clips) is left on disk either way, for forensics -- but a gate failure fails the trial's exit
+    # code, same as any other hard acceptance check in this script.
+    if not gate_ok:
+        eprint("[run_trial] trial FAILED the permanent content gate -- see meta.json/contact "
+               "sheets above for which clip/sample.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
