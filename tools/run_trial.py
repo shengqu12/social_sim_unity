@@ -64,6 +64,8 @@ import overlay
 PROJECT_DIR = Path(__file__).resolve().parent.parent  # .../social_sim_unity
 DOCKER_CONTAINER = "ros"
 DEFAULT_OUT_ROOT = Path.home() / "Desktop" / "research" / "social_navigation" / "trial_outputs"
+OUTPUT_ROOT_SENTINEL_NAME = ".output_root_on_t7"
+OUTPUT_ROOT_MIN_FREE_GB = 5.0
 
 ZONE_B_APPEARANCES = [
     "cyclist", "dog_walker", "female_child", "male_child",
@@ -87,6 +89,51 @@ DEFAULT_PED_GOAL = (2.0, 0.0007, -109.424)
 # Zone A is validated by convention (snake_case -> Rocketbox PascalCase), not enumerated here --
 # Unity's Resources.Load is authoritative. This regex just catches obvious typos early.
 ZONE_A_PATTERN = re.compile(r"^[a-z]+(_[a-z0-9]+)*$")
+
+
+def require_output_root_healthy(root=None, min_free_gb=OUTPUT_ROOT_MIN_FREE_GB):
+    """Round 3 (post-relocation guard): trial_outputs now resolves through a symlink onto an
+    external drive (T7). If that drive isn't mounted, the symlink either dangles (obvious failure)
+    or -- the actually dangerous case on some setups -- the path silently falls back to being
+    created fresh on the internal disk, quietly refilling it exactly the way this whole relocation
+    was meant to prevent. Guard against both: resolve the REAL path (following the symlink) and
+    REQUIRE a sentinel file that only exists on the intended drive; refuse loudly rather than
+    writing anywhere else. Also requires >= min_free_gb free on the resolved path (not `/`) --
+    space on the root filesystem is irrelevant once output lives elsewhere."""
+    root = Path(root) if root is not None else DEFAULT_OUT_ROOT
+    resolved = root.resolve()
+    sentinel = resolved / OUTPUT_ROOT_SENTINEL_NAME
+    if not resolved.is_dir() or not sentinel.exists():
+        raise SystemExit(
+            "[run_trial] REFUSING TO START: output root sentinel missing ({}). Resolved path: {}. "
+            "This means either trial_outputs isn't the symlink onto the T7 drive, or T7 isn't "
+            "mounted -- writing here would silently land on the internal disk. Mount T7 (or "
+            "restore the trial_outputs -> /media/sheng/T7/Social_Navigation/trial_outputs symlink) "
+            "before running trials.".format(sentinel, resolved))
+    st = os.statvfs(str(resolved))
+    free_gb = (st.f_bavail * st.f_frsize) / (1024 ** 3)
+    if free_gb < min_free_gb:
+        raise SystemExit(
+            "[run_trial] REFUSING TO START: only {:.2f}GB free at {} (need >= {}GB).".format(
+                free_gb, resolved, min_free_gb))
+    return resolved
+
+
+def mirror_notes(out_root=None):
+    """Round 3: best-effort, non-fatal call to tools/mirror_notes.sh after every trial -- copies
+    the paper trail (REPORT.md, HOWARD_HANDOFF.md, *.diff, index*.html; never video/CSV payloads)
+    onto the internal disk's ~/trial_notes_mirror/, so it survives the T7 drive being unplugged or
+    the git-less trial_outputs tree being otherwise unreachable. Never raises -- a mirroring
+    failure must not fail a trial that otherwise succeeded."""
+    out_root = Path(out_root) if out_root is not None else DEFAULT_OUT_ROOT
+    script = PROJECT_DIR / "tools" / "mirror_notes.sh"
+    try:
+        result = subprocess.run(["bash", str(script), str(out_root)],
+                                 capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            eprint("[run_trial] mirror_notes.sh exited {}: {}".format(result.returncode, result.stderr[-500:]))
+    except Exception as e:
+        eprint("[run_trial] mirror_notes.sh failed (non-fatal): {}".format(e))
 
 
 def eprint(*a, **kw):
@@ -637,6 +684,10 @@ def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib
         eprint("[run_trial] achieved capture rate {:.2f} fps differs from configured {} fps -- "
                "assembling at the achieved rate to keep real-time pacing.".format(real_fps, fps))
 
+    # Round 3: re-check the output root right before ffmpeg assembly, not just at trial start --
+    # a long trial (or several in a row on --reused-ros) can exhaust space between the two.
+    require_output_root_healthy()
+
     if not assemble_video(pov_dir, "pov", real_fps, pov_full):
         return {"ok": False, "reason": "ffmpeg assembly failed"}
 
@@ -830,6 +881,8 @@ def main():
     if args.personality.lower() not in PERSONALITIES:
         raise SystemExit("--personality '{}' invalid. Valid: {}".format(args.personality, PERSONALITIES))
 
+    require_output_root_healthy()
+
     # Session 10 (D4 QoL patch): --spawn/--goal/--ped-goal are all optional now, defaulting to the
     # canonical head-on-encounter geometry -- resolved here (not in argparse defaults) so
     # --no-goal/--no-ped-goal can still suppress them, and so the resolved poses can be printed
@@ -910,6 +963,10 @@ def main():
     # to drop as a final-output artifact once the run that needed it as an input is done.
     if not args.keep_full:
         (out_dir / "config.json").unlink(missing_ok=True)
+
+    # Round 3: mirror the paper trail (REPORT.md/HOWARD_HANDOFF.md/diffs/index pages) to the
+    # internal disk after every trial, regardless of gate outcome below -- best-effort, non-fatal.
+    mirror_notes()
 
     n_frames, min_dist = summarize(out_dir)
     print("=== trial complete ===")
