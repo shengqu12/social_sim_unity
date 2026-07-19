@@ -250,12 +250,13 @@ namespace SEAN.AutoTrial
                 yield break;
             }
 
-            Camera povCam = BuildPovCamera(robot, config);
+            Camera povCam = BuildPovCamera(robot, config, out float resolvedCamHeightWorldY, out bool camHeightRaycastHit);
 
             var controllerGO = new GameObject("AutoTrialController");
             var controller = controllerGO.AddComponent<TrialController>();
             controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus,
-                pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, config.triggerDistanceMeters);
+                pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, config.triggerDistanceMeters,
+                resolvedCamHeightWorldY, camHeightRaycastHit);
         }
 
         /// <summary>
@@ -502,11 +503,40 @@ namespace SEAN.AutoTrial
         /// moment (its first captured frame). navAgentOut is the same INavigable reference that
         /// call needs.
         /// </summary>
+        // Session 17 (Step 2): --ped-distance's new 25.0 default (+ --slate-margin) pushes the
+        // pedestrian's frozen spawn point to ~29m from ROBOT_START -- well within the ~43.6m
+        // corridor along the bearing, but never geometrically verified before this session (every
+        // prior default sat close enough to the corridor's own well-trodden centerline that this
+        // was never in question). Checked, not assumed: NavMesh.SamplePosition within this
+        // tolerance of the exact resolved spawn point, loud Fail() with the offending coordinates
+        // if it misses -- refuses to start a trial that would spawn the pedestrian off-mesh or
+        // inside geometry rather than silently placing it there anyway.
+        private const float SpawnNavMeshToleranceMeters = 1.0f;
+
+        private void ValidateSpawnOnNavMesh(Vector3 pos)
+        {
+            bool onMesh = UnityEngine.AI.NavMesh.SamplePosition(pos, out UnityEngine.AI.NavMeshHit hit,
+                SpawnNavMeshToleranceMeters, UnityEngine.AI.NavMesh.AllAreas);
+            if (!onMesh)
+            {
+                Fail("Pedestrian spawn point " + pos.ToString("F3") + " is not within "
+                    + SpawnNavMeshToleranceMeters.ToString("F1") + "m of the NavMesh -- refusing to "
+                    + "start a trial that would spawn the pedestrian off-mesh or inside geometry. "
+                    + "Check --ped-distance/--slate-margin (or --spawn if given explicitly) against "
+                    + "the scene's actual navigable corridor.");
+                return;
+            }
+            float missDist = Vector3.Distance(pos, hit.position);
+            Debug.Log("[AutoTrial] spawn NavMesh check: requested " + pos.ToString("F3") + ", nearest "
+                + "NavMesh point " + hit.position.ToString("F3") + " (" + missDist.ToString("F3") + "m away) -- OK.");
+        }
+
         private Transform SpawnPedestrian(AutoTrialConfig config, string zone, GameObject prefab, Scenario.Agents.PedestrianModulator.PersonalityType personalityType,
             out IVI.INavigable navAgentOut, out Vector3 releaseDest)
         {
             Vector3 spawnPos = config.spawnPose.Position;
             Quaternion spawnRot = config.spawnPose.Rotation;
+            ValidateSpawnOnNavMesh(spawnPos);
             bool patrolValid = config.patrolWaypoints != null && config.patrolWaypoints.Length >= 2;
             if (config.patrolWaypoints != null && config.patrolWaypoints.Length > 2)
             {
@@ -586,7 +616,41 @@ namespace SEAN.AutoTrial
             }
         }
 
-        private Camera BuildPovCamera(Scenario.Robot robot, AutoTrialConfig config)
+        /// <summary>
+        /// Session 17 (Step 3, real-A1 camera pose): resolves --cam-height (an ABSOLUTE height
+        /// above ground, not a blind local offset from the existing first-person camera mount) by
+        /// raycasting straight down from above the robot at rig build time. A miss (no collider
+        /// hit -- e.g. spawned over a gap in the ground mesh) falls back to the robot's own
+        /// transform.position.y as a ground proxy, logged loudly rather than silently producing a
+        /// wrong height. Both the raycast-found ground Y and the resolved world height are
+        /// returned for TrialController to log into meta.json (see that class).
+        /// </summary>
+        private void ResolveCameraGroundHeight(Scenario.Robot robot, AutoTrialConfig config,
+            out float resolvedWorldHeightY, out bool raycastHit)
+        {
+            Vector3 rayStart = robot.transform.position + Vector3.up * 2f;
+            raycastHit = Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, 10f);
+            float groundY;
+            if (raycastHit)
+            {
+                groundY = hit.point.y;
+            }
+            else
+            {
+                groundY = robot.transform.position.y;
+                Debug.LogWarning("[AutoTrial] --cam-height ground raycast missed (no collider hit within 10m "
+                    + "below " + rayStart.ToString("F3") + ") -- falling back to robot.transform.position.y ("
+                    + groundY.ToString("F3") + ") as a ground proxy. Resolved camera height may not be exactly "
+                    + "--cam-height above the true ground -- check meta.json.camHeightRaycastHit.");
+            }
+            resolvedWorldHeightY = groundY + config.camera.camHeightMeters;
+            Debug.Log("[AutoTrial] cam-height raycast: groundY=" + groundY.ToString("F3") + " (hit=" + raycastHit
+                + ") + camHeightMeters=" + config.camera.camHeightMeters.ToString("F3")
+                + " -> resolvedCamHeightWorldY=" + resolvedWorldHeightY.ToString("F3") + ".");
+        }
+
+        private Camera BuildPovCamera(Scenario.Robot robot, AutoTrialConfig config,
+            out float resolvedCamHeightWorldY, out bool camHeightRaycastHit)
         {
             // POV: a NEW child camera on the robot's existing first-person camera transform, at
             // zero local offset, copying only FOV/near/far -- per adjustment #6 (2026-07-15) this
@@ -642,8 +706,10 @@ namespace SEAN.AutoTrial
             // decomposing the mount's own rotation was the Session-10 bug, why it runs in Update()
             // rather than the more conventional LateUpdate() (timing relative to TrialController's
             // capture coroutine), and the rigidMount=true passthrough case used for direct comparison.
+            ResolveCameraGroundHeight(robot, config, out resolvedCamHeightWorldY, out camHeightRaycastHit);
+
             var smoother = povGO.AddComponent<PovCameraSmoother>();
-            smoother.Initialize(existing.transform, robot.transform, config.camera);
+            smoother.Initialize(existing.transform, robot.transform, config.camera, resolvedCamHeightWorldY);
 
             return povCam;
         }

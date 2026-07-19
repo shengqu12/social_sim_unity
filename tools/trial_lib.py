@@ -295,13 +295,44 @@ def check_trigger_speed(meta_path, min_speed=0.3):
     data = json.loads(meta_path.read_text())
     speed = data.get("robotSpeedAtTrigger")
     timed_out = data.get("triggerTimedOut", False)
+    resampled = data.get("triggerSpeedResampled", False)
     if speed is None:
         return False, "meta.json missing robotSpeedAtTrigger (pre-Session-14 trial?)"
     ok = speed >= min_speed
-    detail = "robotSpeedAtTrigger={:.3f} m/s (min {}) -- {}{}".format(
+    detail = "robotSpeedAtTrigger={:.3f} m/s (min {}) -- {}{}{}".format(
         speed, min_speed, "OK" if ok else "FAIL",
-        ", triggerTimedOut=true (30s guard fired)" if timed_out else "")
+        ", triggerTimedOut=true (30s guard fired)" if timed_out else "",
+        ", triggerSpeedResampled=true (Session 17: an implausible reading was rejected first)" if resampled else "")
     return ok, detail
+
+
+def check_file_manifest(trial_dir, overlay_enabled, near_clips):
+    """Session 17, THE PERMANENT FILE MANIFEST GATE: root cause for why `pov_full_ov.mp4` going
+    missing (Sessions 15/16's smoke/statistics runs, all via explicit --no-overlay in this
+    project's own driver scripts -- not a grace-termination-specific bug; tested and rejected as
+    the cause, see REPORT.md Session 17 Step 1) went undetected wasn't the missing file itself,
+    it was that NOTHING checked for it: `overlay.process_trial_dir`'s own (ok, detail) return
+    value was printed but never wired into run_trial.py's exit-code/gate contract, so an overlay
+    failure -- for any reason, not just an intentionally-skipped one -- left every other gate
+    green. This enumerates the complete expected per-trial deliverable set and fails loudly
+    (returns ok=False, never just silently omits) if anything is missing. Returns (ok: bool,
+    detail: str, missing: list[str])."""
+    trial_dir = Path(trial_dir)
+    required = ["frames.csv", "meta.json", "unity.log", "pov_full.mp4", "contact_sheet_full.png"]
+    if overlay_enabled:
+        required.append("pov_full_ov.mp4")
+    for c in near_clips:
+        idx = c["index"] if isinstance(c, dict) else c
+        required.append("pov_near_{:02d}.mp4".format(idx))
+        if overlay_enabled:
+            required.append("pov_near_{:02d}_ov.mp4".format(idx))
+
+    missing = [name for name in required if not (trial_dir / name).exists()]
+    ok = not missing
+    detail = "{}/{} deliverables present".format(len(required) - len(missing), len(required))
+    if missing:
+        detail += " -- MISSING: {}".format(missing)
+    return ok, detail, missing
 
 
 # Session 15 (phase-aware spin, permanent): in-place-rotation episode definition unchanged since

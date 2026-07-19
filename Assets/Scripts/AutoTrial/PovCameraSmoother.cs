@@ -40,17 +40,22 @@ namespace SEAN.AutoTrial
         private Transform headingSource;
         private float yawTau;
         private float fixedPitchDeg;
+        // Session 17 (Step 3, real-A1 camera pose): absolute world-space Y, resolved once at rig
+        // build time by AutoTrialBootstrap.ResolveCameraGroundHeight (a downward raycast against
+        // the actual ground, not a blind offset) -- replaces following mount.position.y verbatim.
+        private float worldHeightY;
 
         private float smoothedYaw;
         private bool initialized;
 
-        public void Initialize(Transform mountTransform, Transform headingTransform, CameraParams camParams)
+        public void Initialize(Transform mountTransform, Transform headingTransform, CameraParams camParams, float resolvedWorldHeightY)
         {
             mount = mountTransform;
             headingSource = headingTransform;
             bool rigid = camParams.rigidMount;
             yawTau = rigid ? 0f : Mathf.Max(0f, camParams.yawSmoothTau);
             fixedPitchDeg = camParams.fixedPitchDeg;
+            worldHeightY = resolvedWorldHeightY;
         }
 
         private void Update()
@@ -73,8 +78,11 @@ namespace SEAN.AutoTrial
                 smoothedYaw = ExpSmoothAngle(smoothedYaw, headingYaw, yawTau, dt);
             }
 
-            // Position rigid to the mount -- no smoothing (Round 3: deleted entirely, see class doc).
-            transform.position = mount.position;
+            // Position rigid to the mount in X/Z -- no smoothing (Round 3: deleted entirely, see
+            // class doc). Y is Session 17's absolute world height (real-A1 camera pose), NOT the
+            // mount's own Y -- the existing first-person camera bone's height was never verified
+            // against the real robot's sensor height, only ever a blind rig artifact.
+            transform.position = new Vector3(mount.position.x, worldHeightY, mount.position.z);
             // World-frame horizon lock: roll and pitch are constants, independent of the mount's own
             // (previously corrupting) orientation. Only yaw is derived from a transform, and it's the
             // robot chassis's, not the camera mount's.

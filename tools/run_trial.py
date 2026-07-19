@@ -93,7 +93,13 @@ DEFAULT_ROBOT_GOAL = (-44.659, 0.0007, -108.947, 0.0)
 # pure -x) -- kept as a round 3.0m rather than the exact legacy 3.058m; the guarantee that matters
 # (a genuine pass-through, not a meet-and-stop) doesn't depend on the extra 0.058m.
 PED_OVERSHOOT_M = 3.0
-DEFAULT_PED_DISTANCE = 8.0
+# Session 17 (Step 2): raised from the original 8.0 -- the corridor (ROBOT_START -> DEFAULT_
+# ROBOT_GOAL) is ~43.6m long, so 25.0 (+ --slate-margin's frozen-spawn buffer, ~29m total) is
+# still comfortably inside it, but gives the video's opening frame a real "pedestrian is a small
+# distant figure, growing through the approach" read instead of an already-close encounter --
+# verified on the NavMesh at spawn time (AutoTrialBootstrap.ValidateSpawnOnNavMesh), not assumed
+# from the 1D bearing math alone.
+DEFAULT_PED_DISTANCE = 25.0
 
 
 def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
@@ -358,7 +364,8 @@ def build_config(args, out_dir):
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
-            "fixedPitchDeg": args.fixed_pitch_deg,
+            "fixedPitchDeg": args.cam_pitch,
+            "camHeightMeters": args.cam_height,
             "rigidMount": args.rigid_mount,
         },
         "jpgQuality": args.jpg_quality,
@@ -755,9 +762,29 @@ def run_content_gate(out_dir, near_clips):
     clip), and (b) writes an 8-frame contact-sheet PNG into out_dir so a human reviewer can QA the
     whole clip's scene content in one glance instead of scrubbing every video (surfaced in
     index.html by overlay.py's generate_index_html()). Mutates each near_clips entry in place with
-    its own gate result + contact sheet filename. Returns (all_ok: bool, detail: str)."""
+    its own gate result + contact sheet filename.
+
+    Session 17 (Step 4 forensics): ALSO runs the same check against pov_full.mp4 directly, not
+    just near clips -- found empirically while eyeballing battery v5's contact sheets under the
+    new 25m geometry: a trial with zero near-spans (min_dist never dropped under --near-dist, now
+    common with more passing room at 25m) had near_clips=[], so this gate's own loop never ran at
+    all and trivially "passed" with an empty detail string -- while the SAME trial's full-video
+    contact sheet plainly showed two uniform-black frames the (near-clip-only) gate never sampled.
+    pov_full.mp4 is always present and always the primary deliverable (Round 4 output format v3);
+    checking it unconditionally, regardless of whether any near clip exists, closes that gap.
+    Returns (all_ok: bool, detail: str)."""
     all_ok = True
     details = []
+
+    full_path = out_dir / "pov_full.mp4"
+    if full_path.exists():
+        full_ok, full_detail, full_samples = trial_lib.check_clip_content(full_path)
+        all_ok = all_ok and full_ok
+        details.append("pov_full.mp4: {}".format(full_detail))
+    else:
+        all_ok = False
+        details.append("pov_full.mp4: MISSING")
+
     for clip in near_clips:
         clip_path = out_dir / clip["pov"]
         ok, detail, samples = trial_lib.check_clip_content(clip_path)
@@ -775,6 +802,8 @@ def run_content_gate(out_dir, near_clips):
 def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, aspect_detail=None,
                                   approach_ok=None, approach_detail=None,
                                   trigger_ok=None, trigger_detail=None,
+                                  overlay_ok=None, overlay_detail=None,
+                                  manifest_ok=None, manifest_detail=None,
                                   spin_phases=None, full_contact_sheet=None):
     """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
     geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
@@ -793,6 +822,12 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
     if trigger_ok is not None:
         data["triggerSpeedGateOk"] = trigger_ok
         data["triggerSpeedGateDetail"] = trigger_detail
+    if overlay_ok is not None:
+        data["overlayOk"] = overlay_ok
+        data["overlayDetail"] = overlay_detail
+    if manifest_ok is not None:
+        data["fileManifestGateOk"] = manifest_ok
+        data["fileManifestGateDetail"] = manifest_detail
     if spin_phases is not None:
         data["spinPhases"] = spin_phases
     if full_contact_sheet is not None:
@@ -900,13 +935,23 @@ def main():
                    help="repeatable; first two given are used (ping-pong)")
     p.add_argument("--yaw-smooth-tau", type=float, default=0.5,
                    help="Round 3 (D2 fix): POV camera yaw low-pass time constant, seconds -- the "
-                        "only smoothed axis. Position is always rigid to the mount; pitch/roll are "
-                        "constants (see --fixed-pitch-deg). Default (0.5) is empirically re-tuned "
-                        "this round -- see REPORT.md Round 3 Step 2. 0 = no smoothing (--rigid-mount).")
-    p.add_argument("--fixed-pitch-deg", type=float, default=-5.0,
-                   help="Round 3 (D2 fix): constant camera downtilt in degrees (positive = up, "
-                        "negative = down; default -5 = slight downtilt). Never derived from any "
-                        "transform -- this replaces Session 10's buggy mount-rotation decomposition.")
+                        "only smoothed axis. Position is always rigid to the mount (X/Z) with an "
+                        "absolute-height Y (see --cam-height); pitch/roll are constants (see "
+                        "--cam-pitch). Default (0.5) is empirically re-tuned this round -- see "
+                        "REPORT.md Round 3 Step 2. 0 = no smoothing (--rigid-mount).")
+    p.add_argument("--cam-pitch", type=float, default=0.0,
+                   help="Session 17 (Step 3, real-A1 pose): constant camera pitch in degrees "
+                        "(positive = up, negative = down). Default 0.0 (LEVEL) -- retires Round "
+                        "3's arbitrary -5 default; the cited real A1/RealSense D435i mount faces "
+                        "level, not downtilted. Never derived from any transform -- was named "
+                        "--fixed-pitch-deg through Round 3/Session 16.")
+    p.add_argument("--cam-height", type=float, default=0.32,
+                   help="Session 17 (Step 3, real-A1 pose): camera height in meters, ABSOLUTE "
+                        "above the ground directly under the robot (verified by a downward "
+                        "raycast at rig build time, not a blind local offset from the existing "
+                        "first-person camera mount -- see AutoTrialBootstrap.BuildPovCamera). "
+                        "Default 0.32 -- cited: the A1 stands ~0.40m tall, RealSense D435i in the "
+                        "front head puts the lens at ~0.30-0.32m above ground.")
     p.add_argument("--rigid-mount", action="store_true",
                    help="Round 3 (D2): force yaw smoothing tau to 0 (raw chassis yaw every frame, "
                         "no filtering) for direct before/after comparison. Position was already "
@@ -1086,17 +1131,33 @@ def main():
                    spin_phases["phase_counts"]["PARKING"], spin_phases["t_min"],
                    spin_phases["min_ped_dist"], spin_phases["final_goal_dist"]))
 
-    augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
-                                  aspect_ok=aspect_ok, aspect_detail=aspect_detail,
-                                  approach_ok=approach_ok, approach_detail=approach_detail,
-                                  trigger_ok=trigger_ok, trigger_detail=trigger_detail,
-                                  spin_phases=spin_phases,
-                                  full_contact_sheet=full_sheet_name if full_sheet_ok else None)
-
+    # Session 17 (Step 1): overlay now runs BEFORE the manifest gate (moved up from below) so the
+    # gate can actually see whether pov_full_ov.mp4/pov_near_NN_ov.mp4 landed -- previously ov_ok/
+    # ov_detail were computed after all gates were already written to meta.json and checked against
+    # nothing at all (see check_file_manifest's own docstring for the root-cause finding: this was
+    # never a grace-termination-specific bug, just an ungated post-step whose failure was invisible).
+    ov_ok, ov_detail = True, "--no-overlay"
     if args.overlay:
         ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist,
                                                        near_clip_min_sec=args.near_clip_min_sec)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
+
+    # Session 17 (Step 1b, THE PERMANENT FILE MANIFEST GATE): enumerates the complete expected
+    # per-trial deliverable set and fails loudly if anything is missing, closing the class where a
+    # deliverable silently vanishes while every behavioral gate stays green.
+    manifest_ok, manifest_detail, manifest_missing = trial_lib.check_file_manifest(
+        out_dir, overlay_enabled=args.overlay, near_clips=result["near_clips"])
+    eprint("[run_trial] file manifest gate: {} ({})".format(
+        "OK" if manifest_ok else "FAILED", manifest_detail))
+
+    augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
+                                  aspect_ok=aspect_ok, aspect_detail=aspect_detail,
+                                  approach_ok=approach_ok, approach_detail=approach_detail,
+                                  trigger_ok=trigger_ok, trigger_detail=trigger_detail,
+                                  overlay_ok=ov_ok, overlay_detail=ov_detail,
+                                  manifest_ok=manifest_ok, manifest_detail=manifest_detail,
+                                  spin_phases=spin_phases,
+                                  full_contact_sheet=full_sheet_name if full_sheet_ok else None)
 
     # Round 4 (Step 4, output format v3): pov_full.mp4/pov_full_ov.mp4 are now the PRIMARY
     # deliverable, not an internal scratch file -- the old cleanup_full_video() deletion is gone.
@@ -1127,6 +1188,9 @@ def main():
     print("aspect gate: {} ({})".format("PASS" if aspect_ok else "FAIL", aspect_detail))
     print("approach geometry gate: {} ({})".format("PASS" if approach_ok else "FAIL", approach_detail))
     print("trigger-speed gate: {} ({})".format("PASS" if trigger_ok else "FAIL", trigger_detail))
+    if args.overlay:
+        print("overlay: {} ({})".format("PASS" if ov_ok else "FAIL", ov_detail))
+    print("file manifest gate: {} ({})".format("PASS" if manifest_ok else "FAIL", manifest_detail))
     if spin_phases is not None:
         print("spin phases (diagnostic, not gated): {} total -- APPROACH={} ENCOUNTER={} POST={} "
               "PARKING={}".format(spin_phases["n_episodes"], spin_phases["phase_counts"]["APPROACH"],
@@ -1148,11 +1212,12 @@ def main():
     # artifact set (frames.csv, meta.json, contact sheets, clips) is left on disk either way, for
     # forensics -- but any gate failure fails the trial's exit code, same as any other hard
     # acceptance check in this script.
-    all_gates_ok = gate_ok and aspect_ok and approach_ok and trigger_ok
+    all_gates_ok = gate_ok and aspect_ok and approach_ok and trigger_ok and ov_ok and manifest_ok
     if not all_gates_ok:
         eprint("[run_trial] trial FAILED one or more permanent gates -- content={} aspect={} "
-               "approach={} trigger-speed={}; see meta.json/contact sheets above for detail.".format(
-                   gate_ok, aspect_ok, approach_ok, trigger_ok))
+               "approach={} trigger-speed={} overlay={} file-manifest={}; see meta.json/contact "
+               "sheets above for detail.".format(
+                   gate_ok, aspect_ok, approach_ok, trigger_ok, ov_ok, manifest_ok))
         sys.exit(1)
 
 

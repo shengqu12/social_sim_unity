@@ -57,6 +57,10 @@ namespace SEAN.AutoTrial
         private float preRollDurationSec;
         private float robotSpeedAtTrigger;
         private bool triggerTimedOut;
+        // Session 17 (Step 3.5): true if one or more implausible-speed readings were rejected and
+        // resampled before the trigger actually fired -- see PollForTrigger's own comment for why
+        // this recurred even after Session 14's capture-cadence fix.
+        private bool triggerSpeedResampled;
 
         // Session 14 (SLATE v2) Initialize() inputs, stashed for PollForTrigger to use once its
         // own coroutine starts (not passed as coroutine params -- IEnumerator methods can't take
@@ -65,8 +69,16 @@ namespace SEAN.AutoTrial
         private Vector3 pedestrianReleaseDest;
         private float bootstrapStartTime;
         private float triggerDistanceMeters;
+        // Session 17 (Step 3, real-A1 camera pose): resolved once at rig build time
+        // (AutoTrialBootstrap.ResolveCameraGroundHeight), logged into meta.json below.
+        private float resolvedCamHeightWorldY;
+        private bool camHeightRaycastHit;
 
         private const float TriggerTimeoutSec = 30f;
+        // Session 17 (Step 3.5): see PollForTrigger's class doc -- 2.5x max_vel_x (0.6), well
+        // above every normal cruise reading observed (<=~0.9 m/s) and well below both observed
+        // anomalies (2.67/3.6 m/s, Session 16).
+        private const float MaxPlausibleTriggerSpeedMps = 1.5f;
 
         // Round 4: made public so AutoTrialBootstrap.BuildPovCamera can set povCam.aspect from
         // the same authoritative numbers used to build the RenderTexture -- see that method's
@@ -78,7 +90,8 @@ namespace SEAN.AutoTrial
         public void Initialize(AutoTrialConfig config, Scenario.Robot robot, Camera povCam,
             Transform pedestrian, string appearanceZone, string appearanceResourcePath, List<string> agentCensus,
             IVI.INavigable pedestrianNavAgent, Vector3 pedestrianReleaseDest,
-            float bootstrapStartTime, float triggerDistanceMeters)
+            float bootstrapStartTime, float triggerDistanceMeters,
+            float resolvedCamHeightWorldY, bool camHeightRaycastHit)
         {
             this.config = config;
             this.robot = robot;
@@ -91,6 +104,8 @@ namespace SEAN.AutoTrial
             this.pedestrianReleaseDest = pedestrianReleaseDest;
             this.bootstrapStartTime = bootstrapStartTime;
             this.triggerDistanceMeters = triggerDistanceMeters;
+            this.resolvedCamHeightWorldY = resolvedCamHeightWorldY;
+            this.camHeightRaycastHit = camHeightRaycastHit;
 
             Directory.CreateDirectory(config.outDir);
             povDir = Path.Combine(config.outDir, "pov");
@@ -124,6 +139,22 @@ namespace SEAN.AutoTrial
         /// itself, to within one frame's worth of robot travel (typically &lt;0.05m), and the
         /// robot is already moving, not standing. A 30s guard starts capture anyway (loudly
         /// flagged, never silently) if the distance never crosses -- see triggerTimedOut.
+        ///
+        /// Session 17 (Step 3.5): Session 14's capture-cadence fix (refresh the speed reference
+        /// only once per ~1/fps, not every render tick) closed the ORIGINAL bug (a 16.5 m/s
+        /// reading from a single-tick-scale window) but didn't close the class -- Session 16's
+        /// powered N=6 battery still logged 2.67/3.6 m/s in 2/18 trials. Root cause, established
+        /// by direct comparison against frame 1's own (normal, ~0.57-0.59 m/s) reading in both
+        /// runs: the implied single-window displacement at those two triggers (&asymp;0.18-0.24m)
+        /// is a REAL position delta over that window, 3-4x a normal capture-interval's worth of
+        /// cruise motion (&asymp;0.05m) -- not sensor/timing noise a coarser sampling window can
+        /// average away, but an occasional genuine sub-frame position correction (this project's
+        /// velocity-driven gait syncing against the NavMeshAgent's own position, most plausibly --
+        /// not independently confirmed, `VelocityController`/nav internals are off-limits/
+        /// unedited) that can land inside ANY window regardless of its width. Fixed properly below
+        /// by rejecting an implausible reading outright rather than widening the averaging window
+        /// further: MaxPlausibleTriggerSpeedMps is comfortably above every normal cruise reading
+        /// observed (&le;~0.9 m/s) and comfortably below both observed anomalies (2.67/3.6 m/s).
         /// </summary>
         private IEnumerator PollForTrigger()
         {
@@ -150,6 +181,24 @@ namespace SEAN.AutoTrial
 
                 bool distTriggered = dist <= triggerDistanceMeters;
                 bool timedOut = Time.time - pollStart >= TriggerTimeoutSec;
+
+                if ((distTriggered || timedOut) && speedNow > MaxPlausibleTriggerSpeedMps)
+                {
+                    // Session 17 (Step 3.5): known-implausible reading -- refuse to fire and
+                    // record it. Force an immediate reference refresh (bypassing the normal
+                    // captureInterval gate below) and retry next frame; the distance/timeout
+                    // condition that wanted to fire this frame is still true next frame (dist
+                    // doesn't un-close, the timeout clock doesn't un-elapse), so this costs at
+                    // most a frame or two of extra pre-roll, never blocks the trigger outright.
+                    triggerSpeedResampled = true;
+                    Debug.LogWarning("[AutoTrial] SLATE v2 TRIGGER: rejected implausible robotSpeedAtTrigger candidate "
+                        + speedNow.ToString("F3") + " m/s (> " + MaxPlausibleTriggerSpeedMps.ToString("F1")
+                        + " m/s sanity bound) -- resampling next frame instead of recording it.");
+                    lastPollPos = robot.position;
+                    lastPollTime = Time.time;
+                    yield return null;
+                    continue;
+                }
 
                 if (distTriggered || timedOut)
                 {
@@ -421,6 +470,19 @@ namespace SEAN.AutoTrial
             public float preRollDurationSec;
             public float robotSpeedAtTrigger;
             public bool triggerTimedOut;
+            // Session 17 (Step 3.5): true if one or more implausible-speed readings (see
+            // PollForTrigger's MaxPlausibleTriggerSpeedMps) were rejected before the recorded
+            // robotSpeedAtTrigger value above was accepted -- never itself a bad value (a rejected
+            // reading is never written to robotSpeedAtTrigger), just a transparency flag.
+            public bool triggerSpeedResampled;
+            // Session 17 (Step 3, real-A1 camera pose): the ACTUAL resolved values, promoted to
+            // top level for visibility -- config.camera.camHeightMeters/fixedPitchDeg are the
+            // requested inputs; these are what the rig actually built (may differ from the naive
+            // mount-Y + requested-height sum if camHeightRaycastHit is false, i.e. the ground
+            // raycast missed and fell back to robot.transform.position.y as a proxy).
+            public float resolvedCamHeightWorldY;
+            public bool camHeightRaycastHit;
+            public float resolvedCamPitchDeg;
         }
 
         private void WriteMetaJson()
@@ -447,6 +509,10 @@ namespace SEAN.AutoTrial
                 preRollDurationSec = preRollDurationSec,
                 robotSpeedAtTrigger = robotSpeedAtTrigger,
                 triggerTimedOut = triggerTimedOut,
+                triggerSpeedResampled = triggerSpeedResampled,
+                resolvedCamHeightWorldY = resolvedCamHeightWorldY,
+                camHeightRaycastHit = camHeightRaycastHit,
+                resolvedCamPitchDeg = config.camera.fixedPitchDeg,
             };
 
             string json = JsonUtility.ToJson(meta, true);

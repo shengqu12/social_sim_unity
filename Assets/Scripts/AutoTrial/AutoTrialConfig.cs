@@ -127,7 +127,16 @@ namespace SEAN.AutoTrial
         // which was tuned against the buggy pitch/roll-corrupted implementation and re-verified
         // Round 3 to be insufficient on its own -- see REPORT.md Round 3 Step 2 for the tau sweep).
         public float yawSmoothTau = 0.5f;
-        public float fixedPitchDeg = -5f;
+        // Session 17 (Step 3, real-A1 camera pose): default retired from Round 3's arbitrary -5
+        // (downtilt) to 0 (LEVEL) -- the cited real A1's RealSense D435i mount faces level, not
+        // downtilted. Sign convention unchanged (positive = tilt up, negative = tilt down).
+        public float fixedPitchDeg = 0f;
+        // Session 17 (Step 3): ABSOLUTE camera height in meters above the ground directly under
+        // the robot, resolved once at rig build time via a downward raycast (never a blind local
+        // offset from the existing first-person camera mount) -- see
+        // AutoTrialBootstrap.BuildPovCamera and PovCameraSmoother. Default 0.32: cited, the A1
+        // stands ~0.40m tall, RealSense D435i in the front head puts the lens at ~0.30-0.32m.
+        public float camHeightMeters = 0.32f;
         public bool rigidMount = false;
     }
 }
