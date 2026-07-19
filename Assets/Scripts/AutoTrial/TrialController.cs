@@ -49,6 +49,14 @@ namespace SEAN.AutoTrial
         private double lastCmdAngZ;
         private bool cmdVelAvailable;
 
+        // Session 13 (THE SLATE FIX): logged once at Initialize()'s slate moment (see below) and
+        // written into meta.json -- preRollDurationSec is wall-clock time from
+        // AutoTrialBootstrap.Run()'s very first line to the slate; robotPreCaptureDisplacementMeters
+        // is how far the robot moved (ground-plane) between the moment its reference was resolved
+        // and the slate. Both are diagnostic, not gated -- Session 12 never measured either one.
+        private float preRollDurationSec;
+        private float robotPreCaptureDisplacementMeters;
+
         // Round 4: made public so AutoTrialBootstrap.BuildPovCamera can set povCam.aspect from
         // the same authoritative numbers used to build the RenderTexture -- see that method's
         // comment for the aspect-mismatch bug this closes.
@@ -57,7 +65,9 @@ namespace SEAN.AutoTrial
         private const float GoalArrivalDistMeters = 0.5f;
 
         public void Initialize(AutoTrialConfig config, Scenario.Robot robot, Camera povCam,
-            Transform pedestrian, string appearanceZone, string appearanceResourcePath, List<string> agentCensus)
+            Transform pedestrian, string appearanceZone, string appearanceResourcePath, List<string> agentCensus,
+            Tasks.Base activeTask, IVI.INavigable pedestrianNavAgent, Vector3 pedestrianReleaseDest,
+            float bootstrapStartTime, Vector3 robotPosAtBootstrapStart)
         {
             this.config = config;
             this.robot = robot;
@@ -78,11 +88,47 @@ namespace SEAN.AutoTrial
             csv = new StreamWriter(Path.Combine(config.outDir, "frames.csv"), false);
             csv.WriteLine("t,frame_idx,robot_x,robot_y,robot_z,robot_yaw_deg,robot_speed,pedestrian_appearance,pedestrian_personality,pedestrian_x,pedestrian_z,dist_to_pedestrian,min_dist,cmd_lin_x,cmd_ang_z,pov_cam_yaw_deg,pov_cam_pitch_deg,pov_cam_roll_deg");
 
+            TrySubscribeCmdVel();
+
+            // Session 13 (THE SLATE FIX): "t=0" means action. Everything above this point is
+            // pure bookkeeping (directories, RenderTexture, csv header, cmd_vel subscribe) that
+            // touches neither the pedestrian nor the robot's goal -- no yield has happened since
+            // AutoTrialBootstrap.Run() finished its own setup, so this is effectively the same
+            // instant as the first captured frame below. Release the pedestrian (InitDest toward
+            // its real destination -- it's been frozen at spawnPos since SpawnPedestrian) and
+            // publish the robot's trial goal (moved verbatim from Run(), which used to do this
+            // seconds earlier, well before capture start) in the same beat, film-slate style.
+            preRollDurationSec = Time.time - bootstrapStartTime;
+            robotPreCaptureDisplacementMeters = Util.Geometry.GroundPlaneDist(robot.position, robotPosAtBootstrapStart);
+            Debug.Log("[AutoTrial] SLATE (t=0): preRollDurationSec=" + preRollDurationSec.ToString("F2")
+                + " robotPreCaptureDisplacementMeters=" + robotPreCaptureDisplacementMeters.ToString("F3")
+                + " -- releasing pedestrian and publishing robot goal now.");
+
+            pedestrianNavAgent?.InitDest(pedestrianReleaseDest);
+
+            if (config.hasGoalPose && activeTask != null)
+            {
+                var goalHolder = new GameObject("AutoTrialGoalPoseHolder");
+                goalHolder.transform.position = config.goalPose.Position;
+                goalHolder.transform.rotation = config.goalPose.Rotation;
+                activeTask.robotGoalTransform = goalHolder.transform;
+                UnityEngine.Object.Destroy(goalHolder);
+
+                // See AutoTrialBootstrap.TryPublishNowBestEffort's original comment (Round-1-era,
+                // unchanged): CustomStartGoal's publishInterval is far longer than most trials, so
+                // this immediate best-effort publish (via reflection) is what actually gets the
+                // override to /move_base_simple/goal in time; the periodic loop still runs after
+                // as a harmless repeat.
+                bool publishedImmediately = AutoTrialBootstrap.TryPublishNowBestEffort(activeTask);
+                Debug.Log("[AutoTrial] goal set on active task '" + activeTask.name + "' at the slate moment; "
+                    + (publishedImmediately ? "published immediately (reflection)" : "immediate publish failed, relying on periodic loop only")
+                    + " to reach /move_base_simple/goal.");
+                AutoTrialBootstrap.LogPublishIntervalBestEffort(activeTask);
+            }
+
             startTime = Time.time;
             lastSampleTime = startTime;
             lastSamplePos = robot.position;
-
-            TrySubscribeCmdVel();
 
             StartCoroutine(RunLoop());
         }
@@ -275,6 +321,12 @@ namespace SEAN.AutoTrial
             // in-engine assert at rig build time (AutoTrialBootstrap.BuildPovCamera) fired clean.
             public float povCameraAspect;
             public float targetAspect;
+            // Session 13 (THE SLATE FIX): see the fields of the same name on TrialController --
+            // diagnostic-only, not gated, logged so the dist0 acceptance check's own root cause
+            // (pre-capture drift, pedestrian or robot) is measurable from meta.json forever, not
+            // just asserted in a REPORT.md paragraph.
+            public float preRollDurationSec;
+            public float robotPreCaptureDisplacementMeters;
         }
 
         private void WriteMetaJson()
@@ -298,6 +350,8 @@ namespace SEAN.AutoTrial
                 agentCensus = agentCensus ?? new List<string>(),
                 povCameraAspect = povCam.aspect,
                 targetAspect = CaptureWidth / (float)CaptureHeight,
+                preRollDurationSec = preRollDurationSec,
+                robotPreCaptureDisplacementMeters = robotPreCaptureDisplacementMeters,
             };
 
             string json = JsonUtility.ToJson(meta, true);

@@ -104,6 +104,12 @@ namespace SEAN.AutoTrial
 
         private IEnumerator Run(string configPath)
         {
+            // Session 13 (THE SLATE FIX): reference point for the pre-roll duration/robot
+            // pre-capture-displacement logging TrialController does at the slate moment (its
+            // first captured frame) -- see that class for why these two numbers matter now that
+            // both the pedestrian's release and the robot's goal publish are deferred there.
+            float bootstrapStartTime = Time.time;
+
             AutoTrialConfig config = LoadConfig(configPath);
             if (config == null)
             {
@@ -160,8 +166,8 @@ namespace SEAN.AutoTrial
                 Fail("Could not resolve SEAN.instance.robot: " + e.Message);
                 yield break;
             }
-
-            Transform pedestrianTransform = SpawnPedestrian(config, zone, appearancePrefab, personalityType);
+            Transform pedestrianTransform = SpawnPedestrian(config, zone, appearancePrefab, personalityType,
+                out IVI.INavigable pedestrianNavAgent, out Vector3 pedestrianReleaseDest);
 
             // Session 10 (D3, belt-and-suspenders half): the disable pass above should mean no
             // stray spawner ever fired, but assert it rather than assume it -- census every
@@ -205,25 +211,28 @@ namespace SEAN.AutoTrial
                     yield break;
                 }
 
-                var goalHolder = new GameObject("AutoTrialGoalPoseHolder");
-                goalHolder.transform.position = config.goalPose.Position;
-                goalHolder.transform.rotation = config.goalPose.Rotation;
-                activeTask.robotGoalTransform = goalHolder.transform;
-                UnityEngine.Object.Destroy(goalHolder);
-
-                // Observed in practice (2026-07-16 probe runs): Outdoor.unity's active task
-                // (CustomStartGoal) has publishInterval=60s -- far longer than most trial
-                // durations, so relying solely on Tasks.Base.Update()'s own periodic Publish()
-                // left the override unsent for the whole trial. Publish immediately instead, via
-                // reflection since Publish(GameObject) is protected (robotGoal itself is a public
-                // getter, so only the method call needs reflection). The periodic loop still runs
-                // afterward as a harmless repeat of the same value.
-                bool publishedImmediately = TryPublishNowBestEffort(activeTask);
-                Debug.Log("[AutoTrial] goal set on active task '" + activeTask.name + "'; "
-                    + (publishedImmediately ? "published immediately (reflection)" : "immediate publish failed, relying on periodic loop only")
-                    + " to reach /move_base_simple/goal.");
-                LogPublishIntervalBestEffort(activeTask);
+                // Session 13 (THE SLATE FIX): the goal-holder-and-publish call that used to live
+                // here now happens inside TrialController.Initialize, at the exact same moment
+                // (same synchronous call, no yield in between) it releases the pedestrian --
+                // together they define "t=0" as the slate: the readiness wait above still runs
+                // here (it's a genuine precondition on the robot's nav stack, not itself part of
+                // trial content), but publishing OUR goal is deferred to the first captured frame
+                // so neither agent has a head start on the video's opening frame. See
+                // TrialController for the actual goalHolder/publish logic (moved verbatim).
             }
+
+            // Session 13: reference point for TrialController's robotPreCaptureDisplacementMeters
+            // logging -- deliberately taken HERE, not earlier. Empirically (an early smoke-test
+            // instrumentation pass, since reverted): robot.transform.position read any earlier
+            // than this (right after SEAN.instance.robot resolves, or even right after
+            // activeTask.isRunning flips true) is still the robot's raw pre-teleport scene
+            // position -- Tasks.Base's own scene-authored teleport-to-start clearly lands
+            // sometime during/after the readiness-gate wait above, at a moment this file has no
+            // hook into (Tasks.Base is off-limits/unedited). This point -- readiness gate already
+            // satisfied (speed confirmed sane), only synchronous work and one more (frequently
+            // zero-length) wait for camera_first left before the slate -- is the latest, most
+            // meaningful "robot is done drifting on its own" reference this file can observe.
+            Vector3 robotPosAtBootstrapStart = robot.transform.position;
 
             // Scenario.Robot.Start() (which resolves/validates camera_first) is not guaranteed
             // to have run yet relative to this RuntimeInitializeOnLoadMethod coroutine -- wait
@@ -243,7 +252,8 @@ namespace SEAN.AutoTrial
 
             var controllerGO = new GameObject("AutoTrialController");
             var controller = controllerGO.AddComponent<TrialController>();
-            controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus);
+            controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus,
+                activeTask, pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, robotPosAtBootstrapStart);
         }
 
         /// <summary>
@@ -480,7 +490,18 @@ namespace SEAN.AutoTrial
             return s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
         }
 
-        private Transform SpawnPedestrian(AutoTrialConfig config, string zone, GameObject prefab, Scenario.Agents.PedestrianModulator.PersonalityType personalityType)
+        /// <summary>
+        /// Session 13 (THE SLATE FIX): the pedestrian used to start walking toward its real
+        /// destination the instant it spawned, here -- meters before capture ever started (~5-6s
+        /// of pipeline setup latency later, per Session 12's REPORT.md root-cause). Now InitDest
+        /// is always called with spawnPos itself (net-zero displacement -- the pedestrian stands
+        /// still, facing the robot, exactly where placed) and the REAL destination is only
+        /// returned via releaseDest for TrialController to hand back to InitDest at the slate
+        /// moment (its first captured frame). navAgentOut is the same INavigable reference that
+        /// call needs.
+        /// </summary>
+        private Transform SpawnPedestrian(AutoTrialConfig config, string zone, GameObject prefab, Scenario.Agents.PedestrianModulator.PersonalityType personalityType,
+            out IVI.INavigable navAgentOut, out Vector3 releaseDest)
         {
             Vector3 spawnPos = config.spawnPose.Position;
             Quaternion spawnRot = config.spawnPose.Rotation;
@@ -512,7 +533,11 @@ namespace SEAN.AutoTrial
                 // existing bug) unless a pedestrian goal was explicitly given. hasPedGoalPose is
                 // orthogonal to the Zone B personality/patrol lock above -- InitDest() is the raw
                 // INavigable API, not something PedestrianModulator gates.
-                navAgent.InitDest(config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos);
+                // Session 13: freeze at spawn (InitDest(spawnPos) unconditionally); the real
+                // destination is only released at the slate moment, via releaseDest below.
+                navAgent.InitDest(spawnPos);
+                navAgentOut = navAgent;
+                releaseDest = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
                 return navAgent.transform;
             }
             else
@@ -545,10 +570,16 @@ namespace SEAN.AutoTrial
 
                 // Session 10 (D4): same dest-defaults-to-spawn fix as Zone B above. Patrol (if
                 // requested) still wins, matching the pre-existing precedent for this branch.
+                // Session 13: freeze at spawn (InitDest(spawnPos) unconditionally, even with a
+                // modulator/patrol attached -- EnablePatrol above only configures the ping-pong
+                // cycle, it doesn't itself call InitDest); zoneADest is only released at the
+                // slate moment.
                 Vector3 zoneADest = patrolValid
                     ? config.patrolWaypoints[0].ToVector3()
                     : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos);
-                navAgent.InitDest(zoneADest);
+                navAgent.InitDest(spawnPos);
+                navAgentOut = navAgent;
+                releaseDest = zoneADest;
                 return navAgent.transform;
             }
         }
@@ -615,7 +646,9 @@ namespace SEAN.AutoTrial
             return povCam;
         }
 
-        private static bool TryPublishNowBestEffort(Tasks.Base task)
+        // Session 13: internal (not private) -- TrialController now calls these at the slate
+        // moment, moved verbatim from Run() where they used to fire well before capture start.
+        internal static bool TryPublishNowBestEffort(Tasks.Base task)
         {
             try
             {
@@ -634,7 +667,7 @@ namespace SEAN.AutoTrial
             }
         }
 
-        private static void LogPublishIntervalBestEffort(Tasks.Base task)
+        internal static void LogPublishIntervalBestEffort(Tasks.Base task)
         {
             try
             {
