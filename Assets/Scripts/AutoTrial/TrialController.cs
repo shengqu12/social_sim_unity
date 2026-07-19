@@ -49,13 +49,24 @@ namespace SEAN.AutoTrial
         private double lastCmdAngZ;
         private bool cmdVelAvailable;
 
-        // Session 13 (THE SLATE FIX): logged once at Initialize()'s slate moment (see below) and
-        // written into meta.json -- preRollDurationSec is wall-clock time from
-        // AutoTrialBootstrap.Run()'s very first line to the slate; robotPreCaptureDisplacementMeters
-        // is how far the robot moved (ground-plane) between the moment its reference was resolved
-        // and the slate. Both are diagnostic, not gated -- Session 12 never measured either one.
+        // Session 14 (SLATE v2): distance-triggered "t=0" -- see PollForTrigger. preRollDurationSec
+        // is wall-clock time from AutoTrialBootstrap.Run()'s very first line to the trigger firing;
+        // robotSpeedAtTrigger is the robot's actual instantaneous speed at that instant (gated,
+        // acceptance wants >=0.3 m/s -- "cruising, not standing"); triggerTimedOut flags the 30s
+        // guard path (dist never crossed triggerDistanceMeters -- capture started anyway).
         private float preRollDurationSec;
-        private float robotPreCaptureDisplacementMeters;
+        private float robotSpeedAtTrigger;
+        private bool triggerTimedOut;
+
+        // Session 14 (SLATE v2) Initialize() inputs, stashed for PollForTrigger to use once its
+        // own coroutine starts (not passed as coroutine params -- IEnumerator methods can't take
+        // ref/out and these need to survive across yields anyway).
+        private IVI.INavigable pedestrianNavAgent;
+        private Vector3 pedestrianReleaseDest;
+        private float bootstrapStartTime;
+        private float triggerDistanceMeters;
+
+        private const float TriggerTimeoutSec = 30f;
 
         // Round 4: made public so AutoTrialBootstrap.BuildPovCamera can set povCam.aspect from
         // the same authoritative numbers used to build the RenderTexture -- see that method's
@@ -66,8 +77,8 @@ namespace SEAN.AutoTrial
 
         public void Initialize(AutoTrialConfig config, Scenario.Robot robot, Camera povCam,
             Transform pedestrian, string appearanceZone, string appearanceResourcePath, List<string> agentCensus,
-            Tasks.Base activeTask, IVI.INavigable pedestrianNavAgent, Vector3 pedestrianReleaseDest,
-            float bootstrapStartTime, Vector3 robotPosAtBootstrapStart)
+            IVI.INavigable pedestrianNavAgent, Vector3 pedestrianReleaseDest,
+            float bootstrapStartTime, float triggerDistanceMeters)
         {
             this.config = config;
             this.robot = robot;
@@ -76,6 +87,10 @@ namespace SEAN.AutoTrial
             this.appearanceZone = appearanceZone;
             this.appearanceResourcePath = appearanceResourcePath;
             this.agentCensus = agentCensus;
+            this.pedestrianNavAgent = pedestrianNavAgent;
+            this.pedestrianReleaseDest = pedestrianReleaseDest;
+            this.bootstrapStartTime = bootstrapStartTime;
+            this.triggerDistanceMeters = triggerDistanceMeters;
 
             Directory.CreateDirectory(config.outDir);
             povDir = Path.Combine(config.outDir, "pov");
@@ -90,47 +105,95 @@ namespace SEAN.AutoTrial
 
             TrySubscribeCmdVel();
 
-            // Session 13 (THE SLATE FIX): "t=0" means action. Everything above this point is
-            // pure bookkeeping (directories, RenderTexture, csv header, cmd_vel subscribe) that
-            // touches neither the pedestrian nor the robot's goal -- no yield has happened since
-            // AutoTrialBootstrap.Run() finished its own setup, so this is effectively the same
-            // instant as the first captured frame below. Release the pedestrian (InitDest toward
-            // its real destination -- it's been frozen at spawnPos since SpawnPedestrian) and
-            // publish the robot's trial goal (moved verbatim from Run(), which used to do this
-            // seconds earlier, well before capture start) in the same beat, film-slate style.
-            preRollDurationSec = Time.time - bootstrapStartTime;
-            robotPreCaptureDisplacementMeters = Util.Geometry.GroundPlaneDist(robot.position, robotPosAtBootstrapStart);
-            Debug.Log("[AutoTrial] SLATE (t=0): preRollDurationSec=" + preRollDurationSec.ToString("F2")
-                + " robotPreCaptureDisplacementMeters=" + robotPreCaptureDisplacementMeters.ToString("F3")
-                + " -- releasing pedestrian and publishing robot goal now.");
+            // Session 14 (SLATE v2): the robot's goal was already published early, back in
+            // AutoTrialBootstrap.Run() (restored to pre-Session-13/Round-4 timing) -- by the time
+            // we get here it's typically already cruising toward it. The pedestrian is frozen
+            // (InitDest(spawnPos) in SpawnPedestrian) further out than triggerDistanceMeters.
+            // Capture does NOT start yet -- poll every frame until the live distance crosses the
+            // trigger threshold, defined by construction to be the trial's actual dist0.
+            StartCoroutine(PollForTrigger());
+        }
 
-            pedestrianNavAgent?.InitDest(pedestrianReleaseDest);
+        /// <summary>
+        /// Session 14 (SLATE v2): "t=0" is redefined as a live event, not a fixed instant --
+        /// the frame the robot<->pedestrian ground-plane distance first drops to
+        /// triggerDistanceMeters (== --ped-distance) or below. Until then the robot cruises
+        /// (goal already published, pre-roll) toward the still-frozen pedestrian; the moment the
+        /// trigger fires, the pedestrian is released (InitDest toward its real destination) and
+        /// the capture loop starts in the SAME frame -- dist0 is therefore the trigger threshold
+        /// itself, to within one frame's worth of robot travel (typically &lt;0.05m), and the
+        /// robot is already moving, not standing. A 30s guard starts capture anyway (loudly
+        /// flagged, never silently) if the distance never crosses -- see triggerTimedOut.
+        /// </summary>
+        private IEnumerator PollForTrigger()
+        {
+            // Speed is measured over a window matching the capture cadence (~1/fps), refreshed
+            // below only once that much time has passed -- polling the distance check itself
+            // every render tick (every yield) but sampling the speed reference at a coarser,
+            // fixed cadence avoids single-Update()-tick jitter (observed empirically: sampling
+            // speed over a raw per-tick delta produced a one-off 16.5 m/s spike at trigger time on
+            // an otherwise ~0.5-0.6 m/s cruise -- a real but sub-frame position micro-correction
+            // that a 1/fps-scale window (matching what frames.csv's own robot_speed column uses
+            // from frame 1 onward) averages away, same as it would for any other frame).
+            float captureInterval = 1f / Mathf.Max(config.fps, 1);
+            float pollStart = Time.time;
+            Vector3 lastPollPos = robot.position;
+            float lastPollTime = pollStart;
 
-            if (config.hasGoalPose && activeTask != null)
+            while (true)
             {
-                var goalHolder = new GameObject("AutoTrialGoalPoseHolder");
-                goalHolder.transform.position = config.goalPose.Position;
-                goalHolder.transform.rotation = config.goalPose.Rotation;
-                activeTask.robotGoalTransform = goalHolder.transform;
-                UnityEngine.Object.Destroy(goalHolder);
+                float dist = pedestrian != null
+                    ? Util.Geometry.GroundPlaneDist(robot.position, pedestrian.position)
+                    : float.PositiveInfinity;
+                float pollDt = Mathf.Max(Time.time - lastPollTime, 0.0001f);
+                float speedNow = Vector3.Distance(robot.position, lastPollPos) / pollDt;
 
-                // See AutoTrialBootstrap.TryPublishNowBestEffort's original comment (Round-1-era,
-                // unchanged): CustomStartGoal's publishInterval is far longer than most trials, so
-                // this immediate best-effort publish (via reflection) is what actually gets the
-                // override to /move_base_simple/goal in time; the periodic loop still runs after
-                // as a harmless repeat.
-                bool publishedImmediately = AutoTrialBootstrap.TryPublishNowBestEffort(activeTask);
-                Debug.Log("[AutoTrial] goal set on active task '" + activeTask.name + "' at the slate moment; "
-                    + (publishedImmediately ? "published immediately (reflection)" : "immediate publish failed, relying on periodic loop only")
-                    + " to reach /move_base_simple/goal.");
-                AutoTrialBootstrap.LogPublishIntervalBestEffort(activeTask);
+                bool distTriggered = dist <= triggerDistanceMeters;
+                bool timedOut = Time.time - pollStart >= TriggerTimeoutSec;
+
+                if (distTriggered || timedOut)
+                {
+                    triggerTimedOut = timedOut && !distTriggered;
+                    preRollDurationSec = Time.time - bootstrapStartTime;
+                    robotSpeedAtTrigger = speedNow;
+
+                    if (triggerTimedOut)
+                    {
+                        Debug.LogWarning("[AutoTrial] SLATE v2 TRIGGER TIMEOUT: dist_to_pedestrian never <= "
+                            + triggerDistanceMeters.ToString("F2") + "m within " + TriggerTimeoutSec.ToString("F0")
+                            + "s of pre-roll (last dist=" + dist.ToString("F2") + "m, robot speed=" + speedNow.ToString("F3")
+                            + " m/s). Starting capture anyway -- meta.json.triggerTimedOut=true.");
+                    }
+                    else
+                    {
+                        Debug.Log("[AutoTrial] SLATE v2 TRIGGER: dist_to_pedestrian=" + dist.ToString("F3")
+                            + "m <= " + triggerDistanceMeters.ToString("F2") + "m after " + preRollDurationSec.ToString("F2")
+                            + "s of pre-roll (robotSpeedAtTrigger=" + robotSpeedAtTrigger.ToString("F3")
+                            + " m/s) -- releasing pedestrian, starting capture now (t=0).");
+                    }
+
+                    pedestrianNavAgent?.InitDest(pedestrianReleaseDest);
+
+                    // The trigger frame's own robot position hasn't moved since the check above
+                    // (same frame, no yield) -- seed frame 0's own speed calc off the PREVIOUS
+                    // poll sample so frames.csv's robot_speed column reflects the real cruising
+                    // speed at t=0 (matches robotSpeedAtTrigger exactly), not an artificial ~0
+                    // from a zero-elapsed first sample (see CaptureFrame's dt/speed calc).
+                    startTime = Time.time;
+                    lastSampleTime = -pollDt;
+                    lastSamplePos = lastPollPos;
+
+                    StartCoroutine(RunLoop());
+                    yield break;
+                }
+
+                if (pollDt >= captureInterval)
+                {
+                    lastPollPos = robot.position;
+                    lastPollTime = Time.time;
+                }
+                yield return null;
             }
-
-            startTime = Time.time;
-            lastSampleTime = startTime;
-            lastSamplePos = robot.position;
-
-            StartCoroutine(RunLoop());
         }
 
         private void TrySubscribeCmdVel()
@@ -321,12 +384,13 @@ namespace SEAN.AutoTrial
             // in-engine assert at rig build time (AutoTrialBootstrap.BuildPovCamera) fired clean.
             public float povCameraAspect;
             public float targetAspect;
-            // Session 13 (THE SLATE FIX): see the fields of the same name on TrialController --
-            // diagnostic-only, not gated, logged so the dist0 acceptance check's own root cause
-            // (pre-capture drift, pedestrian or robot) is measurable from meta.json forever, not
-            // just asserted in a REPORT.md paragraph.
+            // Session 14 (SLATE v2): see the fields of the same name on TrialController --
+            // preRollDurationSec/robotSpeedAtTrigger are gated by run_trial.py (trigger speed
+            // gate, dist0 gate); triggerTimedOut is a loud, never-silent flag for the 30s guard
+            // path (capture started without the distance trigger ever firing).
             public float preRollDurationSec;
-            public float robotPreCaptureDisplacementMeters;
+            public float robotSpeedAtTrigger;
+            public bool triggerTimedOut;
         }
 
         private void WriteMetaJson()
@@ -351,7 +415,8 @@ namespace SEAN.AutoTrial
                 povCameraAspect = povCam.aspect,
                 targetAspect = CaptureWidth / (float)CaptureHeight,
                 preRollDurationSec = preRollDurationSec,
-                robotPreCaptureDisplacementMeters = robotPreCaptureDisplacementMeters,
+                robotSpeedAtTrigger = robotSpeedAtTrigger,
+                triggerTimedOut = triggerTimedOut,
             };
 
             string json = JsonUtility.ToJson(meta, true);

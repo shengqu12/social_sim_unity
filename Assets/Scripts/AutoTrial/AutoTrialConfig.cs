@@ -44,6 +44,14 @@ namespace SEAN.AutoTrial
         public bool hasPedGoalPose = false;
         public PoseXYZYaw pedGoalPose;
 
+        // Session 14 (SLATE v2): the pedestrian spawns frozen at --ped-distance + --slate-margin
+        // (further out than this), and TrialController.PollForTrigger releases it + starts
+        // capture the instant the live robot<->pedestrian ground-plane distance first drops to
+        // this value or below -- i.e. this is both the trial's dist0 target AND the live trigger
+        // threshold, by construction the same number. Set from --ped-distance in run_trial.py
+        // (independent of --spawn/--slate-margin, which only affect where the freeze happens).
+        public float triggerDistanceMeters = 8.0f;
+
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;
     }

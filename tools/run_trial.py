@@ -352,6 +352,7 @@ def build_config(args, out_dir):
         "goalPose": pose(*args.goal) if args.goal is not None else pose(0, 0, 0, 0),
         "hasPedGoalPose": args.ped_goal is not None,
         "pedGoalPose": pose(args.ped_goal[0], args.ped_goal[1], args.ped_goal[2], 0.0) if args.ped_goal is not None else pose(0, 0, 0, 0),
+        "triggerDistanceMeters": args.ped_distance,
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
@@ -770,7 +771,8 @@ def run_content_gate(out_dir, near_clips):
 
 
 def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, aspect_detail=None,
-                                  approach_ok=None, approach_detail=None, full_contact_sheet=None):
+                                  approach_ok=None, approach_detail=None,
+                                  trigger_ok=None, trigger_detail=None, full_contact_sheet=None):
     """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
     geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
     meta.json, so a trial's pass/fail is inspectable without re-running anything."""
@@ -785,6 +787,9 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
     if approach_ok is not None:
         data["approachGateOk"] = approach_ok
         data["approachGateDetail"] = approach_detail
+    if trigger_ok is not None:
+        data["triggerSpeedGateOk"] = trigger_ok
+        data["triggerSpeedGateDetail"] = trigger_detail
     if full_contact_sheet is not None:
         data["fullContactSheet"] = full_contact_sheet
     data["nearClips"] = [
@@ -842,11 +847,20 @@ def main():
                    help="run inter-trial ROS hygiene (cancel+clear costmaps) before launching -- default on")
     p.add_argument("--no-reused-ros-hygiene", dest="reused_ros", action="store_false")
     p.add_argument("--ped-distance", type=float, default=DEFAULT_PED_DISTANCE,
-                   help="Round 4 (Step 2): distance in meters from the robot's start position to "
-                        "the pedestrian spawn point, measured along the robot start->goal bearing "
-                        "-- i.e. the pedestrian spawns on the robot's own path, facing it, "
-                        "guaranteeing a head-on approach. Only takes effect when --spawn is not "
-                        "explicitly given. Default 8.0.")
+                   help="Distance in meters from the robot's start position, measured along the "
+                        "robot start->goal bearing, that defines the trial's dist0 target. Since "
+                        "Session 14 (SLATE v2) this is ALSO the live trigger threshold: "
+                        "TrialController.PollForTrigger releases the pedestrian and starts capture "
+                        "the instant robot<->pedestrian ground-plane distance first drops to this "
+                        "value or below (config.triggerDistanceMeters). Only takes effect when "
+                        "--spawn is not explicitly given. Default 8.0.")
+    p.add_argument("--slate-margin", type=float, default=4.0,
+                   help="Session 14 (SLATE v2): extra distance beyond --ped-distance at which the "
+                        "pedestrian actually spawns, frozen (default 4.0 -> ~12m from robot start "
+                        "at the default --ped-distance=8.0). The robot's goal is published early "
+                        "(pre-roll) so it reaches a normal cruise while still further than "
+                        "--ped-distance away; only takes effect when --spawn is not explicitly "
+                        "given.")
     p.add_argument("--spawn", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None,
                    help="pedestrian spawn pose, overrides --ped-distance entirely; default (Round "
                         "4): computed from --ped-distance via resolve_head_on_geometry()")
@@ -943,7 +957,11 @@ def main():
     bearing_goal = tuple(args.goal) if args.goal is not None else DEFAULT_ROBOT_GOAL
 
     if args.spawn is None:
-        geom_spawn, geom_ped_goal = resolve_head_on_geometry(args.ped_distance, bearing_goal)
+        # Session 14 (SLATE v2): spawn further out than the trigger/dist0 target -- the pedestrian
+        # is frozen there (AutoTrialBootstrap.SpawnPedestrian) until TrialController's live
+        # distance trigger (config.triggerDistanceMeters == args.ped_distance) fires.
+        spawn_distance = args.ped_distance + args.slate_margin
+        geom_spawn, geom_ped_goal = resolve_head_on_geometry(spawn_distance, bearing_goal)
         args.spawn = list(geom_spawn)
     else:
         geom_ped_goal = None  # explicit --spawn overrides geometry; no matching auto dest to offer
@@ -960,7 +978,8 @@ def main():
     print("=== resolved poses ===")
     print("robot start (scene teleport target, not CLI-settable): {}".format(ROBOT_START))
     print("robot goal: {}".format(args.goal if args.goal is not None else "(none -- hasGoalPose=false, robot follows the scene's own active task)"))
-    print("ped-distance: {}".format(args.ped_distance))
+    print("ped-distance (dist0 target / SLATE v2 trigger threshold): {}".format(args.ped_distance))
+    print("slate-margin (extra frozen-spawn distance): {}".format(args.slate_margin))
     print("pedestrian spawn: {}".format(args.spawn))
     print("pedestrian goal: {}".format(args.ped_goal if args.ped_goal is not None else "(none -- hasPedGoalPose=false, dest==spawn)"))
 
@@ -1024,6 +1043,13 @@ def main():
     eprint("[run_trial] approach geometry gate: {} ({})".format(
         "OK" if approach_ok else "FAILED", approach_detail))
 
+    # Session 14 (SLATE v2, THE PERMANENT TRIGGER-SPEED GATE): confirms the video's t=0 shows the
+    # robot cruising (>=0.3 m/s), not standing -- the failure mode Session 13's fixed-instant
+    # slate produced (goal published from a standing start, see REPORT.md Session 13 Step 3).
+    trigger_ok, trigger_detail = trial_lib.check_trigger_speed(out_dir / "meta.json")
+    eprint("[run_trial] trigger-speed gate: {} ({})".format(
+        "OK" if trigger_ok else "FAILED", trigger_detail))
+
     # Round 4 (Step 4, output format v3): full POV video is the primary deliverable now -- build
     # its own contact sheet (8 frames spanning the WHOLE trial, not just a near clip) so a human
     # reviewer can eyeball aspect/horizon/pedestrian-entry at a glance without scrubbing.
@@ -1034,6 +1060,7 @@ def main():
     augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
                                   aspect_ok=aspect_ok, aspect_detail=aspect_detail,
                                   approach_ok=approach_ok, approach_detail=approach_detail,
+                                  trigger_ok=trigger_ok, trigger_detail=trigger_detail,
                                   full_contact_sheet=full_sheet_name if full_sheet_ok else None)
 
     if args.overlay:
@@ -1069,6 +1096,7 @@ def main():
     print("content gate: {}".format("PASS" if gate_ok else "FAIL"))
     print("aspect gate: {} ({})".format("PASS" if aspect_ok else "FAIL", aspect_detail))
     print("approach geometry gate: {} ({})".format("PASS" if approach_ok else "FAIL", approach_detail))
+    print("trigger-speed gate: {} ({})".format("PASS" if trigger_ok else "FAIL", trigger_detail))
     print("pov_full: {}".format(out_dir / "pov_full.mp4"))
     if (out_dir / "pov_full_ov.mp4").exists():
         print("pov_full (overlay): {}".format(out_dir / "pov_full_ov.mp4"))
@@ -1085,11 +1113,11 @@ def main():
     # artifact set (frames.csv, meta.json, contact sheets, clips) is left on disk either way, for
     # forensics -- but any gate failure fails the trial's exit code, same as any other hard
     # acceptance check in this script.
-    all_gates_ok = gate_ok and aspect_ok and approach_ok
+    all_gates_ok = gate_ok and aspect_ok and approach_ok and trigger_ok
     if not all_gates_ok:
         eprint("[run_trial] trial FAILED one or more permanent gates -- content={} aspect={} "
-               "approach={}; see meta.json/contact sheets above for detail.".format(
-                   gate_ok, aspect_ok, approach_ok))
+               "approach={} trigger-speed={}; see meta.json/contact sheets above for detail.".format(
+                   gate_ok, aspect_ok, approach_ok, trigger_ok))
         sys.exit(1)
 
 

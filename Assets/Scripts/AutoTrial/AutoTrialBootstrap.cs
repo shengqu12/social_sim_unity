@@ -104,10 +104,8 @@ namespace SEAN.AutoTrial
 
         private IEnumerator Run(string configPath)
         {
-            // Session 13 (THE SLATE FIX): reference point for the pre-roll duration/robot
-            // pre-capture-displacement logging TrialController does at the slate moment (its
-            // first captured frame) -- see that class for why these two numbers matter now that
-            // both the pedestrian's release and the robot's goal publish are deferred there.
+            // Session 14 (SLATE v2): reference point for TrialController's preRollDurationSec
+            // logging (bootstrap start -> the distance-trigger firing, see PollForTrigger there).
             float bootstrapStartTime = Time.time;
 
             AutoTrialConfig config = LoadConfig(configPath);
@@ -211,28 +209,32 @@ namespace SEAN.AutoTrial
                     yield break;
                 }
 
-                // Session 13 (THE SLATE FIX): the goal-holder-and-publish call that used to live
-                // here now happens inside TrialController.Initialize, at the exact same moment
-                // (same synchronous call, no yield in between) it releases the pedestrian --
-                // together they define "t=0" as the slate: the readiness wait above still runs
-                // here (it's a genuine precondition on the robot's nav stack, not itself part of
-                // trial content), but publishing OUR goal is deferred to the first captured frame
-                // so neither agent has a head start on the video's opening frame. See
-                // TrialController for the actual goalHolder/publish logic (moved verbatim).
-            }
+                // Session 14 (SLATE v2): restores Session 12/Round-4's original timing -- publish
+                // the goal override HERE, right after the readiness gate, well before any capture
+                // starts. Session 13 deferred this to the capture-start instant and that measurably
+                // regressed spin (see REPORT.md Session 13 Step 3); v2's whole point is to let the
+                // robot reach a normal, settled cruise on its real goal long before t=0 -- t=0 is
+                // now defined by TrialController's distance trigger instead (PollForTrigger),
+                // decoupled entirely from when the goal gets published.
+                var goalHolder = new GameObject("AutoTrialGoalPoseHolder");
+                goalHolder.transform.position = config.goalPose.Position;
+                goalHolder.transform.rotation = config.goalPose.Rotation;
+                activeTask.robotGoalTransform = goalHolder.transform;
+                UnityEngine.Object.Destroy(goalHolder);
 
-            // Session 13: reference point for TrialController's robotPreCaptureDisplacementMeters
-            // logging -- deliberately taken HERE, not earlier. Empirically (an early smoke-test
-            // instrumentation pass, since reverted): robot.transform.position read any earlier
-            // than this (right after SEAN.instance.robot resolves, or even right after
-            // activeTask.isRunning flips true) is still the robot's raw pre-teleport scene
-            // position -- Tasks.Base's own scene-authored teleport-to-start clearly lands
-            // sometime during/after the readiness-gate wait above, at a moment this file has no
-            // hook into (Tasks.Base is off-limits/unedited). This point -- readiness gate already
-            // satisfied (speed confirmed sane), only synchronous work and one more (frequently
-            // zero-length) wait for camera_first left before the slate -- is the latest, most
-            // meaningful "robot is done drifting on its own" reference this file can observe.
-            Vector3 robotPosAtBootstrapStart = robot.transform.position;
+                // Observed in practice (2026-07-16 probe runs): Outdoor.unity's active task
+                // (CustomStartGoal) has publishInterval=60s -- far longer than most trial
+                // durations, so relying solely on Tasks.Base.Update()'s own periodic Publish()
+                // left the override unsent for the whole trial. Publish immediately instead, via
+                // reflection since Publish(GameObject) is protected (robotGoal itself is a public
+                // getter, so only the method call needs reflection). The periodic loop still runs
+                // afterward as a harmless repeat of the same value.
+                bool publishedImmediately = TryPublishNowBestEffort(activeTask);
+                Debug.Log("[AutoTrial] goal set on active task '" + activeTask.name + "'; "
+                    + (publishedImmediately ? "published immediately (reflection)" : "immediate publish failed, relying on periodic loop only")
+                    + " to reach /move_base_simple/goal.");
+                LogPublishIntervalBestEffort(activeTask);
+            }
 
             // Scenario.Robot.Start() (which resolves/validates camera_first) is not guaranteed
             // to have run yet relative to this RuntimeInitializeOnLoadMethod coroutine -- wait
@@ -253,7 +255,7 @@ namespace SEAN.AutoTrial
             var controllerGO = new GameObject("AutoTrialController");
             var controller = controllerGO.AddComponent<TrialController>();
             controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus,
-                activeTask, pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, robotPosAtBootstrapStart);
+                pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, config.triggerDistanceMeters);
         }
 
         /// <summary>

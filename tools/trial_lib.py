@@ -227,7 +227,7 @@ def check_aspect_gate(meta_path, tol=0.01):
     return ok, detail
 
 
-def check_approach_geometry(frames_csv_path, ped_distance, dist0_tol=0.5, noise_tol=0.3):
+def check_approach_geometry(frames_csv_path, ped_distance, dist0_tol=0.3, noise_tol=0.3):
     """Round 4, THE PERMANENT APPROACH-GEOMETRY GATE: (a) the first captured frame's
     dist_to_pedestrian should be within dist0_tol of the requested --ped-distance (verifies
     the spawn geometry actually landed the pedestrian at the requested range, not just that
@@ -235,7 +235,12 @@ def check_approach_geometry(frames_csv_path, ped_distance, dist0_tol=0.5, noise_
     (noise-tolerant: a single-step increase of up to noise_tol doesn't break the run, since
     per-frame position noise/AI steering micro-corrections are expected) from frame 0 through
     the trial's own minimum-distance frame, confirming a genuine closing approach rather than
-    an erratic one. Returns (dist0_ok: bool, monotonic_ok: bool, detail: str)."""
+    an erratic one. Returns (dist0_ok: bool, monotonic_ok: bool, detail: str).
+
+    Session 14 (SLATE v2): dist0_tol tightened 0.5 -> 0.3 -- since t=0 is now the frame
+    TrialController's own live distance trigger fires (== ped_distance, by construction, to
+    within about one frame's worth of robot travel), 0.3m is a comfortable margin rather than
+    the loose bound Round 4/Session 13's fixed-instant "t=0" needed."""
     with open(frames_csv_path, newline="") as f:
         rows = list(csv.DictReader(f))
     if not rows:
@@ -270,6 +275,32 @@ def check_approach_geometry(frames_csv_path, ped_distance, dist0_tol=0.5, noise_
         "OK" if monotonic_ok else "FAIL", len(violations),
         " e.g. {}".format(violations[:3]) if violations else "")
     return dist0_ok, monotonic_ok, detail
+
+
+def check_trigger_speed(meta_path, min_speed=0.3):
+    """Session 14 (SLATE v2), THE PERMANENT TRIGGER-SPEED GATE: reads robotSpeedAtTrigger back
+    from meta.json (written by TrialController.WriteMetaJson from the actual robot displacement
+    between the poll immediately before the trigger and the trigger frame itself -- not re-
+    derived here) and requires it to be >= min_speed. This is the acceptance criterion for
+    "the video's t=0 shows the robot cruising, not standing" -- frames.csv's own frame-0
+    robot_speed column is seeded from the same measurement (see PollForTrigger), so this and a
+    manual read of frame 0 should always agree. Also surfaces triggerTimedOut (the 30s guard
+    path) in the detail string, though that alone doesn't fail this gate -- a timed-out trial
+    that still happened to be cruising is not itself a speed-gate failure. Returns
+    (ok: bool, detail: str)."""
+    meta_path = Path(meta_path)
+    if not meta_path.exists():
+        return False, "meta.json not found at {}".format(meta_path)
+    data = json.loads(meta_path.read_text())
+    speed = data.get("robotSpeedAtTrigger")
+    timed_out = data.get("triggerTimedOut", False)
+    if speed is None:
+        return False, "meta.json missing robotSpeedAtTrigger (pre-Session-14 trial?)"
+    ok = speed >= min_speed
+    detail = "robotSpeedAtTrigger={:.3f} m/s (min {}) -- {}{}".format(
+        speed, min_speed, "OK" if ok else "FAIL",
+        ", triggerTimedOut=true (30s guard fired)" if timed_out else "")
+    return ok, detail
 
 
 def build_contact_sheet(video_path, out_png_path, n=CONTACT_SHEET_N, thumb_w=CONTACT_SHEET_THUMB_W):
