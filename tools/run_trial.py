@@ -353,6 +353,8 @@ def build_config(args, out_dir):
         "hasPedGoalPose": args.ped_goal is not None,
         "pedGoalPose": pose(args.ped_goal[0], args.ped_goal[1], args.ped_goal[2], 0.0) if args.ped_goal is not None else pose(0, 0, 0, 0),
         "triggerDistanceMeters": args.ped_distance,
+        "hasPostEncounterGrace": args.post_encounter_grace is not None,
+        "postEncounterGraceSec": args.post_encounter_grace if args.post_encounter_grace is not None else 8.0,
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
@@ -772,7 +774,8 @@ def run_content_gate(out_dir, near_clips):
 
 def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, aspect_detail=None,
                                   approach_ok=None, approach_detail=None,
-                                  trigger_ok=None, trigger_detail=None, full_contact_sheet=None):
+                                  trigger_ok=None, trigger_detail=None,
+                                  spin_phases=None, full_contact_sheet=None):
     """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
     geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
     meta.json, so a trial's pass/fail is inspectable without re-running anything."""
@@ -790,6 +793,8 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
     if trigger_ok is not None:
         data["triggerSpeedGateOk"] = trigger_ok
         data["triggerSpeedGateDetail"] = trigger_detail
+    if spin_phases is not None:
+        data["spinPhases"] = spin_phases
     if full_contact_sheet is not None:
         data["fullContactSheet"] = full_contact_sheet
     data["nearClips"] = [
@@ -861,6 +866,16 @@ def main():
                         "(pre-roll) so it reaches a normal cruise while still further than "
                         "--ped-distance away; only takes effect when --spawn is not explicitly "
                         "given.")
+    p.add_argument("--post-encounter-grace", type=float, default=None, metavar="SECONDS",
+                   help="Session 15: end capture SECONDS after dist_to_pedestrian first "
+                        "re-exceeds --ped-distance following a genuine pass (i.e. the encounter "
+                        "is over and the pedestrian is moving away again) -- root-caused fix for "
+                        "goal_reached almost never firing (the configured far corridor goal is "
+                        "structurally unreachable within any trial's duration budget, not a "
+                        "0.5m-tolerance bug; see REPORT.md Session 15). --duration remains the "
+                        "hard cap regardless. Off by default (None) for backward compatibility; "
+                        "pass e.g. 8.0 to stop filming shortly after the encounter concludes "
+                        "instead of the full --duration of post-encounter driving.")
     p.add_argument("--spawn", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None,
                    help="pedestrian spawn pose, overrides --ped-distance entirely; default (Round "
                         "4): computed from --ped-distance via resolve_head_on_geometry()")
@@ -1057,10 +1072,25 @@ def main():
     full_sheet_ok = trial_lib.build_contact_sheet(out_dir / "pov_full.mp4", out_dir / full_sheet_name)
     eprint("[run_trial] full-video contact sheet: {}".format("OK" if full_sheet_ok else "FAILED"))
 
+    # Session 15 (phase-aware spin, diagnostic -- not a hard exit-code gate, see REPORT.md Session
+    # 15 for why): classifies every in-place-rotation episode by phase (APPROACH/ENCOUNTER/POST/
+    # PARKING) instead of reporting one whole-trial number that conflates story-critical spin near
+    # the pedestrian with post-encounter tail driving.
+    meta_for_goal = json.loads((out_dir / "meta.json").read_text())
+    spin_phases = trial_lib.classify_spin_phases(out_dir / "frames.csv", meta_for_goal["config"]["goalPose"])
+    if spin_phases is not None:
+        eprint("[run_trial] spin phases: {} total -- APPROACH={} ENCOUNTER={} POST={} PARKING={} "
+               "(t_min={}s min_ped_dist={}m final_goal_dist={}m)".format(
+                   spin_phases["n_episodes"], spin_phases["phase_counts"]["APPROACH"],
+                   spin_phases["phase_counts"]["ENCOUNTER"], spin_phases["phase_counts"]["POST"],
+                   spin_phases["phase_counts"]["PARKING"], spin_phases["t_min"],
+                   spin_phases["min_ped_dist"], spin_phases["final_goal_dist"]))
+
     augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
                                   aspect_ok=aspect_ok, aspect_detail=aspect_detail,
                                   approach_ok=approach_ok, approach_detail=approach_detail,
                                   trigger_ok=trigger_ok, trigger_detail=trigger_detail,
+                                  spin_phases=spin_phases,
                                   full_contact_sheet=full_sheet_name if full_sheet_ok else None)
 
     if args.overlay:
@@ -1097,6 +1127,11 @@ def main():
     print("aspect gate: {} ({})".format("PASS" if aspect_ok else "FAIL", aspect_detail))
     print("approach geometry gate: {} ({})".format("PASS" if approach_ok else "FAIL", approach_detail))
     print("trigger-speed gate: {} ({})".format("PASS" if trigger_ok else "FAIL", trigger_detail))
+    if spin_phases is not None:
+        print("spin phases (diagnostic, not gated): {} total -- APPROACH={} ENCOUNTER={} POST={} "
+              "PARKING={}".format(spin_phases["n_episodes"], spin_phases["phase_counts"]["APPROACH"],
+                                   spin_phases["phase_counts"]["ENCOUNTER"], spin_phases["phase_counts"]["POST"],
+                                   spin_phases["phase_counts"]["PARKING"]))
     print("pov_full: {}".format(out_dir / "pov_full.mp4"))
     if (out_dir / "pov_full_ov.mp4").exists():
         print("pov_full (overlay): {}".format(out_dir / "pov_full_ov.mp4"))

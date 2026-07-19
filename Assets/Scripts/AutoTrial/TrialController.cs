@@ -228,6 +228,14 @@ namespace SEAN.AutoTrial
             lastCmdAngZ = msg.angular.z;
         }
 
+        // Session 15: tracks whether the pedestrian has genuinely been passed (dist first went
+        // below triggerDistanceMeters -- true almost immediately after t=0 by construction -- and
+        // has since climbed back above it, meaning the pass is over and it's moving away again),
+        // and when that happened, for --post-encounter-grace. See RunLoop's termination check.
+        private bool everWithinTriggerDist;
+        private bool encounterConcluded;
+        private float encounterConcludedAtElapsed;
+
         private IEnumerator RunLoop()
         {
             float interval = 1f / Mathf.Max(config.fps, 1);
@@ -251,6 +259,28 @@ namespace SEAN.AutoTrial
                         break;
                     }
                 }
+                if (config.hasPostEncounterGrace && pedestrian != null)
+                {
+                    float distToPed = Util.Geometry.GroundPlaneDist(robot.position, pedestrian.position);
+                    if (distToPed < config.triggerDistanceMeters)
+                    {
+                        everWithinTriggerDist = true;
+                    }
+                    else if (everWithinTriggerDist && !encounterConcluded)
+                    {
+                        encounterConcluded = true;
+                        encounterConcludedAtElapsed = elapsed;
+                        Debug.Log("[AutoTrial] post-encounter grace timer started at t=" + elapsed.ToString("F2")
+                            + "s (dist_to_pedestrian=" + distToPed.ToString("F2") + "m re-exceeded triggerDistanceMeters="
+                            + config.triggerDistanceMeters.ToString("F2") + "m) -- capture ends "
+                            + config.postEncounterGraceSec.ToString("F1") + "s from now unless duration/goal_reached fires first.");
+                    }
+                    if (encounterConcluded && elapsed - encounterConcludedAtElapsed >= config.postEncounterGraceSec)
+                    {
+                        terminationReason = "post_encounter_grace";
+                        break;
+                    }
+                }
 
                 if (Time.time >= nextTick)
                 {
@@ -261,7 +291,7 @@ namespace SEAN.AutoTrial
                 yield return null;
             }
 
-            // One final frame at the terminal instant (arrival/duration-end), then finish.
+            // One final frame at the terminal instant (arrival/duration-end/grace-elapsed), then finish.
             CaptureFrame(Time.time - startTime);
             FinishTrial();
         }

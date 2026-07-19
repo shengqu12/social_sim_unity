@@ -52,6 +52,20 @@ namespace SEAN.AutoTrial
         // (independent of --spawn/--slate-margin, which only affect where the freeze happens).
         public float triggerDistanceMeters = 8.0f;
 
+        // Session 15: root-caused why goal_reached almost never fires -- terminationReason was
+        // "duration" on 100% of trials checked across Sessions 12/13/14, because the configured
+        // far corridor goal (44m from robot start) needs ~73s of pure driving at max_vel_x=0.6
+        // m/s, more than any trial's own duration budget even before pre-roll. Not a 0.5m-
+        // tolerance bug (final robot-to-goal distances measured 5-33m, nowhere near the
+        // tolerance) -- goal_reached was structurally unreachable, not mistuned. This is the
+        // actual fix: end capture postEncounterGraceSec after the live robot<->pedestrian
+        // distance first re-exceeds triggerDistanceMeters (i.e. the pedestrian has been passed
+        // and is moving away again) rather than filming an unreachable goal for the full
+        // --duration. hasPostEncounterGrace follows the same on/off convention as hasGoalPose
+        // above; --duration remains the hard cap either way.
+        public bool hasPostEncounterGrace = false;
+        public float postEncounterGraceSec = 8.0f;
+
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;
     }

@@ -6,6 +6,7 @@ which has import-time side effects like argparse setup).
 """
 import csv
 import json
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -301,6 +302,134 @@ def check_trigger_speed(meta_path, min_speed=0.3):
         speed, min_speed, "OK" if ok else "FAIL",
         ", triggerTimedOut=true (30s guard fired)" if timed_out else "")
     return ok, detail
+
+
+# Session 15 (phase-aware spin, permanent): in-place-rotation episode definition unchanged since
+# Session 12 (|wrapped(delta_yaw_deg)/dt| > SPIN_YAW_RATE_THRESHOLD while robot_speed <
+# SPIN_SPEED_THRESHOLD) -- what's new is classifying each episode by phase instead of reporting one
+# whole-trial number. Root cause for why this was needed (Session 15 Step 0/1): terminationReason is
+# "duration" on 100% of trials checked across Sessions 12/13/14 -- the configured far corridor goal
+# (44m from robot start) requires ~73s of pure driving at max_vel_x=0.6 m/s, exceeding every
+# session's trial duration even before subtracting pre-roll, so "goal_reached" was never realistically
+# reachable in ANY session (not a Session-13/14 regression) and every trial's tail end is,
+# unavoidably, post-encounter driving with nothing left to film. A literal PARKING bucket
+# (robot-to-goal <= PARKING_DIST_M) empirically fires ZERO times across every trial checked this
+# session (S12/S13/S14 batteries) for exactly that reason -- the goal is simply never reached. POST
+# (post-encounter, not yet arrived) is where that dead time actually shows up instead, and is
+# reported here as the operationally meaningful "story is over" bucket; PARKING is kept as a
+# separate, distinct category (reported, likely usually empty under this scene's goal geometry) in
+# case a shorter-goal/longer-duration trial ever does reach it.
+SPIN_YAW_RATE_THRESHOLD_DEG_S = 30.0
+SPIN_SPEED_THRESHOLD_MPS = 0.1
+PHASE_ENCOUNTER_TIME_WINDOW_SEC = 5.0
+PHASE_ENCOUNTER_DIST_M = 3.0
+PHASE_PARKING_DIST_M = 1.5
+
+
+def _wrapped_delta_deg(a, b):
+    return (b - a + 180.0) % 360.0 - 180.0
+
+
+def _find_spin_episodes(rows):
+    """Whole-trial in-place-rotation episodes -- consecutive frames where
+    |wrapped(delta_robot_yaw_deg)/dt| > SPIN_YAW_RATE_THRESHOLD_DEG_S while robot_speed <
+    SPIN_SPEED_THRESHOLD_MPS (Session 12's own definition, unchanged). Returns a list of
+    {start_idx, end_idx, start_t, end_t}."""
+    episodes = []
+    in_episode = False
+    cur = None
+    prev = None
+
+    for i, row in enumerate(rows):
+        t = float(row["t"])
+        yaw = float(row["robot_yaw_deg"])
+        speed = float(row["robot_speed"])
+
+        if prev is not None:
+            dt = max(t - prev["t"], 1e-4)
+            yaw_rate = abs(_wrapped_delta_deg(prev["yaw"], yaw)) / dt
+            spinning = speed < SPIN_SPEED_THRESHOLD_MPS and yaw_rate > SPIN_YAW_RATE_THRESHOLD_DEG_S
+
+            if spinning:
+                if not in_episode:
+                    cur = {"start_idx": i - 1, "start_t": prev["t"]}
+                    in_episode = True
+                cur["end_idx"] = i
+                cur["end_t"] = t
+            elif in_episode:
+                episodes.append(cur)
+                in_episode = False
+
+        prev = {"t": t, "yaw": yaw}
+
+    if in_episode:
+        episodes.append(cur)
+    return episodes
+
+
+def classify_spin_phases(frames_csv_path, goal_pose):
+    """Session 15, THE PERMANENT PHASE-AWARE SPIN CLASSIFIER (diagnostic/reporting, not a hard
+    exit-code gate -- see REPORT.md Session 15 for why business_male's encounter-phase numbers are
+    reported honestly rather than force-passed). Classifies each whole-trial spin episode (by its
+    start frame) into one of four phases:
+
+      PARKING  : robot-to-goal ground distance <= PHASE_PARKING_DIST_M (arrived, "story complete")
+      ENCOUNTER: within +/-PHASE_ENCOUNTER_TIME_WINDOW_SEC of the trial's own minimum
+                 dist_to_pedestrian frame, OR dist_to_pedestrian < PHASE_ENCOUNTER_DIST_M
+      APPROACH : before the min-dist frame, not already ENCOUNTER
+      POST     : everything else (after the encounter, not yet arrived at goal)
+
+    goal_pose is a dict with x/z keys (e.g. meta.json's config.goalPose). Returns a dict:
+    {n_episodes, t_min, min_ped_dist, final_goal_dist, phase_counts, phase_spin_seconds,
+    episodes: [{phase, start_t, end_t, ped_dist, goal_dist}]}."""
+    with open(frames_csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+
+    dists = [(i, float(r["dist_to_pedestrian"])) for i, r in enumerate(rows) if r["dist_to_pedestrian"]]
+    if not dists:
+        return None
+    min_idx, min_dist = min(dists, key=lambda p: p[1])
+    t_min = float(rows[min_idx]["t"])
+
+    def goal_dist(row):
+        return math.hypot(float(row["robot_x"]) - goal_pose["x"], float(row["robot_z"]) - goal_pose["z"])
+
+    episodes = _find_spin_episodes(rows)
+    phase_counts = {"PARKING": 0, "ENCOUNTER": 0, "APPROACH": 0, "POST": 0}
+    phase_spin_seconds = {"PARKING": 0.0, "ENCOUNTER": 0.0, "APPROACH": 0.0, "POST": 0.0}
+    detail = []
+
+    for ep in episodes:
+        row = rows[ep["start_idx"]]
+        t = ep["start_t"]
+        ped_dist = float(row["dist_to_pedestrian"]) if row["dist_to_pedestrian"] else float("inf")
+        gdist = goal_dist(row)
+
+        if gdist <= PHASE_PARKING_DIST_M:
+            phase = "PARKING"
+        elif abs(t - t_min) <= PHASE_ENCOUNTER_TIME_WINDOW_SEC or ped_dist < PHASE_ENCOUNTER_DIST_M:
+            phase = "ENCOUNTER"
+        elif t < t_min:
+            phase = "APPROACH"
+        else:
+            phase = "POST"
+
+        phase_counts[phase] += 1
+        phase_spin_seconds[phase] += ep["end_t"] - ep["start_t"]
+        detail.append({"phase": phase, "start_t": round(t, 3), "end_t": round(ep["end_t"], 3),
+                        "ped_dist": round(ped_dist, 3), "goal_dist": round(gdist, 3)})
+
+    return {
+        "n_episodes": len(episodes),
+        "t_min": round(t_min, 3),
+        "min_ped_dist": round(min_dist, 3),
+        "final_goal_dist": round(goal_dist(rows[-1]), 3),
+        "phase_counts": phase_counts,
+        "phase_spin_seconds": {k: round(v, 3) for k, v in phase_spin_seconds.items()},
+        "episodes": detail,
+    }
 
 
 def build_contact_sheet(video_path, out_png_path, n=CONTACT_SHEET_N, thumb_w=CONTACT_SHEET_THUMB_W):
