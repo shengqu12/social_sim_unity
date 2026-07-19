@@ -49,8 +49,11 @@ namespace SEAN.AutoTrial
         private double lastCmdAngZ;
         private bool cmdVelAvailable;
 
-        private const int CaptureWidth = 1280;
-        private const int CaptureHeight = 720;
+        // Round 4: made public so AutoTrialBootstrap.BuildPovCamera can set povCam.aspect from
+        // the same authoritative numbers used to build the RenderTexture -- see that method's
+        // comment for the aspect-mismatch bug this closes.
+        public const int CaptureWidth = 1280;
+        public const int CaptureHeight = 720;
         private const float GoalArrivalDistMeters = 0.5f;
 
         public void Initialize(AutoTrialConfig config, Scenario.Robot robot, Camera povCam,
@@ -266,6 +269,12 @@ namespace SEAN.AutoTrial
             // AutoTrialBootstrap.DisableSceneHygieneHazards) didn't fully work and the
             // census/destroy pass had to catch it instead.
             public List<string> agentCensus;
+            // Round 4: the actual povCam.aspect this trial rendered with, plus the RT-derived
+            // target it should equal (CaptureWidth/CaptureHeight) -- lets run_trial.py's
+            // permanent aspect gate verify from meta.json on every run, not just trust the
+            // in-engine assert at rig build time (AutoTrialBootstrap.BuildPovCamera) fired clean.
+            public float povCameraAspect;
+            public float targetAspect;
         }
 
         private void WriteMetaJson()
@@ -287,6 +296,8 @@ namespace SEAN.AutoTrial
                         ? "PENDING VERIFICATION -- container rewiring in progress (editor-side); see AutoTrialBootstrap.ZoneBContainers comment"
                         : ""),
                 agentCensus = agentCensus ?? new List<string>(),
+                povCameraAspect = povCam.aspect,
+                targetAspect = CaptureWidth / (float)CaptureHeight,
             };
 
             string json = JsonUtility.ToJson(meta, true);

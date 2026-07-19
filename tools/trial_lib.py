@@ -5,6 +5,7 @@ spans from frames.csv without duplicating the logic (and without importing run_t
 which has import-time side effects like argparse setup).
 """
 import csv
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -201,6 +202,74 @@ def check_clip_content(video_path, n=GATE_SAMPLE_N, std_threshold=GATE_STD_THRES
         failed = [s for s in samples if not s["ok"]]
         detail += " -- FAILED: {}".format(failed)
     return all_ok, detail, samples
+
+
+def check_aspect_gate(meta_path, tol=0.01):
+    """Round 4, THE PERMANENT ASPECT GATE: reads povCameraAspect/targetAspect back from
+    meta.json (written by TrialController.WriteMetaJson from the live povCam.aspect/
+    CaptureWidth/CaptureHeight at capture time -- not re-derived here) and requires them to
+    agree within `tol`. Catches a regression of the Round 4 aspect bug (a fresh Camera's
+    .aspect defaulting to the batchmode GameView's 4:3 instead of the 1280x720/16:9 render
+    target -- see AutoTrialBootstrap.BuildPovCamera's comment) on every trial forever, not
+    just this session's battery. Returns (ok: bool, detail: str)."""
+    meta_path = Path(meta_path)
+    if not meta_path.exists():
+        return False, "meta.json not found at {}".format(meta_path)
+    data = json.loads(meta_path.read_text())
+    actual = data.get("povCameraAspect")
+    target = data.get("targetAspect")
+    if actual is None or target is None:
+        return False, "meta.json missing povCameraAspect/targetAspect (pre-Round-4 trial?)"
+    err = abs(actual - target)
+    ok = err <= tol
+    detail = "povCameraAspect={:.4f} targetAspect={:.4f} |err|={:.4f} (tol={})".format(
+        actual, target, err, tol)
+    return ok, detail
+
+
+def check_approach_geometry(frames_csv_path, ped_distance, dist0_tol=0.5, noise_tol=0.3):
+    """Round 4, THE PERMANENT APPROACH-GEOMETRY GATE: (a) the first captured frame's
+    dist_to_pedestrian should be within dist0_tol of the requested --ped-distance (verifies
+    the spawn geometry actually landed the pedestrian at the requested range, not just that
+    the CLI accepted the flag), and (b) dist_to_pedestrian should decrease monotonically
+    (noise-tolerant: a single-step increase of up to noise_tol doesn't break the run, since
+    per-frame position noise/AI steering micro-corrections are expected) from frame 0 through
+    the trial's own minimum-distance frame, confirming a genuine closing approach rather than
+    an erratic one. Returns (dist0_ok: bool, monotonic_ok: bool, detail: str)."""
+    with open(frames_csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return False, False, "frames.csv is empty"
+
+    dists = []
+    for row in rows:
+        try:
+            dists.append(float(row["dist_to_pedestrian"]))
+        except (ValueError, KeyError):
+            dists.append(None)
+    valid = [(i, d) for i, d in enumerate(dists) if d is not None]
+    if not valid:
+        return False, False, "no dist_to_pedestrian samples in frames.csv"
+
+    dist0 = valid[0][1]
+    dist0_ok = abs(dist0 - ped_distance) <= dist0_tol
+
+    min_idx = min(valid, key=lambda p: p[1])[0]
+    violations = []
+    prev = None
+    for i, d in valid:
+        if i > min_idx:
+            break
+        if prev is not None and d > prev + noise_tol:
+            violations.append((i, round(prev, 3), round(d, 3)))
+        prev = d
+    monotonic_ok = not violations
+
+    detail = "dist0={:.3f} (target {:.3f}+/-{}, {}); monotonic-to-min(frame {}): {} ({} violation(s){})".format(
+        dist0, ped_distance, dist0_tol, "OK" if dist0_ok else "FAIL", min_idx,
+        "OK" if monotonic_ok else "FAIL", len(violations),
+        " e.g. {}".format(violations[:3]) if violations else "")
+    return dist0_ok, monotonic_ok, detail
 
 
 def build_contact_sheet(video_path, out_png_path, n=CONTACT_SHEET_N, thumb_w=CONTACT_SHEET_THUMB_W):

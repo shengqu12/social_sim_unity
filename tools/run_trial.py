@@ -4,8 +4,10 @@ CLI-driven trial runner for the SEAN 2.0 AutoTrial pipeline.
 
     python tools/run_trial.py --appearance wheelchair_user --personality indifferent --duration 90
 
-produces, with zero manual Unity interaction: robot-POV video, third-person chase video,
-near-pedestrian clips cut from both, frames.csv of per-frame robot data, and meta.json.
+produces, with zero manual Unity interaction: robot-POV video (pov_full.mp4 + overlay), the
+primary deliverable as of Round 4's output format v3 (no chase/third-person camera, removed
+Session 10 D5); near-pedestrian clips (pov_near_NN[_ov].mp4) cut from it, retained as VLM-
+prefilter material; frames.csv of per-frame robot data; and meta.json.
 
 Pipeline:
   1. Validate args against a friendly hardcoded appearance list (Unity's own resolution in
@@ -48,6 +50,7 @@ import argparse
 import csv
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -76,16 +79,54 @@ PERSONALITIES = ["scared", "curious", "surprised", "indifferent", "assertive"]
 # Session 10 (D4): canonical head-on-encounter geometry, used whenever --spawn/--goal/--ped-goal
 # are omitted. ROBOT_START is not itself a CLI-settable pose -- it's the scene's own teleport
 # target (Tasks.Base.UpdatePositions(), confirmed across Sessions 1-9 as deterministic and
-# scene-authored, robot_nav_A), recorded here only so PED_GOAL ("robot's start pose, slightly past
-# it") and the printed resolved-pose summary have something to compute against. ROBOT_GOAL is
-# robot_nav_B, the far end of the same confirmed-clear corridor. PED_SPAWN sits on that corridor,
-# between the two, facing the oncoming robot (yaw 90 ~= facing +x, opposite the robot's yaw-270
-# ~= facing -x travel direction -- both conventions empirically confirmed via frames.csv
-# robot_yaw_deg in prior sessions' census data, not assumed).
+# scene-authored, robot_nav_A), recorded here so both the pedestrian geometry below and the
+# printed resolved-pose summary have something to compute against. ROBOT_GOAL is robot_nav_B, the
+# far end of the same confirmed-clear corridor.
 ROBOT_START = (-1.058, 0.0007, -109.424)
 DEFAULT_ROBOT_GOAL = (-44.659, 0.0007, -108.947, 0.0)
-DEFAULT_PED_SPAWN = (-15.0, 0.0007, -109.2, 90.0)
-DEFAULT_PED_GOAL = (2.0, 0.0007, -109.424)
+
+# Round 4 (Session 12): Session 10's PED_SPAWN/PED_GOAL were a single hardcoded pose pair
+# (distance from ROBOT_START ~= 13.94m, not independently adjustable) -- generalized here into
+# resolve_head_on_geometry(), parametrized by --ped-distance. PED_OVERSHOOT_M reproduces the same
+# "destination beyond the robot's start" margin the old DEFAULT_PED_GOAL=(2.0, ..., -109.424) used
+# (2.0 - (-1.058) = 3.058m past ROBOT_START.x, ~0 z-offset since the corridor bearing is almost
+# pure -x) -- kept as a round 3.0m rather than the exact legacy 3.058m; the guarantee that matters
+# (a genuine pass-through, not a meet-and-stop) doesn't depend on the extra 0.058m.
+PED_OVERSHOOT_M = 3.0
+DEFAULT_PED_DISTANCE = 8.0
+
+
+def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
+    """Round 4 (Step 2): places the pedestrian exactly `ped_distance` meters from robot_start,
+    along the robot_start->goal_xyz bearing (i.e. on the robot's own path), facing back toward
+    the robot (yaw = bearing reversed -- see ROBOT_START's comment above for the yaw-90==+x
+    convention this relies on, empirically confirmed via frames.csv robot_yaw_deg in prior
+    sessions). Destination continues PAST robot_start by `overshoot` meters in the pedestrian's
+    own direction of travel (the reverse of the bearing), guaranteeing a genuine head-on PASS
+    rather than the two agents converging and stopping at the same point.
+
+    Returns ((ped_x, ped_y, ped_z, ped_yaw_deg), (dest_x, dest_y, dest_z)).
+    Raises ValueError if robot_start and goal_xyz coincide (no bearing to compute)."""
+    sx, sy, sz = robot_start
+    gx, gy, gz = goal_xyz[0], goal_xyz[1], goal_xyz[2]
+    dx, dz = gx - sx, gz - sz
+    norm = math.hypot(dx, dz)
+    if norm < 1e-6:
+        raise ValueError("robot start {} and goal {} coincide on the ground plane -- cannot "
+                          "compute a bearing for --ped-distance placement".format(robot_start, goal_xyz))
+    ux, uz = dx / norm, dz / norm
+
+    ped_x = sx + ux * ped_distance
+    ped_z = sz + uz * ped_distance
+    # Facing the oncoming robot == facing back along -bearing. Unity yaw=0 faces +z, yaw
+    # increases toward +x (yaw 90 == facing +x, confirmed by ROBOT_START's own comment/prior
+    # sessions' census data) -- i.e. yaw = atan2(dir_x, dir_z) in degrees.
+    yaw = math.degrees(math.atan2(-ux, -uz)) % 360.0
+
+    dest_x = sx - ux * overshoot
+    dest_z = sz - uz * overshoot
+
+    return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z)
 # Zone A is validated by convention (snake_case -> Rocketbox PascalCase), not enumerated here --
 # Unity's Resources.Load is authoritative. This regex just catches obvious typos early.
 ZONE_A_PATTERN = re.compile(r"^[a-z]+(_[a-z0-9]+)*$")
@@ -670,12 +711,12 @@ def actual_achieved_fps(frames_csv_path, configured_fps):
 
 
 def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC):
-    """Session 10 (D5): POV only, near-clips only. Builds pov_full.mp4 internally (needed both
-    for clean-clip cutting here AND for overlay.py to burn+re-cut its own *_ov near clips from,
-    since overlay always re-derives spans from frames.csv rather than trusting these clip
-    boundaries) -- overlay.py must run before cleanup_full_video() below deletes it. Final
-    per-trial deliverable is pov_near_NN.mp4 (+ pov_near_NN_ov.mp4, produced by overlay.py) only,
-    unless --keep-full."""
+    """POV only (Session 10, D5 -- no chase/third-person camera). Builds pov_full.mp4, needed both
+    as the Round 4 (Step 4) primary deliverable AND for overlay.py to burn+re-cut its own *_ov
+    near clips from (overlay always re-derives spans from frames.csv rather than trusting these
+    clip boundaries). Round 4: pov_full.mp4/pov_full_ov.mp4 are kept permanently now (output
+    format v3) -- the near clips (pov_near_NN[_ov].mp4) are additional, VLM-prefilter material,
+    not a replacement for the full video."""
     pov_dir = out_dir / "pov"
     pov_full = out_dir / "pov_full.mp4"
 
@@ -728,15 +769,24 @@ def run_content_gate(out_dir, near_clips):
     return all_ok, "; ".join(details)
 
 
-def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips):
-    """Records the permanent gate's verdict and every near clip's final (post-growth/merge)
-    window + contact sheet into meta.json, so a trial's pass/fail is inspectable without re-running
-    anything."""
+def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, aspect_detail=None,
+                                  approach_ok=None, approach_detail=None, full_contact_sheet=None):
+    """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
+    geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
+    meta.json, so a trial's pass/fail is inspectable without re-running anything."""
     meta_path = out_dir / "meta.json"
     if not meta_path.exists():
         return
     data = json.loads(meta_path.read_text())
     data["contentGateOk"] = gate_ok
+    if aspect_ok is not None:
+        data["aspectGateOk"] = aspect_ok
+        data["aspectGateDetail"] = aspect_detail
+    if approach_ok is not None:
+        data["approachGateOk"] = approach_ok
+        data["approachGateDetail"] = approach_detail
+    if full_contact_sheet is not None:
+        data["fullContactSheet"] = full_contact_sheet
     data["nearClips"] = [
         {
             "index": c["index"],
@@ -751,19 +801,6 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips):
         for c in near_clips
     ]
     meta_path.write_text(json.dumps(data, indent=2))
-
-
-def cleanup_full_video(out_dir, keep_full):
-    """Deletes pov_full.mp4/pov_full_ov.mp4 (the internal span-cutting scratch videos) once both
-    run_trial.py's own near-clip cutting AND overlay.py's *_ov near-clip cutting are done -- must
-    run after overlay, not as part of post_process(), since overlay re-cuts from the overlaid full
-    which itself is burned from pov_full.mp4."""
-    if keep_full:
-        return
-    for name in ("pov_full.mp4", "pov_full_ov.mp4"):
-        p = out_dir / name
-        if p.exists():
-            p.unlink()
 
 
 def summarize(out_dir):
@@ -796,14 +833,23 @@ def main():
                         "least this many seconds; overlapping spans after growth are merged.")
     p.add_argument("--out", default=None, help="output directory (default: trial_outputs/<appearance>_<personality>_<timestamp>)")
     p.add_argument("--windowed", action="store_true", help="drop -batchmode (black-frame fallback)")
-    p.add_argument("--keep-full", action="store_true")
+    p.add_argument("--keep-full", action="store_true",
+                   help="keep the raw per-frame JPG directory (pov/) and config.json after "
+                        "assembly; NOT related to pov_full.mp4/pov_full_ov.mp4, which are always "
+                        "kept as of Round 4's output format v3 regardless of this flag")
     p.add_argument("--fresh-ros", action="store_true")
     p.add_argument("--reused-ros", dest="reused_ros", action="store_true", default=True,
                    help="run inter-trial ROS hygiene (cancel+clear costmaps) before launching -- default on")
     p.add_argument("--no-reused-ros-hygiene", dest="reused_ros", action="store_false")
+    p.add_argument("--ped-distance", type=float, default=DEFAULT_PED_DISTANCE,
+                   help="Round 4 (Step 2): distance in meters from the robot's start position to "
+                        "the pedestrian spawn point, measured along the robot start->goal bearing "
+                        "-- i.e. the pedestrian spawns on the robot's own path, facing it, "
+                        "guaranteeing a head-on approach. Only takes effect when --spawn is not "
+                        "explicitly given. Default 8.0.")
     p.add_argument("--spawn", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None,
-                   help="pedestrian spawn pose; default (Session 10, D4): a point on the confirmed-"
-                        "clear robot_nav_A<->robot_nav_B corridor, facing the oncoming robot")
+                   help="pedestrian spawn pose, overrides --ped-distance entirely; default (Round "
+                        "4): computed from --ped-distance via resolve_head_on_geometry()")
     p.add_argument("--goal", type=float, nargs=4, metavar=("X", "Y", "Z", "YAW_DEG"), default=None,
                    help="robot goal override; default (Session 10, D4): robot_nav_B, the far end "
                         "of the census corridor -- pass an empty override with e.g. "
@@ -883,24 +929,38 @@ def main():
 
     require_output_root_healthy()
 
-    # Session 10 (D4 QoL patch): --spawn/--goal/--ped-goal are all optional now, defaulting to the
-    # canonical head-on-encounter geometry -- resolved here (not in argparse defaults) so
-    # --no-goal/--no-ped-goal can still suppress them, and so the resolved poses can be printed
-    # before launch regardless of which path (explicit flag vs. default) produced them.
-    if args.spawn is None:
-        args.spawn = list(DEFAULT_PED_SPAWN)
+    # Session 10 (D4 QoL patch), regeared in Round 4 (Step 2) onto --ped-distance: --spawn/--goal/
+    # --ped-goal are all optional, defaulting to the canonical head-on-encounter geometry --
+    # resolved here (not in argparse defaults) so --no-goal/--no-ped-goal can still suppress them,
+    # and so the resolved poses can be printed before launch regardless of which path (explicit
+    # flag vs. default) produced them. Goal is resolved first since the pedestrian geometry needs
+    # a bearing to compute against even when --no-goal is given (the robot still travels roughly
+    # that way by the scene's own default task, so the bearing is still the right one to spawn on).
     if args.no_goal:
         args.goal = None
     elif args.goal is None:
         args.goal = list(DEFAULT_ROBOT_GOAL)
+    bearing_goal = tuple(args.goal) if args.goal is not None else DEFAULT_ROBOT_GOAL
+
+    if args.spawn is None:
+        geom_spawn, geom_ped_goal = resolve_head_on_geometry(args.ped_distance, bearing_goal)
+        args.spawn = list(geom_spawn)
+    else:
+        geom_ped_goal = None  # explicit --spawn overrides geometry; no matching auto dest to offer
+
     if args.no_ped_goal:
         args.ped_goal = None
     elif args.ped_goal is None:
-        args.ped_goal = list(DEFAULT_PED_GOAL)
+        if geom_ped_goal is None:
+            raise SystemExit("--ped-goal is required when --spawn is given explicitly without "
+                              "--ped-goal (no geometry-derived destination to fall back to); pass "
+                              "--no-ped-goal for dest==spawn instead.")
+        args.ped_goal = list(geom_ped_goal)
 
     print("=== resolved poses ===")
     print("robot start (scene teleport target, not CLI-settable): {}".format(ROBOT_START))
     print("robot goal: {}".format(args.goal if args.goal is not None else "(none -- hasGoalPose=false, robot follows the scene's own active task)"))
+    print("ped-distance: {}".format(args.ped_distance))
     print("pedestrian spawn: {}".format(args.spawn))
     print("pedestrian goal: {}".format(args.ped_goal if args.ped_goal is not None else "(none -- hasPedGoalPose=false, dest==spawn)"))
 
@@ -946,16 +1006,47 @@ def main():
     # THE PERMANENT GATE (Round 3): runs on every trial forever, not just this acceptance battery.
     gate_ok, gate_detail = run_content_gate(out_dir, result["near_clips"])
     eprint("[run_trial] content gate: {} ({})".format("OK" if gate_ok else "FAILED", gate_detail))
-    augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"])
+
+    # Round 4 (THE PERMANENT ASPECT GATE, Step 1): meta.json's povCameraAspect/targetAspect were
+    # written by TrialController from the live camera at capture time -- verify they agree here,
+    # on every trial forever, not just trust the in-engine assert (AutoTrialBootstrap.Fail()
+    # already refuses to even start a trial whose aspect is off by >0.01, so this is a second,
+    # independent check from the artifact actually produced).
+    aspect_ok, aspect_detail = trial_lib.check_aspect_gate(out_dir / "meta.json")
+    eprint("[run_trial] aspect gate: {} ({})".format("OK" if aspect_ok else "FAILED", aspect_detail))
+
+    # Round 4 (THE PERMANENT APPROACH-GEOMETRY GATE, Step 2): confirms --ped-distance actually
+    # landed the pedestrian at the requested range and that the approach closes monotonically
+    # (noise-tolerant) rather than erratically.
+    dist0_ok, monotonic_ok, approach_detail = trial_lib.check_approach_geometry(
+        out_dir / "frames.csv", args.ped_distance)
+    approach_ok = dist0_ok and monotonic_ok
+    eprint("[run_trial] approach geometry gate: {} ({})".format(
+        "OK" if approach_ok else "FAILED", approach_detail))
+
+    # Round 4 (Step 4, output format v3): full POV video is the primary deliverable now -- build
+    # its own contact sheet (8 frames spanning the WHOLE trial, not just a near clip) so a human
+    # reviewer can eyeball aspect/horizon/pedestrian-entry at a glance without scrubbing.
+    full_sheet_name = "contact_sheet_full.png"
+    full_sheet_ok = trial_lib.build_contact_sheet(out_dir / "pov_full.mp4", out_dir / full_sheet_name)
+    eprint("[run_trial] full-video contact sheet: {}".format("OK" if full_sheet_ok else "FAILED"))
+
+    augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
+                                  aspect_ok=aspect_ok, aspect_detail=aspect_detail,
+                                  approach_ok=approach_ok, approach_detail=approach_detail,
+                                  full_contact_sheet=full_sheet_name if full_sheet_ok else None)
 
     if args.overlay:
         ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist,
                                                        near_clip_min_sec=args.near_clip_min_sec)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
-    # Session 10 (D5): only after both run_trial.py's own clean near-clips AND overlay.py's *_ov
-    # near-clips have been cut from it does the internal full-video scratch file get deleted.
-    cleanup_full_video(out_dir, args.keep_full)
+    # Round 4 (Step 4, output format v3): pov_full.mp4/pov_full_ov.mp4 are now the PRIMARY
+    # deliverable, not an internal scratch file -- the old cleanup_full_video() deletion is gone.
+    # The disk rationale for deleting them no longer applies (trial_outputs lives on the 511G T7
+    # external drive; require_output_root_healthy()'s 5GB guard is still active and still checked
+    # at both the top of main() and inside post_process()). Near clips (pov_near_NN[_ov].mp4) are
+    # retained too, now framed as VLM-prefilter material rather than the primary output.
 
     # Session 10 (D5 output-format spec: "exactly the near pairs + frames.csv + meta.json +
     # unity.log"): config.json is Unity's *input* for this trial, but everything in it is also
@@ -976,6 +1067,13 @@ def main():
     print("near-spans: {}".format(len(result["near_clips"])))
     print("min_dist reached: {}".format(min_dist))
     print("content gate: {}".format("PASS" if gate_ok else "FAIL"))
+    print("aspect gate: {} ({})".format("PASS" if aspect_ok else "FAIL", aspect_detail))
+    print("approach geometry gate: {} ({})".format("PASS" if approach_ok else "FAIL", approach_detail))
+    print("pov_full: {}".format(out_dir / "pov_full.mp4"))
+    if (out_dir / "pov_full_ov.mp4").exists():
+        print("pov_full (overlay): {}".format(out_dir / "pov_full_ov.mp4"))
+    if full_sheet_ok:
+        print("full contact sheet: {}".format(out_dir / full_sheet_name))
     for c in result["near_clips"]:
         ov_name = "pov_near_{:02d}_ov.mp4".format(c["index"])
         print("near clip {} ({:.1f}s, gate={}): {}{}".format(
@@ -983,12 +1081,15 @@ def main():
             out_dir / c["pov"],
             "  (+ {})".format(out_dir / ov_name) if (out_dir / ov_name).exists() else ""))
 
-    # THE PERMANENT GATE (Round 3): full artifact set (frames.csv, meta.json, contact sheets,
-    # clips) is left on disk either way, for forensics -- but a gate failure fails the trial's exit
-    # code, same as any other hard acceptance check in this script.
-    if not gate_ok:
-        eprint("[run_trial] trial FAILED the permanent content gate -- see meta.json/contact "
-               "sheets above for which clip/sample.")
+    # THE PERMANENT GATE (Round 3, joined by Round 4's aspect + approach-geometry gates): full
+    # artifact set (frames.csv, meta.json, contact sheets, clips) is left on disk either way, for
+    # forensics -- but any gate failure fails the trial's exit code, same as any other hard
+    # acceptance check in this script.
+    all_gates_ok = gate_ok and aspect_ok and approach_ok
+    if not all_gates_ok:
+        eprint("[run_trial] trial FAILED one or more permanent gates -- content={} aspect={} "
+               "approach={}; see meta.json/contact sheets above for detail.".format(
+                   gate_ok, aspect_ok, approach_ok))
         sys.exit(1)
 
 

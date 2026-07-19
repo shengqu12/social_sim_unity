@@ -6,12 +6,12 @@ Standalone post-processor: burns a per-frame telemetry overlay onto trial videos
     python tools/overlay.py --all trial_outputs/      # every trial dir found under a root
 
 Reads frames.csv + meta.json from a trial directory (as written by run_trial.py) and produces
-pov_full_ov.mp4 (burned-in subtitle overlay of pov_full.mp4, an internal scratch file -- see
-run_trial.py's post_process()/cleanup_full_video()), then re-cuts near-pedestrian clips
-(pov_near_NN_ov.mp4) from that overlaid full using the same span logic as run_trial.py
-(trial_lib.find_near_spans / cut_clip -- re-derived from frames.csv, not copied from the
-originals, so it stays correct if near_dist ever changes). Session 10 (D5): POV only -- the
-chase/third-person camera no longer exists.
+pov_full_ov.mp4 (burned-in subtitle overlay of pov_full.mp4 -- both are the Round 4/output-
+format-v3 PRIMARY deliverable, kept permanently, not an internal scratch file), then re-cuts
+near-pedestrian clips (pov_near_NN_ov.mp4, VLM-prefilter material) from that overlaid full using
+the same span logic as run_trial.py (trial_lib.find_near_spans / cut_clip -- re-derived from
+frames.csv, not copied from the originals, so it stays correct if near_dist ever changes).
+Session 10 (D5): POV only -- the chase/third-person camera no longer exists.
 
 Mechanism: generate one .ass subtitle track per trial and burn it in with a single ffmpeg pass
 (libass -vf, not per-frame image compositing) -- zero frame re-rendering. Each row's own `t`
@@ -148,8 +148,9 @@ def burn_overlay(src_mp4, ass_path, out_mp4):
 def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
                        near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC):
     """Returns (ok: bool, detail: str). Session 10 (D5): POV only -- no chase/third-person camera
-    exists anymore. Must run while pov_full.mp4 (the internal span-cutting scratch file) still
-    exists; run_trial.py's cleanup_full_video() deletes it only after this returns."""
+    exists anymore. Requires pov_full.mp4 -- present on every Round-4-or-later trial (output
+    format v3 keeps it permanently); a pre-Round-4 trial with pov_full.mp4 already deleted by the
+    old cleanup_full_video() cannot be overlaid standalone anymore."""
     trial_dir = Path(trial_dir)
     frames_csv = trial_dir / "frames.csv"
     meta_path = trial_dir / "meta.json"
@@ -219,13 +220,12 @@ def find_trial_dirs(root, include_archives=False):
 
 
 def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_archives=False):
-    """Session 10 (D5): the index generator itself, rewritten for the near-only output format --
-    this fully regenerates index_path from the trial dirs found under root, rather than
-    regex-patching an existing hand-authored file (the old update_index_html() approach, which
-    assumed pov_full/tp_full <video> blocks that no longer exist). Each trial lists its near clips
-    only: pov_near_NN.mp4 (VLM-purity: clean, model input) next to pov_near_NN_ov.mp4 (human
-    review only) when present. Trials with zero near-spans are listed with an explicit note, not
-    silently omitted."""
+    """Rewritten for the near-only output format in Session 10 (D5); Round 4 (Step 4) restored
+    the full video as the primary block, shown first with its own whole-trial contact sheet, near
+    clips listed below it as VLM-prefilter material. Fully regenerates index_path from the trial
+    dirs found under root each call, rather than regex-patching an existing hand-authored file
+    (the old update_index_html() approach). Trials with neither a full video nor near-spans are
+    listed with an explicit note, not silently omitted."""
     import html as html_mod
 
     root = Path(root)
@@ -252,6 +252,38 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
         min_dist = meta.get("minDistanceMeters", None)
         census = meta.get("agentCensus", [])
         stray_count = sum(1 for c in census if c.startswith("STRAY"))
+
+        # Round 4 (Step 4, output format v3): the full POV video is now the primary deliverable --
+        # shown first, with its own whole-trial contact sheet (8 frames spanning the trial, built
+        # by run_trial.py's main()/trial_lib.build_contact_sheet on pov_full.mp4, filename recorded
+        # into meta.json's fullContactSheet). Absent on trials captured before Round 4.
+        full_html = []
+        pov_full = d / "pov_full.mp4"
+        pov_full_ov = d / "pov_full_ov.mp4"
+        if pov_full.exists():
+            rel_full = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(pov_full.name))
+            aspect_ok = meta.get("aspectGateOk")
+            aspect_extra = ""
+            if aspect_ok is not None:
+                aspect_extra = ' &middot; <span class="flag {}">aspect: {}</span>'.format(
+                    "ok" if aspect_ok else "", "PASS" if aspect_ok else "FAIL")
+            approach_ok = meta.get("approachGateOk")
+            approach_extra = ""
+            if approach_ok is not None:
+                approach_extra = ' &middot; <span class="flag {}">approach: {}</span>'.format(
+                    "ok" if approach_ok else "", "PASS" if approach_ok else "FAIL")
+            full_html.append('<div class="video-block"><div class="label">full trial (primary deliverable){}{}</div>'
+                              '<video controls preload="metadata" src="{}"></video></div>'.format(
+                                  aspect_extra, approach_extra, rel_full))
+            full_sheet_name = meta.get("fullContactSheet") or "contact_sheet_full.png"
+            if (d / full_sheet_name).exists():
+                rel_full_sheet = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(full_sheet_name))
+                full_html.append('<div class="video-block contact-sheet"><div class="label">full-trial contact sheet (8 frames spanning the whole trial)</div>'
+                                  '<img loading="lazy" src="{}" alt="full-trial contact sheet"></div>'.format(rel_full_sheet))
+            if pov_full_ov.exists():
+                rel_full_ov = "{}/{}".format(esc(d.relative_to(root).as_posix()), esc(pov_full_ov.name))
+                full_html.append('<div class="video-block"><div class="label">full trial (overlay, human review only)</div>'
+                                  '<video controls preload="metadata" src="{}"></video></div>'.format(rel_full_ov))
 
         near_clips = sorted(d.glob("pov_near_*.mp4"))
         near_clips = [c for c in near_clips if "_ov" not in c.stem]
@@ -292,10 +324,15 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
 
         stray_flag = '<span class="flag">D3: {} STRAY agent(s)</span>'.format(stray_count) if stray_count else '<span class="flag ok">D3: clean census</span>'
 
-        if not clip_html:
-            body = '<p class="stats">No near-pedestrian spans (min_dist={} m, near-dist threshold not crossed).</p>'.format(esc(min_dist))
-        else:
-            body = '<div class="video-grid">' + "".join(clip_html) + '</div>'
+        body_parts = []
+        if full_html:
+            body_parts.append('<div class="video-grid">' + "".join(full_html) + '</div>')
+        if clip_html:
+            body_parts.append('<div class="section-label">near-pedestrian clips (VLM prefilter material)</div>')
+            body_parts.append('<div class="video-grid">' + "".join(clip_html) + '</div>')
+        if not body_parts:
+            body_parts.append('<p class="stats">No full video or near-pedestrian spans found (min_dist={} m).</p>'.format(esc(min_dist)))
+        body = "".join(body_parts)
 
         blocks.append("""
 <div class="trial">
@@ -309,7 +346,7 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AutoTrial review index (near clips only)</title>
+<title>AutoTrial review index (full video + near-clip prefilter)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {{ color-scheme: light dark; --bg:#fff; --fg:#1a1a1a; --muted:#666; --card:#f6f6f8; --border:#ddd; --accent:#2563eb; }}
@@ -321,6 +358,7 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
   .trial {{ border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 22px; background: var(--card); }}
   .trial h2 {{ margin: 0 0 6px; font-size: 1.1rem; }}
   .stats {{ color: var(--muted); font-size: 0.88rem; margin-bottom: 10px; }}
+  .section-label {{ font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin: 16px 0 8px; font-weight: 700; }}
   .video-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }}
   .video-block {{ background: rgba(127,127,127,0.06); border-radius: 8px; padding: 8px; }}
   .video-block .label {{ font-size: 0.8rem; color: var(--muted); margin-bottom: 5px; font-weight: 600; }}
@@ -332,9 +370,11 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
 </style>
 </head>
 <body>
-<h1>AutoTrial review index -- near clips only</h1>
-<div class="subtitle">Session 10 near-only output format. Clean pov_near_NN.mp4 = model/VLM input;
-_ov siblings = human review only (per the VLM-purity norm, unchanged since Session 9).</div>
+<h1>AutoTrial review index -- full video (primary) + near-clip prefilter</h1>
+<div class="subtitle">Round 4 output format v3: pov_full.mp4 (+ pov_full_ov.mp4 for human review)
+is the primary deliverable, with its own whole-trial contact sheet. pov_near_NN.mp4 clips are
+retained as VLM-prefilter material, not the primary output. Clean (non-_ov) videos = model/VLM
+input; _ov siblings = human review only (VLM-purity norm, unchanged since Session 9).</div>
 {blocks}
 </body>
 </html>

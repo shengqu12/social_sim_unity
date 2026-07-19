@@ -572,6 +572,34 @@ namespace SEAN.AutoTrial
             povCam.farClipPlane = existing.farClipPlane;
             povCam.enabled = false; // rendered manually via Camera.Render() at each capture tick
 
+            // Round 4 fix: a freshly AddComponent'd Camera's .aspect defaults to the current
+            // Screen/GameView aspect, not the aspect of whatever RenderTexture it will later be
+            // pointed at -- and since this camera is never enabled (it's rendered manually via
+            // Camera.Render(), never through Unity's normal per-frame camera stack), it never
+            // gets the auto aspect-follows-targetTexture recompute that an enabled/visible camera
+            // gets. In this project's batchmode launch (no -screen-width/-screen-height passed --
+            // see run_trial.py/unity.log) the default GameView is 4:3, so povCam.aspect silently
+            // stayed 4:3 while TrialController.Initialize (called after this method returns) set
+            // targetTexture to a 1280x720 (16:9) RenderTexture -- Camera.Render() then rendered a
+            // 4:3 field of view squeezed into a 16:9 frame, a uniform ~1.33x horizontal stretch
+            // baked into every saved JPG (confirmed via contact-sheet eyeball: pavement tiles and
+            // palm trees read visibly wider than they are; ffprobe confirms the container itself
+            // is correctly 1280x720/16:9, so the stretch is in the rendered pixels, not the
+            // encode). Explicitly setting aspect here, from the SAME authoritative capture
+            // dimensions TrialController uses for its RenderTexture (not a re-typed literal),
+            // closes it regardless of GameView/batchmode defaults.
+            povCam.aspect = TrialController.CaptureWidth / (float)TrialController.CaptureHeight;
+            float aspectErr = Mathf.Abs(povCam.aspect - TrialController.CaptureWidth / (float)TrialController.CaptureHeight);
+            Debug.Log("[AutoTrial] povCam.aspect explicitly set to " + povCam.aspect.ToString("F4")
+                + " (target " + (TrialController.CaptureWidth / (float)TrialController.CaptureHeight).ToString("F4")
+                + ", CaptureWidth=" + TrialController.CaptureWidth + " CaptureHeight=" + TrialController.CaptureHeight + ").");
+            if (aspectErr > 0.01f)
+            {
+                Fail("povCam.aspect (" + povCam.aspect.ToString("F4") + ") deviates from the render-target "
+                    + "aspect (" + (TrialController.CaptureWidth / (float)TrialController.CaptureHeight).ToString("F4")
+                    + ") by more than 0.01 -- aspect gate would fail this trial anyway; refusing to start it.");
+            }
+
             // Round 3 fix (D2 re-earned): soft mount. Parenting is kept (for lifecycle/cleanup
             // convenience) but PovCameraSmoother overrides this transform's WORLD position/
             // rotation every frame, so the rigid parent-child link never actually determines the
