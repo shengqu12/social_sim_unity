@@ -69,6 +69,14 @@ DOCKER_CONTAINER = "ros"
 DEFAULT_OUT_ROOT = Path.home() / "Desktop" / "research" / "social_navigation" / "trial_outputs"
 OUTPUT_ROOT_SENTINEL_NAME = ".output_root_on_t7"
 OUTPUT_ROOT_MIN_FREE_GB = 5.0
+# Ops patch (2026-07-20), post-Session-19 disk-full incident: root-caused to
+# ~/.ros/autotrial/*/*.csv, a per-bringup ROS-side telemetry log (upstream trial_info.launch,
+# never read by any of this project's own tooling) that grows UNBOUNDED for the life of a
+# bringup -- five old bringups' logs totaled ~87GB before that session's manual cleanup. This is
+# the permanent fix: a size-capped pre-flight purge, not a one-off manual truncate.
+ROS_LOG_GLOB = "/home/sheng/.ros/autotrial/*/*.csv"
+ROS_LOG_MAX_MB = 500.0
+ROS_LOG_ARCHIVE_DIRNAME = "_ros_log_archive"
 
 ZONE_B_APPEARANCES = [
     "cyclist", "dog_walker", "female_child", "male_child",
@@ -138,6 +146,24 @@ def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, ov
 ZONE_A_PATTERN = re.compile(r"^[a-z]+(_[a-z0-9]+)*$")
 
 
+def _statvfs_free_gb(path):
+    st = os.statvfs(str(path))
+    return (st.f_bavail * st.f_frsize) / (1024 ** 3)
+
+
+def _docker_root_dir():
+    """Best-effort: the filesystem path Docker itself stores container data under (usually
+    /var/lib/docker). Returns None (never raises) if docker isn't reachable -- callers must treat
+    that as "skip this specific check", not as a reason to fail the whole guard."""
+    try:
+        result = subprocess.run(["docker", "info", "--format", "{{.DockerRootDir}}"],
+                                 capture_output=True, text=True, timeout=10)
+        path = result.stdout.strip()
+        return path if result.returncode == 0 and path else None
+    except Exception:
+        return None
+
+
 def require_output_root_healthy(root=None, min_free_gb=OUTPUT_ROOT_MIN_FREE_GB):
     """Round 3 (post-relocation guard): trial_outputs now resolves through a symlink onto an
     external drive (T7). If that drive isn't mounted, the symlink either dangles (obvious failure)
@@ -145,8 +171,17 @@ def require_output_root_healthy(root=None, min_free_gb=OUTPUT_ROOT_MIN_FREE_GB):
     created fresh on the internal disk, quietly refilling it exactly the way this whole relocation
     was meant to prevent. Guard against both: resolve the REAL path (following the symlink) and
     REQUIRE a sentinel file that only exists on the intended drive; refuse loudly rather than
-    writing anywhere else. Also requires >= min_free_gb free on the resolved path (not `/`) --
-    space on the root filesystem is irrelevant once output lives elsewhere."""
+    writing anywhere else. Also requires >= min_free_gb free on the resolved path.
+
+    Ops patch (2026-07-20): Session 19's disk-full crisis was NOT on this output root (T7 had
+    plenty of room) -- it was the HOST's internal `/` filesystem, which this guard never checked
+    at all (the original comment here even said so explicitly: "space on the root filesystem is
+    irrelevant once output lives elsewhere" -- true for OUTPUT space, false for the many other
+    things sharing `/`, like Unity's own Library cache and the ros container's writable layer).
+    Now also checks host `/`, and the docker root dir too if it resolves to a DIFFERENT
+    filesystem than `/` (same device -> same statvfs call, skipped as redundant; checked via
+    st_dev, not just path string equality, in case of bind-mount tricks). Each filesystem named
+    explicitly in its own refusal so a failure is never ambiguous about which disk is the problem."""
     root = Path(root) if root is not None else DEFAULT_OUT_ROOT
     resolved = root.resolve()
     sentinel = resolved / OUTPUT_ROOT_SENTINEL_NAME
@@ -157,13 +192,85 @@ def require_output_root_healthy(root=None, min_free_gb=OUTPUT_ROOT_MIN_FREE_GB):
             "mounted -- writing here would silently land on the internal disk. Mount T7 (or "
             "restore the trial_outputs -> /media/sheng/T7/Social_Navigation/trial_outputs symlink) "
             "before running trials.".format(sentinel, resolved))
-    st = os.statvfs(str(resolved))
-    free_gb = (st.f_bavail * st.f_frsize) / (1024 ** 3)
+
+    free_gb = _statvfs_free_gb(resolved)
     if free_gb < min_free_gb:
         raise SystemExit(
-            "[run_trial] REFUSING TO START: only {:.2f}GB free at {} (need >= {}GB).".format(
+            "[run_trial] REFUSING TO START: only {:.2f}GB free at output root {} (need >= {}GB).".format(
                 free_gb, resolved, min_free_gb))
+
+    host_root = Path("/")
+    host_free_gb = _statvfs_free_gb(host_root)
+    if host_free_gb < min_free_gb:
+        raise SystemExit(
+            "[run_trial] REFUSING TO START: only {:.2f}GB free at host root / (need >= {}GB) -- "
+            "this is the filesystem Unity's own Library cache and Docker's container storage "
+            "live on, NOT the T7 output root (which is healthy). See ops patch 2026-07-20 / "
+            "Session 19's disk-full incident (~/.ros/autotrial/*/*.csv unbounded growth was the "
+            "root cause that time) for what to check first.".format(host_free_gb, min_free_gb))
+
+    docker_root = _docker_root_dir()
+    if docker_root is not None:
+        try:
+            distinct = os.stat(docker_root).st_dev != os.stat(str(host_root)).st_dev
+        except OSError:
+            distinct = False
+        if distinct:
+            docker_free_gb = _statvfs_free_gb(docker_root)
+            if docker_free_gb < min_free_gb:
+                raise SystemExit(
+                    "[run_trial] REFUSING TO START: only {:.2f}GB free at Docker root {} (need "
+                    ">= {}GB) -- this is on a different filesystem than / and was not covered by "
+                    "either of the other two checks.".format(docker_free_gb, docker_root, min_free_gb))
+
     return resolved
+
+
+def contain_ros_logs(out_root=None, max_mb=ROS_LOG_MAX_MB):
+    """Ops patch (2026-07-20): permanent fix for Session 19's disk-full root cause. Pre-flight
+    step (call before every trial, not just when things are already dire) -- any
+    ~/.ros/autotrial/*/*.csv inside the `ros` container over max_mb is archived (docker cp, so
+    the exact bytes are preserved, not re-derived) to trial_outputs/_ros_log_archive/ and then
+    truncated in place (`truncate -s 0`, safe for a live O_APPEND writer -- the current bringup's
+    process keeps writing from byte 0 with no error, confirmed empirically during Session 19's
+    manual version of this same operation). Best-effort and non-fatal by design: a hygiene step
+    failing must never block a trial that would otherwise run fine -- unlike
+    require_output_root_healthy, which is a hard precondition."""
+    try:
+        find = subprocess.run(
+            ["docker", "exec", DOCKER_CONTAINER, "bash", "-lc",
+             "find /home/sheng/.ros/autotrial -name '*.csv' -size +{}M 2>/dev/null".format(int(max_mb))],
+            capture_output=True, text=True, timeout=15)
+        if find.returncode != 0:
+            return
+        paths = [p for p in find.stdout.splitlines() if p.strip()]
+        if not paths:
+            return
+
+        archive_dir = (Path(out_root) if out_root is not None else DEFAULT_OUT_ROOT) / ROS_LOG_ARCHIVE_DIRNAME
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+
+        for container_path in paths:
+            basename = container_path.rsplit("/", 1)[-1]
+            local_path = archive_dir / "{}_{}".format(ts, basename)
+            cp = subprocess.run(["docker", "cp", "{}:{}".format(DOCKER_CONTAINER, container_path), str(local_path)],
+                                 capture_output=True, text=True, timeout=120)
+            if cp.returncode != 0:
+                eprint("[run_trial] contain_ros_logs: docker cp failed for {} (non-fatal, leaving it in place): {}".format(
+                    container_path, cp.stderr[-300:]))
+                continue
+            trunc = subprocess.run(
+                ["docker", "exec", DOCKER_CONTAINER, "bash", "-lc", "truncate -s 0 '{}'".format(container_path)],
+                capture_output=True, text=True, timeout=15)
+            if trunc.returncode == 0:
+                eprint("[run_trial] contain_ros_logs: archived {} -> {}, truncated in place.".format(
+                    container_path, local_path))
+            else:
+                eprint("[run_trial] contain_ros_logs: archived {} but truncate failed (non-fatal): {}".format(
+                    container_path, trunc.stderr[-300:]))
+    except Exception as e:
+        eprint("[run_trial] contain_ros_logs failed (non-fatal, not blocking the trial): {}".format(e))
 
 
 def mirror_notes(out_root=None):
@@ -1003,6 +1110,7 @@ def main():
         raise SystemExit("--personality '{}' invalid. Valid: {}".format(args.personality, PERSONALITIES))
 
     require_output_root_healthy()
+    contain_ros_logs()
 
     # Session 10 (D4 QoL patch), regeared in Round 4 (Step 2) onto --ped-distance: --spawn/--goal/
     # --ped-goal are all optional, defaulting to the canonical head-on-encounter geometry --
