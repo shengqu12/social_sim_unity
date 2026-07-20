@@ -219,6 +219,19 @@ def find_trial_dirs(root, include_archives=False):
     return found
 
 
+def _is_v5_config(meta):
+    """Session 18 (Step 2.5): "v5" = the 25m-slate + real-A1-camera config shipped in Session 17.
+    camHeightMeters only exists in AutoTrialConfig.camera as of that session -- it is simply
+    absent (not zero, not null -- the whole key is missing) from meta.json's embedded config on
+    every trial captured with older code, since JsonUtility only serializes fields that existed
+    on the C# struct at capture time. That absence is a clean, retroactive-proof discriminator;
+    triggerDistanceMeters>=25.0 is checked too so an explicit --ped-distance override on v5 code
+    doesn't get miscounted as the v5 config specifically. Returns bool."""
+    cfg = meta.get("config", {})
+    camera = cfg.get("camera", {})
+    return "camHeightMeters" in camera and cfg.get("triggerDistanceMeters", 0) >= 25.0
+
+
 def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_archives=False):
     """Rewritten for the near-only output format in Session 10 (D5); Round 4 (Step 4) restored
     the full video as the primary block, shown first with its own whole-trial contact sheet, near
@@ -252,6 +265,7 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
         min_dist = meta.get("minDistanceMeters", None)
         census = meta.get("agentCensus", [])
         stray_count = sum(1 for c in census if c.startswith("STRAY"))
+        era = "v5" if _is_v5_config(meta) else "legacy"
 
         # Round 4 (Step 4, output format v3): the full POV video is now the primary deliverable --
         # shown first, with its own whole-trial contact sheet (8 frames spanning the trial, built
@@ -334,13 +348,17 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
             body_parts.append('<p class="stats">No full video or near-pedestrian spans found (min_dist={} m).</p>'.format(esc(min_dist)))
         body = "".join(body_parts)
 
+        era_flag = '<span class="flag ok">v5</span>' if era == "v5" else '<span class="flag">legacy</span>'
         blocks.append("""
-<div class="trial">
+<div class="trial" data-era="{era}">
   <h2>{name}</h2>
-  <div class="stats">{appearance} &times; {personality} &middot; termination: {termination} &middot; min_dist: {min_dist} m {stray_flag}</div>
+  <div class="stats">{appearance} &times; {personality} &middot; termination: {termination} &middot; min_dist: {min_dist} m {stray_flag}{era_flag}</div>
   {body}
-</div>""".format(name=esc(d.name), appearance=esc(appearance), personality=esc(personality),
-                  termination=esc(termination), min_dist=esc(min_dist), stray_flag=stray_flag, body=body))
+</div>""".format(era=esc(era), name=esc(d.name), appearance=esc(appearance), personality=esc(personality),
+                  termination=esc(termination), min_dist=esc(min_dist), stray_flag=stray_flag,
+                  era_flag=era_flag, body=body))
+
+    n_v5 = sum(1 for d_ in blocks if 'data-era="v5"' in d_)
 
     html_out = """<!doctype html>
 <html lang="en">
@@ -367,6 +385,11 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
   video {{ width: 100%; border-radius: 6px; display: block; background: #000; }}
   .flag {{ display: inline-block; font-size: 0.75rem; background: #caa23a; color: #1a1a1a; border-radius: 4px; padding: 1px 6px; margin-left: 6px; font-weight: 600; }}
   .flag.ok {{ background: #3ecf6b; }}
+  .era-filter {{ display: flex; align-items: center; gap: 10px; margin-bottom: 18px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); font-size: 0.88rem; }}
+  .era-filter button {{ font: inherit; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); cursor: pointer; }}
+  .era-filter button.active {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+  .era-filter .era-count {{ color: var(--muted); }}
+  .trial[hidden] {{ display: none; }}
 </style>
 </head>
 <body>
@@ -375,13 +398,40 @@ def generate_index_html(root, index_path, near_dist=DEFAULT_NEAR_DIST, include_a
 is the primary deliverable, with its own whole-trial contact sheet. pov_near_NN.mp4 clips are
 retained as VLM-prefilter material, not the primary output. Clean (non-_ov) videos = model/VLM
 input; _ov siblings = human review only (VLM-purity norm, unchanged since Session 9).</div>
+<div class="era-filter">
+  <button type="button" id="era-btn-v5" class="active" onclick="setEra('v5')">Current (v5)</button>
+  <button type="button" id="era-btn-all" onclick="setEra('all')">All history</button>
+  <span class="era-count" id="era-count"></span>
+</div>
 {blocks}
+<script>
+(function() {{
+  var trials = Array.prototype.slice.call(document.querySelectorAll('.trial'));
+  var nV5 = trials.filter(function(t) {{ return t.getAttribute('data-era') === 'v5'; }}).length;
+  var countEl = document.getElementById('era-count');
+  function setEra(mode) {{
+    trials.forEach(function(t) {{
+      var show = mode === 'all' || t.getAttribute('data-era') === 'v5';
+      if (show) {{ t.removeAttribute('hidden'); }} else {{ t.setAttribute('hidden', ''); }}
+    }});
+    document.getElementById('era-btn-v5').classList.toggle('active', mode === 'v5');
+    document.getElementById('era-btn-all').classList.toggle('active', mode === 'all');
+    countEl.textContent = mode === 'all'
+      ? 'showing all ' + trials.length + ' trial(s), ' + nV5 + ' of them v5'
+      : 'showing ' + nV5 + ' of ' + trials.length + ' trial(s) -- v5 config (25m slate + real-A1 camera) only';
+  }}
+  window.setEra = setEra;
+  setEra('v5');
+}})();
+</script>
 </body>
 </html>
 """.format(blocks="".join(blocks))
 
     index_path.write_text(html_out)
-    eprint("[overlay] {} generated ({} trial(s)).".format(index_path, len(dirs)))
+    eprint("[overlay] {} generated ({} trial(s), {} v5, {} legacy -- default view is v5-only, "
+           "'All history' toggle shows everything).".format(
+               index_path, len(dirs), n_v5, len(dirs) - n_v5))
 
 
 def main():
