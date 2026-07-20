@@ -1,0 +1,68 @@
+# Session 20 DWA SWAP seed config -- translated from S19's landed TrajectoryPlannerROS winner
+# (sim_ws/src/social_sim_ros/social_sim_ros/params/kuri/base_local_planner_params.yaml), NOT
+# copied from DWAPlannerROS's stale in-repo defaults. This is the screening seed for STEP 2, not
+# a final answer -- load via `rosparam load` into move_base's DWAPlannerROS namespace, then
+# dynparam-tune from here exactly as S19 did for TrajectoryPlannerROS.
+#
+# Translation notes (each line traces back to a specific S19/kuri source value):
+DWAPlannerROS:
+
+  # --- path_distance_bias: the DWA analogue of pdist_scale, S19's winning lever. TrajPlanner
+  # went 0.75 -> 0.3 (a 0.4x multiplier) to fix path-hugging-induced weave. Applied the same
+  # 0.4x ratio to DWA's own stale default (0.6 -> 0.24) rather than guessing a fresh number.
+  path_distance_bias: 0.24
+  goal_distance_bias: 0.8   # unchanged from DWA default; only path bias implicated by S19's finding
+  occdist_scale: 0.01       # unchanged DWA default; not part of S19's screened levers, leave alone for seed
+
+  # --- vel/acc limits: ported from the kuri TrajectoryPlannerROS block (the actually-tuned
+  # values), not DWA's generic un-tuned defaults (acc_lim_x was 2.5, max_vel_x 0.55, max_vel_theta
+  # only 1.0 -- all weaker than what's proven to work). S19's C1 hypothesis (cutting angular
+  # authority) made weave WORSE, so angular limits are ported at full TrajPlanner strength, not
+  # conservatively narrowed.
+  acc_lim_x: 5.0
+  acc_lim_theta: 10.0
+  max_vel_x: 0.6
+  min_vel_x: 0.0
+  max_vel_theta: 3.0
+  min_vel_theta: -3.0
+  max_vel_trans: 0.6
+  min_vel_trans: 0.1
+
+  # --- holonomic_robot: false in TrajPlanner (Kuri is differential-drive) but DWA's stale
+  # defaults left acc_lim_y/max_vel_y/min_vel_y non-zero (2.5 / 0.1 / -0.1), which would let the
+  # planner command lateral motion the real robot can't execute. Zeroed to match physical reality;
+  # vy_samples dropped to 1 since there's nothing to sample.
+  acc_lim_y: 0.0
+  max_vel_y: 0.0
+  min_vel_y: 0.0
+  vy_samples: 1
+
+  # --- sim_time: per S19's screening, sim_time stayed at TrajPlanner's 2.0 for every hypothesis
+  # tested (including the pdist_scale winner) -- never itself a screened lever. Ported the value
+  # actually in effect during the winning screening/confirmation runs, not DWA's stale 1.7.
+  sim_time: 2.0
+  sim_granularity: 0.025
+  angular_sim_granularity: 0.01
+  vx_samples: 20
+  vth_samples: 40
+
+  # --- goal tolerance: aligned to TrajPlanner's landed values so the DWA-vs-TrajPlanner
+  # comparison measures motion quality, not an artifact of different arrival criteria (goal
+  # progress is a veto-powered safety rail this session -- keep it apples-to-apples).
+  xy_goal_tolerance: 0.35
+  yaw_goal_tolerance: 3.14159
+  latch_xy_goal_tolerance: true
+
+  # --- left as DWA defaults (not implicated by S19, not worth conflating in the seed):
+  forward_point_distance: 0.325
+  max_scaling_factor: 0.2
+  oscillation_reset_angle: 0.2
+  oscillation_reset_dist: 0.05
+  prune_plan: false
+  scaling_speed: 0.25
+  stop_time_buffer: 0.2
+  theta_stopped_vel: 0.1
+  trans_stopped_vel: 0.1
+  twirling_scale: 0.0
+  use_dwa: true
+  publish_cost_grid_pc: true
