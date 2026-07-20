@@ -1,0 +1,92 @@
+# Session 22R Phase E: TEB screening seed config -- MPC-flavored continuous trajectory
+# optimizer, tried after C1 (honest clock alone: WORSE than baseline, -63.2%) and C2 (heading
+# damping alone: +20.6% at N=6 but violates two veto-powered safety rails -- min_dist decreased,
+# ENCOUNTER-phase spin nearly doubled) both failed to reach the <5deg straight-segment body-yaw
+# bar within TrajectoryPlannerROS. This is the screening seed for Phase E, not a final answer.
+#
+# Seeds, each traced to a specific Phase A/B measurement or the kuri params file (not guessed):
+TebLocalPlannerROS:
+
+  odom_topic: /robot_odom
+  map_frame: map
+
+  # --- robot kinematics: ported from the kuri TrajectoryPlannerROS block (the tuned values),
+  # same rationale as S20's DWA seed -- not TEB's own generic defaults.
+  max_vel_x: 0.6
+  max_vel_theta: 3.0
+  acc_lim_x: 5.0
+  acc_lim_theta: 10.0
+  # "no reverse for the quadruped" (S22R amendment): backwards speed capped near zero and
+  # heavily penalized via weight_kinematics_forward_drive below, rather than left at TEB's
+  # default (which allows meaningful reverse driving).
+  max_vel_x_backwards: 0.01
+
+  # --- footprint: circular, radius from costmap_common_params.yaml's robot_radius (0.16),
+  # the same value TrajectoryPlannerROS's own costmap footprint already uses.
+  footprint_model:
+    type: "circular"
+    radius: 0.16
+
+  # --- trajectory: dt_ref is the "honest clock" built into TEB's own design (per the S22R
+  # amendment) -- set to Phase A's measured steady-state control-loop period (raw cmd_vel
+  # message Δt, post-startup: mean 0.1001s, i.e. the loop IS achieving close to nominal 10Hz on
+  # raw publish cadence; this is deliberately NOT the lower, C1-style "achievable rate" -- C1
+  # itself was screened and found to make TrajectoryPlannerROS's weave 63% WORSE, so this seed
+  # does not import that specific negative finding into a different algorithm's own timestep
+  # semantics without re-testing).
+  dt_ref: 0.1
+  dt_hysteresis: 0.01
+  global_plan_overwrite_orientation: true
+  max_global_plan_lookahead_dist: 3.0
+  feasibility_check_no_poses: 5
+
+  # --- goal tolerance: aligned to the landed TrajectoryPlannerROS values (xy_goal_tolerance
+  # 0.35, yaw_goal_tolerance ~pi i.e. "don't care") so this comparison measures motion quality,
+  # not arrival-criteria artifacts -- same rationale as S20's DWA seed.
+  xy_goal_tolerance: 0.35
+  yaw_goal_tolerance: 3.14159
+  free_goal_vel: false
+
+  # --- obstacles: min_obstacle_dist set >= the current inflation_radius (0.3, the GLOBAL
+  # costmap's value -- the larger of local 0.1 / global 0.3, so ">=" holds against both).
+  min_obstacle_dist: 0.3
+  inflation_dist: 0.5
+  include_costmap_obstacles: true
+  costmap_obstacles_behind_robot_dist: 1.0
+  obstacle_poses_affected: 15
+
+  # --- optimization weights: weight_kinematics_forward_drive set high per the amendment
+  # (strongly discourage reverse motion for the quadruped platform); weight_kinematics_nh
+  # (nonholonomic constraint) also high since the robot is not holonomic (matches
+  # TrajectoryPlannerROS's own holonomic_robot: false). Other weights left at commonly-used
+  # TEB defaults for the initial seed -- not yet screened.
+  weight_max_vel_x: 2.0
+  weight_max_vel_theta: 1.0
+  weight_acc_lim_x: 1.0
+  weight_acc_lim_theta: 1.0
+  weight_kinematics_nh: 1000.0
+  weight_kinematics_forward_drive: 1000.0
+  weight_kinematics_turning_radius: 1.0
+  weight_optimaltime: 1.0
+  # Session 22R Phase E screening winner (T2, N=6 confirmed): 0.0 -> 5.0. Native TEB analogue
+  # of TrajectoryPlannerROS's own C2 finding (heading/path-fidelity damping helps) -- but unlike
+  # C2 (which violated two veto-powered safety rails), this config passes all of them: min_dist
+  # increased (2.461->2.719m), ENCOUNTER-phase spin dropped 82% (6.67->1.17 mean), goal progress
+  # maintained. Primary metric: straight-segment yaw peak-to-peak +13.0% vs the landed
+  # TrajectoryPlannerROS baseline (mean 52.65->45.82deg, max 140.28->66.36deg) -- real, safety-
+  # clean improvement, but does NOT clear the session's <5deg bar. See REPORT.md Session 22R.
+  weight_shortest_path: 5.0
+  weight_obstacle: 50.0
+  weight_inflation: 0.2
+  weight_viapoint: 1.0
+
+  # --- misc: left at TEB defaults for the seed, not implicated by any Phase A/B finding.
+  teb_autosize: true
+  exact_arc_length: false
+  publish_feedback: false
+  no_inner_iterations: 5
+  no_outer_iterations: 4
+  optimization_activate: true
+  enable_multithreading: true
+  oscillation_recovery: true
+  shrink_horizon_backup: true
