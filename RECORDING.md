@@ -82,7 +82,7 @@ the code (not asserted from memory):
 | `phone_user` | OK — fixed Session 21 (canonical container rewired to `PhoneUser_Ped.prefab` + `PhoneUser_TextingController` via `PrefabUtility`/`SerializedObject`, verified by a real trial). |
 | `scooter_user` | OK |
 | `wheelchair_user` | OK, but **female avatar only** — the wheelchair-male package has no importable prefab (out of scope for v1). |
-| `white_cane_user` | OK |
+| `white_cane_user` | OK -- fixed Session 21 (was silently teleporting to the world origin one frame after spawn; runtime position-guardian component reverts the jump, root cause characterized in Base.cs's nested-Animator root-motion path, not patched there since that file is off-limits). |
 
 ## 4. Key parameters
 

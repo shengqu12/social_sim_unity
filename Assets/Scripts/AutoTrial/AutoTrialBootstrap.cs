@@ -569,6 +569,24 @@ namespace SEAN.AutoTrial
                 // Session 13: freeze at spawn (InitDest(spawnPos) unconditionally); the real
                 // destination is only released at the slate moment, via releaseDest below.
                 navAgent.InitDest(spawnPos);
+                // Session 21 STEP 3: white_cane_user origin-reset fix. Root cause characterized
+                // (not patched, both source files off-limits) via S21TransformWatcher -- destPos
+                // transiently zeroes as a by-design side effect of the SLATE freeze's own
+                // CloseEnough()/StopNavigation() cycle, and white_cane_user's nested-Animator
+                // root-motion path (unlike every other current Zone B container) applies
+                // animator.deltaPosition unconditionally, un-gated by the same destPos check
+                // Base.Move() already has. Guarded here at the AutoTrial layer instead, applied
+                // to all Zone B containers as a general-purpose safety net (cheap, and the
+                // brief's own "possibly shared with the dormant patrol case" note means any
+                // future nested-Animator container could hit the identical window).
+                var positionGuardian = navAgent.transform.gameObject.AddComponent<S21PedestrianPositionGuardian>();
+                positionGuardian.SetIntendedPosition(spawnPos);
+                if (config.appearance == "white_cane_user")
+                {
+                    // Diagnostic-only, kept for provenance: the per-frame transform watcher
+                    // that originally bracketed this defect (see S21TransformWatcher.cs).
+                    navAgent.transform.gameObject.AddComponent<S21TransformWatcher>();
+                }
                 navAgentOut = navAgent;
                 releaseDest = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
                 return navAgent.transform;
