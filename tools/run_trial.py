@@ -893,14 +893,15 @@ def main():
                         "TrialController.PollForTrigger releases the pedestrian and starts capture "
                         "the instant robot<->pedestrian ground-plane distance first drops to this "
                         "value or below (config.triggerDistanceMeters). Only takes effect when "
-                        "--spawn is not explicitly given. Default 8.0.")
+                        "--spawn is not explicitly given. Default 25.0 (Session 17) -- was 8.0 "
+                        "through Session 16.")
     p.add_argument("--slate-margin", type=float, default=4.0,
                    help="Session 14 (SLATE v2): extra distance beyond --ped-distance at which the "
-                        "pedestrian actually spawns, frozen (default 4.0 -> ~12m from robot start "
-                        "at the default --ped-distance=8.0). The robot's goal is published early "
-                        "(pre-roll) so it reaches a normal cruise while still further than "
-                        "--ped-distance away; only takes effect when --spawn is not explicitly "
-                        "given.")
+                        "pedestrian actually spawns, frozen (default 4.0 -> ~29m from robot start "
+                        "at the current default --ped-distance=25.0, Session 17). The robot's "
+                        "goal is published early (pre-roll) so it reaches a normal cruise while "
+                        "still further than --ped-distance away; only takes effect when --spawn "
+                        "is not explicitly given.")
     p.add_argument("--post-encounter-grace", type=float, default=None, metavar="SECONDS",
                    help="Session 15: end capture SECONDS after dist_to_pedestrian first "
                         "re-exceeds --ped-distance following a genuine pass (i.e. the encounter "
