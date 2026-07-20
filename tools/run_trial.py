@@ -428,12 +428,28 @@ def snapshot_modified_tracked_files():
     return modified
 
 
-def revert_newly_dirtied_tracked_files(before, after):
+def revert_newly_dirtied_tracked_files(before, after, expected_dirty=None):
     """Restore any tracked file that became modified during this run, via `git show` (a read
     operation) piped to a plain file write -- never git add/commit/checkout/restore/stash, per
     this session's git-is-read-only rule. Never touches files that were already dirty in `before`
-    (e.g. the pre-existing Microsoft-Rocketbox submodule / UserSettings churn)."""
+    (e.g. the pre-existing Microsoft-Rocketbox submodule / UserSettings churn).
+
+    `expected_dirty` (Session 21 POLICY UNLOCK): paths the caller explicitly declared this run is
+    SUPPOSED to change (e.g. an -executeMethod prefab fix via PrefabUtility/SerializedObject).
+    Without this, an intentional, sanctioned edit is indistinguishable from the accidental
+    side-effect drift this guard exists to catch (Session 1/3's ROSConnectionPrefab/Outdoor.unity
+    incidents) and gets silently reverted right along with it -- caught live (Session 21 STEP 1):
+    the phone_user container fix round-tripped through PrefabUtility.SaveAsPrefabAsset
+    successfully, then this guard reverted it anyway, because it has no way to know a tracked-file
+    change was requested rather than incidental. Still an explicit allowlist, not a blanket
+    exemption -- every other newly-dirtied tracked file is reverted exactly as before."""
     newly_dirty = after - before
+    if expected_dirty:
+        skipped = newly_dirty & expected_dirty
+        for rel_path in sorted(skipped):
+            eprint("[run_trial] '{}' changed as expected this run (declared via expected_dirty) "
+                   "-- NOT reverting.".format(rel_path))
+        newly_dirty = newly_dirty - expected_dirty
     if not newly_dirty:
         return
     for rel_path in sorted(newly_dirty):
@@ -477,10 +493,6 @@ def build_config(args, out_dir):
         },
         "jpgQuality": args.jpg_quality,
     }
-    if args.appearance == "phone_user":
-        eprint("[run_trial] WARNING: phone_user's container is mid-rewiring (editor-side, pending "
-               "verification) -- see AutoTrialBootstrap.ZoneBContainers comment. Results may not "
-               "reflect the intended texting-avatar behavior yet.")
     return config
 
 
@@ -541,12 +553,16 @@ def build_unity_cmd(log_path, windowed=False, extra_args=None, quit_after=False)
     return cmd
 
 
-def guarded_unity_run(cmd, timeout, extra_env=None):
+def guarded_unity_run(cmd, timeout, extra_env=None, expected_dirty=None):
     """The ONLY sanctioned way to launch Unity from this toolset, for a trial OR any ad hoc
     diagnostic. Wraps every launch in the dirty-tracked-file snapshot/revert guard (Session 1/3:
     raw launches that bypassed this left ROSConnectionPrefab.prefab / Outdoor.unity modified as a
-    side effect, twice, precisely because they went around this check). Returns
-    (returncode_or_None, timed_out: bool)."""
+    side effect, twice, precisely because they went around this check).
+
+    `expected_dirty` (Session 21): an explicit set of repo-relative paths this specific run is
+    authorized to change (e.g. a PrefabUtility fix script) -- everything else newly-dirtied is
+    still reverted exactly as before. Omit for ordinary trial runs, which should never legitimately
+    dirty a tracked file. Returns (returncode_or_None, timed_out: bool)."""
     dirty_before = snapshot_modified_tracked_files()
     env = dict(os.environ)
     if extra_env:
@@ -562,7 +578,7 @@ def guarded_unity_run(cmd, timeout, extra_env=None):
         proc.wait(timeout=10)
         timed_out = True
     finally:
-        revert_newly_dirtied_tracked_files(dirty_before, snapshot_modified_tracked_files())
+        revert_newly_dirtied_tracked_files(dirty_before, snapshot_modified_tracked_files(), expected_dirty=expected_dirty)
     return proc.returncode, timed_out
 
 
@@ -1072,6 +1088,19 @@ def main():
                    help="diagnostic mode: guarded -batchmode -quit launch to force recompilation, then exit")
     p.add_argument("--diag-cmdvel", type=float, metavar="SECONDS", default=None,
                    help="diagnostic mode: guarded launch of DiagCmdVel for SECONDS, then exit")
+    p.add_argument("--exec-editor-method", type=str, metavar="FQN", default=None,
+                   help="diagnostic mode (Session 21): guarded -executeMethod launch of an "
+                        "arbitrary fully-qualified static method, then exit. The ONLY sanctioned "
+                        "way to run one-off Editor-script prefab fixes (PrefabUtility/"
+                        "AssetDatabase/SerializedObject) -- routes through guarded_unity_run's "
+                        "dirty-tracked-file snapshot/revert guard like every other launch. The "
+                        "target method owns its own EditorApplication.Exit() call.")
+    p.add_argument("--allow-dirty", action="append", default=[], metavar="REPO_RELATIVE_PATH",
+                   help="repeatable (Session 21): with --exec-editor-method, declares a "
+                        "repo-relative path this run is explicitly authorized to leave modified "
+                        "-- exempts it from the dirty-tracked-file revert guard. Every other "
+                        "tracked-file change is still reverted. Named per-call, matching this "
+                        "project's explicit-path-only convention -- never a blanket exemption.")
     p.add_argument("--warmup", dest="warmup", action="store_true", default=True,
                    help="prime a fresh ROS session with a real nav cycle before the batch "
                         "(Session 8 operational recipe) -- default on")
@@ -1102,8 +1131,23 @@ def main():
                 print(line)
         sys.exit(0)
 
+    if args.exec_editor_method is not None:
+        check_editor_lock()
+        log_path = Path("/tmp/run_trial_exec_editor_method.log")
+        cmd = build_unity_cmd(log_path, windowed=args.windowed, extra_args=[
+            "-executeMethod", args.exec_editor_method,
+        ])
+        returncode, timed_out = guarded_unity_run(cmd, timeout=180, expected_dirty=set(args.allow_dirty))
+        print("exec-editor-method: {} returncode={} timed_out={} log={}".format(
+            args.exec_editor_method, returncode, timed_out, log_path))
+        text = log_path.read_text(errors="replace") if log_path.exists() else ""
+        for line in text.splitlines():
+            if "[S21" in line or "[AutoTrial]" in line or "error CS" in line:
+                print(line)
+        sys.exit(0 if (returncode == 0 and not timed_out) else 1)
+
     if not args.appearance:
-        p.error("--appearance is required unless --compile-check or --diag-cmdvel is given")
+        p.error("--appearance is required unless --compile-check, --diag-cmdvel, or --exec-editor-method is given")
 
     validate_appearance_friendly(args.appearance)
     if args.personality.lower() not in PERSONALITIES:

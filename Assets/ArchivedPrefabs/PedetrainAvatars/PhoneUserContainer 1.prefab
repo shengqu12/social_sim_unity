@@ -11,7 +11,7 @@ GameObject:
   - component: {fileID: 5564436450700284208}
   - component: {fileID: 5673198603522792411}
   m_Layer: 0
-  m_Name: PhoneUserContainer
+  m_Name: PhoneUserContainer 1
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -44,8 +44,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 069f6900e2c04501b218fe4a912b2638, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  animationController: {fileID: 9100000, guid: 81172bf03476a078da694446a6bfa6aa, type: 2}
+  animationController: {fileID: 9100000, guid: d3b7ebf8605e64140b49960db196f694, type: 2}
   avatars:
   - {fileID: 8187466775694216319, guid: 914ba7691f0845295a3766c8ad79a9ae, type: 3}
   controller: 0
-  directVelocityDrive: 0

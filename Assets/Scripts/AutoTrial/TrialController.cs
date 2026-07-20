@@ -500,9 +500,7 @@ namespace SEAN.AutoTrial
                 resolvedAppearanceResourcePath = appearanceResourcePath,
                 resolvedAppearanceNote = config.appearance == "wheelchair_user"
                     ? "wheelchair_user resolves to WheelChairUserContainer -> Rocketbox/Wheelchair_Female (female avatar only; male package has no importable prefab, out of scope for v1)"
-                    : (config.appearance == "phone_user"
-                        ? "PENDING VERIFICATION -- container rewiring in progress (editor-side); see AutoTrialBootstrap.ZoneBContainers comment"
-                        : ""),
+                    : "",
                 agentCensus = agentCensus ?? new List<string>(),
                 povCameraAspect = povCam.aspect,
                 targetAspect = CaptureWidth / (float)CaptureHeight,

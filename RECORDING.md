@@ -79,7 +79,7 @@ the code (not asserted from memory):
 | `dog_walker` | OK |
 | `female_child` | OK |
 | `male_child` | OK |
-| `phone_user` | **PENDING VERIFICATION** — container rewiring in progress (editor-side); the canonical avatar is being switched to a different prefab under the same Resources path. `run_trial.py` prints its own warning when this appearance is used. Results may not yet reflect the intended texting-avatar behavior. |
+| `phone_user` | OK — fixed Session 21 (canonical container rewired to `PhoneUser_Ped.prefab` + `PhoneUser_TextingController` via `PrefabUtility`/`SerializedObject`, verified by a real trial). |
 | `scooter_user` | OK |
 | `wheelchair_user` | OK, but **female avatar only** — the wheelchair-male package has no importable prefab (out of scope for v1). |
 | `white_cane_user` | OK |

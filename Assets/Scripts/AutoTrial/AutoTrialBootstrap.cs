@@ -33,11 +33,12 @@ namespace SEAN.AutoTrial
             { "dog_walker", "Prefabs/DogWalkerContainer" },
             { "female_child", "Prefabs/FemaleChildContainer" },
             { "male_child", "Prefabs/MaleChildContainer" },
-            // PENDING VERIFICATION -- container rewiring in progress (editor-side, see pre-flight
-            // A 2026-07-15): canonical avatar is being switched from the committed prefab's
-            // Phone_User.prefab to PedetrainAvatars/PhoneUser_Ped.prefab under this same
-            // committed path/name. No code change needed here either way -- the Resources path
-            // does not change. run_trial.py prints its own warning when this appearance is used.
+            // Fixed Session 21 STEP 1: canonical avatar switched from Phone_User.prefab to
+            // PedetrainAvatars/PhoneUser_Ped.prefab (avatars[0]) + PhoneUser_TextingController
+            // (animationController), via PrefabUtility/SerializedObject through the guarded
+            // launcher -- verified by a real trial (walking gait + texting upper body, all
+            // gates green). The abandoned "PhoneUserContainer 1.prefab" scratch duplicate was
+            // moved to Assets/ArchivedPrefabs/ (kept, not deleted). Resources path unchanged.
             { "phone_user", "Prefabs/PedetrainAvatars/PhoneUserContainer" },
             { "scooter_user", "Prefabs/ScooterUserContainer" },
             // Canonical wheelchair per pre-flight ruling (2026-07-15): wraps
