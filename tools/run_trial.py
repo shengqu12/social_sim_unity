@@ -109,6 +109,14 @@ PED_OVERSHOOT_M = 3.0
 # from the 1D bearing math alone.
 DEFAULT_PED_DISTANCE = 25.0
 
+# Session 29 STEP 2: scooter_user's own default --ped-speed multiplier. Parameters.MAX_VEL
+# (Assets/Scripts/Agents/Parameters.cs) = 0.6 m/s is the shared social-force speed cap every
+# character (Zone A and B alike) was measured hitting -- walking pace, not e-scooter cruise
+# (real-world reference 3-4 m/s). 5.5x -> ~3.3 m/s, mid-range. PedestrianModulator.Scale()
+# multiplies AFTER SFAgent.UpdateVelocity()'s own MAX_VEL clamp, so this can exceed 0.6 m/s
+# without editing SFAgent.cs/Base.cs (both off-limits).
+SCOOTER_SPEED_MULT = 5.5
+
 
 def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
     """Round 4 (Step 2): places the pedestrian exactly `ped_distance` meters from robot_start,
@@ -1367,6 +1375,8 @@ def main():
                               "--no-ped-goal for dest==spawn instead.")
         args.ped_goal = list(geom_ped_goal)
 
+    if args.ped_speed is None and args.appearance == "scooter_user":
+        args.ped_speed = SCOOTER_SPEED_MULT
     if args.ped_speed is None:
         args.ped_speed = 1.0
 

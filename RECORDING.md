@@ -99,7 +99,7 @@ read from the argparse definitions, not asserted from memory.
 | `--ped-distance` | `25.0` (meters) | Distance from the robot's start, along the start→goal bearing, that defines both the trial's dist0 target AND the live release trigger (the pedestrian is frozen further out and released the instant this distance is first crossed, robot already cruising). Was `8.0` through Session 16. |
 | `--slate-margin` | `4.0` (meters) | Extra distance beyond `--ped-distance` at which the pedestrian actually spawns, frozen. |
 | `--scenario` | `headon` | Session 28: pure-geometry encounter preset, computed from the robot's own start→goal bearing. `crossing` (ped path perpendicular, timed by the SLATE freeze), `overtake` (ped ahead, same direction, default `--ped-speed 0.5`), `overtaken` (mirrors `overtake` with default `--ped-speed 1.5` — an honest approximation, not a literal starts-behind spawn; see `tools/run_trial.py`'s own `resolve_scenario_geometry` docstring for why that's geometrically unreachable with the existing SLATE trigger). |
-| `--ped-speed` | `1.0` (or the scenario's own default) | Session 28: pedestrian walk-speed multiplier (reuses `PedestrianModulator.walkSpeedMultiplier`). Zone A only. |
+| `--ped-speed` | `1.0` (or the scenario's/appearance's own default) | Session 28/29: pedestrian walk-speed multiplier (reuses `PedestrianModulator.walkSpeedMultiplier`, applied AFTER `SFAgent`'s own base-speed clamp so it can exceed it). Zone A AND Zone B (S29 extended the S28 Zone-A-only hook). `scooter_user`'s own default is `5.5` (~3.3 m/s, e-scooter realistic) unless overridden. |
 | `--ped-motion` | `normal` | Session 28: `standing` freezes the pedestrian at its spawn pose permanently (still a live costmap obstacle, personality-driven upper-body/gaze animation still runs if a modulator is present). Zone A only. |
 | `--post-encounter-grace` | off (`None`) | Ends capture this many seconds after the pedestrian is passed and moving away again, instead of filming the full `--duration` (mostly empty post-encounter driving). Recommended for a clean "story" clip — e.g. `--post-encounter-grace 8.0`. |
 | `--cam-height` | `0.32` (meters) | Absolute camera height above ground, verified by a downward raycast at rig build time (cited: A1 stands ~0.40m tall, RealSense D435i lens ~0.30-0.32m). |
@@ -165,6 +165,18 @@ Any gate failure exits non-zero; the full artifact set is still left on disk for
 
 ## 8. Known limitations
 
+- **Robot cruise speed (0.6 m/s, TEB `max_vel_x`) was screened for an increase (Session 29) and
+  REJECTED** — both 1.0 and 1.2 m/s decisively fail the ENCOUNTER-phase spin safety rail (+433%/
+  +133% vs the landed baseline). 0.6 m/s stands; this is not an oversight, it's a tested and
+  rejected change — see `trial_outputs/REPORT.md` Session 29 for the full metric table before
+  proposing a re-test at the same candidate values.
+- **Pedestrian base speed (`Parameters.DESIRED_SPEED`/`MAX_VEL`) was 0.6 m/s through Session 28,
+  raised to 0.95 in Session 29** (measures ~1.3 m/s actual for Zone A/root-motion characters,
+  ~0.95 m/s actual for `directVelocityDrive` Zone B characters — the two movement mechanisms
+  scale this constant differently, see REPORT.md Session 29 for the calibration numbers).
+  `scooter_user` additionally defaults to a 5.5x `--ped-speed` multiplier on top of this
+  (~3.3 m/s). Any trial data captured before Session 29 (including `vlm_batch_v3`) used the OLD
+  0.6 m/s base speed throughout — see that session's own VERSION-SKEW flag.
 - **Encounter-phase spin residual.** The robot's local planner shows elevated in-place rotation
   near the pedestrian during the actual encounter, worst for the `assertive` personality (which
   suppresses the pedestrian's own yielding behavior). Confirmed, powered (N=6 per config)

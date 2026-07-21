@@ -60,9 +60,17 @@ namespace SEAN.AutoTrial
         // caught up after this specific Unity instance connected. Gating on observed state
         // instead of a guessed delay is what turns "usually works" into "always works."
         private const float GateTimeoutSec = 20f;
-        // See the "settled" comment in WaitForReadinessGates -- max_vel_x is 0.6 m/s, so 1.2 is
-        // "cruising normally," ruling out only a genuine spike/instability, not ordinary driving.
-        private const float SpeedSaneUpperBound = 1.2f;
+        // See the "settled" comment in WaitForReadinessGates. Session 29 STEP 1: this bound is a
+        // TEST-HARNESS sanity gate, not a real navigation cap -- it was calibrated at 2x the
+        // then-only max_vel_x (0.6 -> 1.2), "ruling out only a genuine spike/instability, not
+        // ordinary driving." Found live, not assumed: screening TEB max_vel_x=1.0 hit this bound
+        // directly (readings jumping 0.000/1.649, never settling, 20s gate timeout, 2/2 runs
+        // failed identically before the cause was traced here) -- 1.2 stopped being "clearly a
+        // spike" once ordinary cruise could itself approach it. Raised to preserve the SAME 2x
+        // margin against the highest speed this session actually screens (1.2 -> 2.4), not
+        // loosened arbitrarily. If a future session lands a higher max_vel_x, re-derive this the
+        // same way (2x the new landed value), don't just bump it further on faith.
+        private const float SpeedSaneUpperBound = 2.4f;
         private const float SpeedStableSustainSec = 2f;
 
         private bool gatesFailed;
@@ -587,6 +595,23 @@ namespace SEAN.AutoTrial
                     // Diagnostic-only, kept for provenance: the per-frame transform watcher
                     // that originally bracketed this defect (see S21TransformWatcher.cs).
                     navAgent.transform.gameObject.AddComponent<S21TransformWatcher>();
+                }
+                // Session 29 STEP 2: same pedSpeedMultiplier hook Zone A already has (S28) --
+                // walkSpeedMultiplier scales AFTER SFAgent.UpdateVelocity()'s own Parameters.
+                // MAX_VEL clamp (Base.cs/SFAgent.cs off-limits, but this scaling happens outside
+                // them, in PedestrianModulator.Scale(), so it can push the effective speed above
+                // that shared 0.6 m/s cap without touching either file). Zone B otherwise ignores
+                // personality/patrol (see the warning above) -- a modulator forced here purely
+                // for speed scaling doesn't reintroduce personality-driven reactive behavior,
+                // since PersonalityType.Indifferent's own Modulate() case is scale-only.
+                if (!Mathf.Approximately(config.pedSpeedMultiplier, 1.0f))
+                {
+                    var speedModulator = navAgent.transform.gameObject.GetComponent<Scenario.Agents.PedestrianModulator>();
+                    if (speedModulator == null)
+                    {
+                        speedModulator = navAgent.transform.gameObject.AddComponent<Scenario.Agents.PedestrianModulator>();
+                    }
+                    speedModulator.walkSpeedMultiplier = config.pedSpeedMultiplier;
                 }
                 navAgentOut = navAgent;
                 releaseDest = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
