@@ -490,6 +490,9 @@ def build_config(args, out_dir):
             "fixedPitchDeg": args.cam_pitch,
             "camHeightMeters": args.cam_height,
             "rigidMount": args.rigid_mount,
+            "camYawMode": args.cam_yaw_mode,
+            "camCourseWindowSec": args.cam_course_window,
+            "camYawTauCourse": args.cam_yaw_tau,
         },
         "jpgQuality": args.jpg_quality,
     }
@@ -1079,7 +1082,23 @@ def main():
     p.add_argument("--rigid-mount", action="store_true",
                    help="Round 3 (D2): force yaw smoothing tau to 0 (raw chassis yaw every frame, "
                         "no filtering) for direct before/after comparison. Position was already "
-                        "always rigid; pitch/roll are always constants regardless of this flag.")
+                        "always rigid; pitch/roll are always constants regardless of this flag. "
+                        "Chassis-mode only (--cam-yaw-mode chassis) -- no effect in course mode.")
+    p.add_argument("--cam-yaw-mode", choices=["course", "chassis"], default="course",
+                   help="Session 26 (course-locked camera, standing spec): POV camera yaw TARGET "
+                        "source. 'course' (default): direction of travel, estimated from a "
+                        "trailing position window (--cam-course-window) and low-passed "
+                        "(--cam-yaw-tau); below 0.15 m/s the target holds instead of chasing "
+                        "near-zero-displacement noise. 'chassis': the pre-Session-26 behavior "
+                        "(robot body heading, --yaw-smooth-tau/--rigid-mount apply). Position/"
+                        "pitch/roll are unaffected either way.")
+    p.add_argument("--cam-course-window", type=float, default=1.5,
+                   help="Session 26: trailing window (seconds) used to estimate direction of "
+                        "travel for --cam-yaw-mode course. Default 1.5s.")
+    p.add_argument("--cam-yaw-tau", type=float, default=1.5,
+                   help="Session 26: low-pass time constant (seconds) applied to the course-"
+                        "direction yaw target for --cam-yaw-mode course -- separate from and not "
+                        "shared with --yaw-smooth-tau (chassis mode's own tau). Default 1.5s.")
     p.add_argument("--jpg-quality", type=int, default=85)
     p.add_argument("--trial-position", type=int, default=1,
                    help="1-based position of this trial within its sequential run on one shared "

@@ -138,5 +138,27 @@ namespace SEAN.AutoTrial
         // stands ~0.40m tall, RealSense D435i in the front head puts the lens at ~0.30-0.32m.
         public float camHeightMeters = 0.32f;
         public bool rigidMount = false;
+
+        // Session 26 (course-locked camera, standing spec): yaw target source. "course" = direction
+        // of travel over a trailing window (default); "chassis" = the pre-S26 behavior (robot body
+        // heading, PovCameraSmoother's own headingSource). Position/pitch/roll are unaffected by
+        // this switch -- only where the smoothed yaw's TARGET comes from changes. See
+        // PovCameraSmoother.ComputeCourseYawTarget for the full mechanism.
+        public string camYawMode = "course";
+        // Trailing window (seconds) used to estimate direction of travel from position history.
+        public float camCourseWindowSec = 1.5f;
+        // Low-pass time constant applied to the course-direction yaw target (separate from
+        // yawSmoothTau above, which remains chassis-mode's own tau -- the two modes are tuned
+        // independently since they smooth different, differently-noisy source signals).
+        public float camYawTauCourse = 1.5f;
+        // Below this speed (m/s), direction of travel is undefined/noise-dominated -- the course
+        // target HOLDS at its last valid value instead of chasing near-zero-displacement noise.
+        public float camCourseHoldSpeedThreshold = 0.15f;
+        // In-design escalation: the course target is computed by aiming at an explicit look-ahead
+        // point (currentPos + courseDir * this distance), not a raw bearing -- see
+        // PovCameraSmoother.ComputeCourseYawTarget's doc comment for why (mathematically equivalent
+        // to the raw course angle for a unit courseDir, but frames the computation the way a real
+        // gimbal-style tracker would: aim AT a point).
+        public float camLookAheadMeters = 5.0f;
     }
 }
