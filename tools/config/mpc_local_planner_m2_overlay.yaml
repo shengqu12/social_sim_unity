@@ -1,0 +1,8 @@
+# Session 25: M2 variant overlay. Loaded via a SECOND <rosparam> tag, after
+# mpc_local_planner.yaml, so only this one field overrides the base (M1) config -- every other
+# param is identical between M1 and M2. This is the package's "time-optimal" objective (brief's
+# M2), as opposed to M1's stock quadratic_form.
+MpcLocalPlannerROS:
+  planning:
+    objective:
+      type: "minimum_time"

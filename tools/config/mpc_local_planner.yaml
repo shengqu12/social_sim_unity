@@ -1,0 +1,143 @@
+# Session 25: mpc_local_planner (IPOPT-based direct-transcription MPC) screening seed.
+# Pure-MPC showcase, NOT a tuning campaign -- brief's own scope: (1) unicycle/diff-drive model,
+# (2) vel/acc limits copied from the live TEB config (tools/config/teb_local_planner.yaml), (3)
+# obstacle handling via costmap_converter polygons. Every other field is the package's own STOCK
+# default, taken verbatim from the shipped example
+# (/opt/ros/noetic/share/mpc_local_planner/cfg/test_mpc_optim_node.yaml) -- deviations from that
+# example are each called out with a one-line reason below. Two variants, objective.type only:
+# this file = M1 (quadratic_form); M2 loads this file THEN
+# tools/config/mpc_local_planner_m2_overlay.yaml on top, which overrides only objective.type to
+# "minimum_time" -- no other field differs between M1 and M2.
+MpcLocalPlannerROS:
+
+  odom_topic: /robot_odom
+  map_frame: map
+
+  # --- obstacle handling: costmap_converter polygons, per the brief's explicit STEP 2 scope.
+  # DBSMCCH (DBScan clustering + Monotone Chain Convex Hull) is the standard/default converter
+  # used in the package's own tutorials and by TEB users -- stock choice, not tuned.
+  costmap_converter_plugin: "costmap_converter::CostmapToPolygonsDBSMCCH"
+  costmap_converter_spin_thread: true
+  costmap_converter_rate: 5.0
+
+  robot:
+    type: "unicycle"
+    unicycle:
+      # --- vel/acc limits: copied from the live TEB config (tools/config/teb_local_planner.yaml),
+      # per the brief's explicit STEP 2 scope -- same physical robot, same comparison basis.
+      max_vel_x: 0.6
+      max_vel_x_backwards: 0.01
+      max_vel_theta: 3.0
+      acc_lim_x: 5.0
+      dec_lim_x: 5.0
+      acc_lim_theta: 10.0
+
+  # --- footprint: circular radius 0.16, matching TEB's own footprint_model and the costmap's
+  # own robot_radius (costmap_common_params.yaml) -- deviation from the stock example's "point"
+  # placeholder, needed so min_dist / collision-avoidance margin is measured against the same
+  # physical footprint TEB was measured against (an apples-to-apples requirement for the
+  # showcase's own safety-rail comparison, not a behavior tuning choice).
+  footprint_model:
+    type: "circular"
+    radius: 0.16
+
+  collision_avoidance:
+    # --- min_obstacle_dist: 0.3, matching TEB's own value (>= the global costmap's inflation
+    # radius) -- same rationale as TEB's seed config, not a tuned value. Deviation from the
+    # stock example's 0.5.
+    min_obstacle_dist: 0.3
+    enable_dynamic_obstacles: false
+    force_inclusion_dist: 0.5
+    cutoff_dist: 2.5
+    collision_check_no_poses: 5
+
+  # --- planning grid: entirely STOCK (package's own example values, untouched). dt_ref is
+  # deliberately NOT ported from TEB's "honest clock" finding (0.1) -- per S22R's own precedent,
+  # a timing finding from one algorithm's control loop is not imported into a different
+  # algorithm's own discretization semantics without separately testing it, and this session is
+  # explicitly a showcase, not a tuning campaign.
+  grid:
+    type: "fd_grid"
+    grid_size_ref: 20
+    dt_ref: 0.3
+    xf_fixed: [true, true, true]
+    warm_start: true
+    collocation_method: "forward_differences"
+    cost_integration_method: "left_sum"
+    variable_grid:
+      enable: true
+      min_dt: 0.0
+      max_dt: 10.0
+      grid_adaptation:
+        enable: true
+        dt_hyst_ratio: 0.1
+        min_grid_size: 2
+        max_grid_size: 50
+
+  # --- planning objective: M1 (this file) = quadratic_form, STOCK weights. M2 overlay switches
+  # only "type" to "minimum_time" -- see mpc_local_planner_m2_overlay.yaml.
+  planning:
+    objective:
+      type: "quadratic_form"
+      quadratic_form:
+        state_weights: [2.0, 2.0, 2.0]
+        control_weights: [1.0, 1.0]
+        integral_form: false
+        hybrid_cost_minimum_time: false
+      minimum_time_via_points:
+        position_weight: 8.0
+        orientation_weight: 0.0
+        via_points_ordered: false
+    terminal_cost:
+      type: "quadratic"
+      quadratic:
+        final_state_weights: [2.0, 2.0, 2.0]
+    terminal_constraint:
+      type: "none"
+      l2_ball:
+        weight_matrix: [1.0, 1.0, 1.0]
+        radius: 5
+
+  # --- controller: STOCK, including goal tolerance (package default, NOT ported from TEB) --
+  # brief's STEP 2 scope was vel/acc limits + obstacle handling only; goal-tolerance divergence
+  # from TEB (0.2/0.1 here vs TEB's 0.35/pi) is a known, documented comparability caveat, not
+  # silently absorbed. via-points left OFF (stock -1), matching this session's own
+  # "nothing else changed" framing -- S24's via-point campaign is a separate, already-closed line
+  # of work, not reopened here.
+  controller:
+    outer_ocp_iterations: 1
+    xy_goal_tolerance: 0.2
+    yaw_goal_tolerance: 0.1
+    force_reinit_new_goal_dist: 1.0
+    force_reinit_new_goal_angular: 1.57
+    force_reinit_num_steps: 0
+    global_plan_overwrite_orientation: true
+    global_plan_viapoint_sep: -1
+    allow_init_with_backward_motion: true
+    publish_ocp_results: true
+    print_cpu_time: false
+
+  # --- solver: STOCK IPOPT settings, untouched.
+  solver:
+    type: "ipopt"
+    ipopt:
+      iterations: 100
+      max_cpu_time: -1.0
+      ipopt_numeric_options:
+        tol: 1e-4
+      ipopt_string_options:
+        linear_solver: "mumps"
+        hessian_approximation: "limited-memory"
+      ipopt_integer_options:
+        print_level: 2
+    lsq_lm:
+      iterations: 10
+      weight_init_eq: 2
+      weight_init_ineq: 2
+      weight_init_bounds: 2
+      weight_adapt_factor_eq: 1.5
+      weight_adapt_factor_ineq: 1.5
+      weight_adapt_factor_bounds: 1.5
+      weight_adapt_max_eq: 500
+      weight_adapt_max_ineq: 500
+      weight_adapt_max_bounds: 500
