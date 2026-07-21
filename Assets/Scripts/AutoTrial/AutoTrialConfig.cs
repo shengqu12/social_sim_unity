@@ -146,11 +146,17 @@ namespace SEAN.AutoTrial
         // PovCameraSmoother.ComputeCourseYawTarget for the full mechanism.
         public string camYawMode = "course";
         // Trailing window (seconds) used to estimate direction of travel from position history.
-        public float camCourseWindowSec = 1.5f;
+        // Session 27: promoted from S26's spec default (1.5s) to 8.0s, period-matched to TEB's own
+        // measured ~9.6s residual weave (S23/S24) -- 1.5s could not meaningfully damp a 9.6s-period
+        // oscillation (a low-pass needs tau on the order of the period it's damping, not a fraction
+        // of it). S26 confirmed 8s/8s clears far-field SIF and gets landmark swing near its bar;
+        // see REPORT.md Session 26/27.
+        public float camCourseWindowSec = 8.0f;
         // Low-pass time constant applied to the course-direction yaw target (separate from
         // yawSmoothTau above, which remains chassis-mode's own tau -- the two modes are tuned
-        // independently since they smooth different, differently-noisy source signals).
-        public float camYawTauCourse = 1.5f;
+        // independently since they smooth different, differently-noisy source signals). Session 27:
+        // promoted to 8.0s alongside camCourseWindowSec, same rationale.
+        public float camYawTauCourse = 8.0f;
         // Below this speed (m/s), direction of travel is undefined/noise-dominated -- the course
         // target HOLDS at its last valid value instead of chasing near-zero-displacement noise.
         public float camCourseHoldSpeedThreshold = 0.15f;
@@ -160,5 +166,15 @@ namespace SEAN.AutoTrial
         // to the raw course angle for a unit courseDir, but frames the computation the way a real
         // gimbal-style tracker would: aim AT a point).
         public float camLookAheadMeters = 5.0f;
+
+        // Session 27 (FOV truth): horizontal FOV in degrees, the camera property this project had
+        // never audited against the real robot's sensor. Prior sessions (S12-S26) inherited
+        // whatever vertical FOV the legacy first-person camera happened to carry (22.0deg, ->
+        // 38.1267deg horizontal at the 16:9 capture aspect, per S24CameraFovProbe) -- narrower than
+        // the real A1's RealSense D435i (RGB 69x42deg, depth 87x58deg H x V). Default here is the
+        // D435i RGB horizontal FOV (69deg); pass 87 for the depth FOV. AutoTrialBootstrap.
+        // BuildPovCamera converts this to Unity's own vertical Camera.fieldOfView using the actual
+        // capture aspect (2*atan(tan(hFov/2)/aspect)) -- NOT copied from the legacy camera anymore.
+        public float camHfovDeg = 69.0f;
     }
 }

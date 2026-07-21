@@ -73,6 +73,10 @@ namespace SEAN.AutoTrial
         // (AutoTrialBootstrap.ResolveCameraGroundHeight), logged into meta.json below.
         private float resolvedCamHeightWorldY;
         private bool camHeightRaycastHit;
+        // Session 27 (FOV truth): resolved once at rig build time (AutoTrialBootstrap.
+        // BuildPovCamera, derived from config.camera.camHfovDeg + the capture aspect), logged into
+        // meta.json below alongside the requested horizontal value (already embedded via config).
+        private float resolvedCamVfovDeg;
 
         private const float TriggerTimeoutSec = 30f;
         // Session 17 (Step 3.5): see PollForTrigger's class doc -- 2.5x max_vel_x (0.6), well
@@ -91,7 +95,7 @@ namespace SEAN.AutoTrial
             Transform pedestrian, string appearanceZone, string appearanceResourcePath, List<string> agentCensus,
             IVI.INavigable pedestrianNavAgent, Vector3 pedestrianReleaseDest,
             float bootstrapStartTime, float triggerDistanceMeters,
-            float resolvedCamHeightWorldY, bool camHeightRaycastHit)
+            float resolvedCamHeightWorldY, bool camHeightRaycastHit, float resolvedCamVfovDeg)
         {
             this.config = config;
             this.robot = robot;
@@ -106,6 +110,7 @@ namespace SEAN.AutoTrial
             this.triggerDistanceMeters = triggerDistanceMeters;
             this.resolvedCamHeightWorldY = resolvedCamHeightWorldY;
             this.camHeightRaycastHit = camHeightRaycastHit;
+            this.resolvedCamVfovDeg = resolvedCamVfovDeg;
 
             Directory.CreateDirectory(config.outDir);
             povDir = Path.Combine(config.outDir, "pov");
@@ -483,6 +488,11 @@ namespace SEAN.AutoTrial
             public float resolvedCamHeightWorldY;
             public bool camHeightRaycastHit;
             public float resolvedCamPitchDeg;
+            // Session 27 (FOV truth): config.camera.camHfovDeg is the requested horizontal input
+            // (already embedded via config); this is the actual resolved vertical Camera.fieldOfView
+            // Unity used, promoted to top level for the same visibility reason as the fields above.
+            public float resolvedCamHfovDeg;
+            public float resolvedCamVfovDeg;
         }
 
         private void WriteMetaJson()
@@ -511,6 +521,8 @@ namespace SEAN.AutoTrial
                 resolvedCamHeightWorldY = resolvedCamHeightWorldY,
                 camHeightRaycastHit = camHeightRaycastHit,
                 resolvedCamPitchDeg = config.camera.fixedPitchDeg,
+                resolvedCamHfovDeg = config.camera.camHfovDeg,
+                resolvedCamVfovDeg = resolvedCamVfovDeg,
             };
 
             string json = JsonUtility.ToJson(meta, true);

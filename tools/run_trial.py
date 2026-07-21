@@ -493,6 +493,7 @@ def build_config(args, out_dir):
             "camYawMode": args.cam_yaw_mode,
             "camCourseWindowSec": args.cam_course_window,
             "camYawTauCourse": args.cam_yaw_tau,
+            "camHfovDeg": args.cam_hfov,
         },
         "jpgQuality": args.jpg_quality,
     }
@@ -1092,13 +1093,29 @@ def main():
                         "near-zero-displacement noise. 'chassis': the pre-Session-26 behavior "
                         "(robot body heading, --yaw-smooth-tau/--rigid-mount apply). Position/"
                         "pitch/roll are unaffected either way.")
-    p.add_argument("--cam-course-window", type=float, default=1.5,
-                   help="Session 26: trailing window (seconds) used to estimate direction of "
-                        "travel for --cam-yaw-mode course. Default 1.5s.")
-    p.add_argument("--cam-yaw-tau", type=float, default=1.5,
-                   help="Session 26: low-pass time constant (seconds) applied to the course-"
+    p.add_argument("--cam-course-window", type=float, default=8.0,
+                   help="Session 26/27: trailing window (seconds) used to estimate direction of "
+                        "travel for --cam-yaw-mode course. Default promoted (Session 27) from "
+                        "S26's spec default (1.5s, which badly missed the SIF/swing bar -- a "
+                        "1.5s low-pass cannot damp TEB's own ~9.6s-period residual weave) to "
+                        "8.0s, period-matched -- S26's own N=3 confirmation: far-field (>15m) SIF "
+                        "98.45%, landmark swing mean 2.74deg (see REPORT.md Session 26/27).")
+    p.add_argument("--cam-yaw-tau", type=float, default=8.0,
+                   help="Session 26/27: low-pass time constant (seconds) applied to the course-"
                         "direction yaw target for --cam-yaw-mode course -- separate from and not "
-                        "shared with --yaw-smooth-tau (chassis mode's own tau). Default 1.5s.")
+                        "shared with --yaw-smooth-tau (chassis mode's own tau). Default promoted "
+                        "to 8.0s alongside --cam-course-window, same rationale.")
+    p.add_argument("--cam-hfov", type=float, default=69.0,
+                   help="Session 27 (FOV truth): POV camera horizontal field of view in degrees. "
+                        "Default 69.0 -- the real A1's RealSense D435i own RGB horizontal FOV "
+                        "(vertical 42deg; pass 87 for the D435i's depth-stream FOV, vertical "
+                        "58deg). Prior sessions (S12-S26) inherited whatever vertical FOV the "
+                        "legacy first-person camera happened to carry (22.0deg -> 38.1267deg "
+                        "horizontal at this project's 16:9 capture aspect, per "
+                        "S24CameraFovProbe) -- narrower than the real sensor, never audited "
+                        "before this session. AutoTrialBootstrap.BuildPovCamera converts this to "
+                        "Unity's own vertical Camera.fieldOfView using the actual capture aspect "
+                        "-- sim-real fidelity, not a metric workaround.")
     p.add_argument("--jpg-quality", type=int, default=85)
     p.add_argument("--trial-position", type=int, default=1,
                    help="1-based position of this trial within its sequential run on one shared "

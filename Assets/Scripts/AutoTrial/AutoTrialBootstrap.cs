@@ -251,13 +251,14 @@ namespace SEAN.AutoTrial
                 yield break;
             }
 
-            Camera povCam = BuildPovCamera(robot, config, out float resolvedCamHeightWorldY, out bool camHeightRaycastHit);
+            Camera povCam = BuildPovCamera(robot, config, out float resolvedCamHeightWorldY, out bool camHeightRaycastHit,
+                out float resolvedCamVfovDeg);
 
             var controllerGO = new GameObject("AutoTrialController");
             var controller = controllerGO.AddComponent<TrialController>();
             controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus,
                 pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, config.triggerDistanceMeters,
-                resolvedCamHeightWorldY, camHeightRaycastHit);
+                resolvedCamHeightWorldY, camHeightRaycastHit, resolvedCamVfovDeg);
         }
 
         /// <summary>
@@ -669,7 +670,7 @@ namespace SEAN.AutoTrial
         }
 
         private Camera BuildPovCamera(Scenario.Robot robot, AutoTrialConfig config,
-            out float resolvedCamHeightWorldY, out bool camHeightRaycastHit)
+            out float resolvedCamHeightWorldY, out bool camHeightRaycastHit, out float resolvedCamVfovDeg)
         {
             // POV: a NEW child camera on the robot's existing first-person camera transform, at
             // zero local offset, copying only FOV/near/far -- per adjustment #6 (2026-07-15) this
@@ -683,7 +684,26 @@ namespace SEAN.AutoTrial
             povGO.transform.localPosition = new Vector3(config.camera.povOffsetX, config.camera.povOffsetY, config.camera.povOffsetZ);
             povGO.transform.localRotation = Quaternion.identity;
             Camera povCam = povGO.AddComponent<Camera>();
-            povCam.fieldOfView = existing.fieldOfView;
+
+            // Session 27 (FOV truth): fieldOfView is no longer copied from the legacy first-person
+            // camera (existing.fieldOfView) -- that value (22.0deg vertical, -> 38.1267deg
+            // horizontal at this project's own 16:9 capture aspect, per S24CameraFovProbe) was
+            // inherited from Round 3 and never audited against the real A1's sensor. Computed here
+            // instead from config.camera.camHfovDeg (default 69deg, the RealSense D435i's own RGB
+            // horizontal FOV; 87deg selectable for the depth FOV) via the same capture aspect used
+            // for povCam.aspect below -- Unity's Camera.fieldOfView is VERTICAL, so:
+            // vFov = 2*atan(tan(hFov/2) / aspect). Sim-real fidelity, not a metric workaround --
+            // this changes what the camera actually RENDERS, not just how a downstream metric scores it.
+            float captureAspect = TrialController.CaptureWidth / (float)TrialController.CaptureHeight;
+            float hFovRad = config.camera.camHfovDeg * Mathf.Deg2Rad;
+            float vFovRad = 2f * Mathf.Atan(Mathf.Tan(hFovRad / 2f) / captureAspect);
+            float resolvedVFovDeg = vFovRad * Mathf.Rad2Deg;
+            resolvedCamVfovDeg = resolvedVFovDeg;
+            povCam.fieldOfView = resolvedVFovDeg;
+            Debug.Log("[AutoTrial] povCam.fieldOfView resolved from --cam-hfov=" + config.camera.camHfovDeg.ToString("F2")
+                + "deg (horizontal) -> " + resolvedVFovDeg.ToString("F4") + "deg (vertical, Unity's own convention) "
+                + "at captureAspect=" + captureAspect.ToString("F4") + " -- was existing.fieldOfView="
+                + existing.fieldOfView.ToString("F4") + "deg (legacy camera, no longer used).");
             povCam.nearClipPlane = existing.nearClipPlane;
             povCam.farClipPlane = existing.farClipPlane;
             povCam.enabled = false; // rendered manually via Camera.Render() at each capture tick
@@ -704,7 +724,7 @@ namespace SEAN.AutoTrial
             // encode). Explicitly setting aspect here, from the SAME authoritative capture
             // dimensions TrialController uses for its RenderTexture (not a re-typed literal),
             // closes it regardless of GameView/batchmode defaults.
-            povCam.aspect = TrialController.CaptureWidth / (float)TrialController.CaptureHeight;
+            povCam.aspect = captureAspect;
             float aspectErr = Mathf.Abs(povCam.aspect - TrialController.CaptureWidth / (float)TrialController.CaptureHeight);
             Debug.Log("[AutoTrial] povCam.aspect explicitly set to " + povCam.aspect.ToString("F4")
                 + " (target " + (TrialController.CaptureWidth / (float)TrialController.CaptureHeight).ToString("F4")
