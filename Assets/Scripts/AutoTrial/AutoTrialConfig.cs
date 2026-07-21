@@ -52,6 +52,23 @@ namespace SEAN.AutoTrial
         // (independent of --spawn/--slate-margin, which only affect where the freeze happens).
         public float triggerDistanceMeters = 8.0f;
 
+        // Session 28 PART 2: provenance only (Python already resolves spawnPose/pedGoalPose
+        // geometry per-scenario before this JSON is written) -- logged into meta.json so a trial
+        // is self-describing without cross-referencing the launch command.
+        public string scenario = "headon";
+
+        // Session 28 PART 3b: reuses PedestrianModulator.walkSpeedMultiplier (previously only
+        // reachable via child-appearance-specific presets). Zone A only -- see
+        // AutoTrialBootstrap.SpawnPedestrian.
+        public float pedSpeedMultiplier = 1.0f;
+        // Session 28 PART 3a: "standing" keeps the pedestrian's own destination at its spawn
+        // pose permanently (SLATE's own capture-start trigger still fires normally) -- see
+        // AutoTrialBootstrap.SpawnPedestrian. Zone A only.
+        public string pedMotion = "normal";
+        // Session 28 PART 3c: phone/texting distraction layer + reaction-delay modulator flag.
+        // Zone A only -- see AutoTrialBootstrap.SpawnPedestrian.
+        public bool pedDistracted = false;
+
         // Session 15: root-caused why goal_reached almost never fires -- terminationReason was
         // "duration" on 100% of trials checked across Sessions 12/13/14, because the configured
         // far corridor goal (44m from robot start) needs ~73s of pure driving at max_vel_x=0.6

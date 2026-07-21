@@ -610,10 +610,16 @@ namespace SEAN.AutoTrial
 
                 // Indifferent + no patrol = no modulator at all, matching PedestrianSpawner's
                 // existing convention (Base.ModulateVelocity() no-ops via a null GetComponent).
-                if (personalityType != Scenario.Agents.PedestrianModulator.PersonalityType.Indifferent || patrolValid)
+                // Session 28 PART 3b: ALSO force a modulator when pedSpeedMultiplier != 1.0f --
+                // same "force a modulator" convention PedestrianSpawner already uses for its own
+                // group.walkSpeedMultiplier (see that class).
+                bool wantsSpeedScale = !Mathf.Approximately(config.pedSpeedMultiplier, 1.0f);
+                if (personalityType != Scenario.Agents.PedestrianModulator.PersonalityType.Indifferent
+                    || patrolValid || wantsSpeedScale)
                 {
                     var modulator = navAgent.gameObject.AddComponent<Scenario.Agents.PedestrianModulator>();
                     modulator.personality = personalityType;
+                    modulator.walkSpeedMultiplier = config.pedSpeedMultiplier;
                     if (patrolValid)
                     {
                         modulator.EnablePatrol(config.patrolWaypoints[0].ToVector3(), config.patrolWaypoints[1].ToVector3());
@@ -626,9 +632,18 @@ namespace SEAN.AutoTrial
                 // modulator/patrol attached -- EnablePatrol above only configures the ping-pong
                 // cycle, it doesn't itself call InitDest); zoneADest is only released at the
                 // slate moment.
-                Vector3 zoneADest = patrolValid
-                    ? config.patrolWaypoints[0].ToVector3()
-                    : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos);
+                // Session 28 PART 3a: --ped-motion standing overrides the release destination to
+                // spawnPos regardless of patrol/pedGoalPose -- the SLATE capture-start trigger
+                // still fires normally (TrialController.PollForTrigger is release-destination-
+                // agnostic), the pedestrian just never actually walks anywhere. Still a live
+                // costmap obstacle (position is real, just static); a modulator (if forced above)
+                // keeps animating personality-driven upper-body/gaze behavior independent of
+                // navigation destination.
+                Vector3 zoneADest = config.pedMotion == "standing"
+                    ? spawnPos
+                    : (patrolValid
+                        ? config.patrolWaypoints[0].ToVector3()
+                        : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos));
                 navAgent.InitDest(spawnPos);
                 navAgentOut = navAgent;
                 releaseDest = zoneADest;

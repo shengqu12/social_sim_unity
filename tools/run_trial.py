@@ -141,6 +141,105 @@ def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, ov
     dest_z = sz - uz * overshoot
 
     return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z)
+
+
+SCENARIOS = ("headon", "crossing", "overtake", "overtaken")
+
+
+def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
+    """Session 28 PART 2: pure-geometry scenario presets, all computed from the robot's own
+    start->goal bearing (no new assets, no Unity changes). Returns ((ped_x, ped_y, ped_z,
+    ped_yaw_deg), (dest_x, dest_y, dest_z), default_ped_speed_mult_or_None). ped_distance here is
+    always the FROZEN SPAWN distance (ped_distance + slate_margin at the call site, matching
+    headon's own existing convention) -- the SLATE v2 trigger (live dist_to_pedestrian <=
+    config.triggerDistanceMeters) is what actually releases the pedestrian and defines dist0,
+    unaffected by how far away any of these presets spawn it; only the geometry differs.
+
+    headon (default): unchanged, delegates to resolve_head_on_geometry -- ped ahead on the
+    robot's own path, facing back at the robot, goal overshoots past robot_start (genuine
+    pass-through). Ped frozen at spawn regardless of scenario (SLATE v2), so pre-trigger
+    dist_to_pedestrian shrinks from the robot's own approach alone in every scenario below too.
+
+    crossing: ped path perpendicular to the robot's, timed by the SLATE trigger (ped frozen at
+    spawn, same freeze-until-release mechanism as headon) to intersect near the middle of the
+    remaining corridor -- not by any new synchronization logic, the existing freeze does this for
+    free. The intersection point is `ped_distance` along the robot's OWN bearing from
+    robot_start (matching headon's own meeting-point convention); the pedestrian spawns
+    CROSSING_PERP_FRACTION * ped_distance out along the PERPENDICULAR bearing from that point,
+    facing/moving across toward the mirrored point on the other side. That fraction (not
+    ped_distance itself) is deliberate: the SLATE trigger is a plain Euclidean distance
+    threshold, and the CLOSEST the robot's own approach can ever bring it to a point standing
+    perpendicular-offset D away is exactly D (achieved only once the robot reaches the
+    intersection point's own along-bearing coordinate) -- so the perpendicular offset must stay
+    smaller than the raw trigger threshold or the trigger becomes geometrically unreachable and
+    the 30s timeout guard fires instead (found empirically this session: offset==spawn distance,
+    i.e. fraction 1.0, put the achievable minimum at ~29m against a 25m threshold -- never
+    triggered cleanly).
+
+    overtake: ped ahead on the robot's OWN path (the same spawn point headon uses), but facing
+    and moving in the SAME direction as the robot instead of back toward it -- the faster robot
+    catches up and passes. Goal continues further along the same bearing past the spawn point.
+    Default ped-speed multiplier 0.5 (slower than the robot) unless overridden.
+
+    overtaken: HONEST GEOMETRY NOTE -- literally spawning the pedestrian BEHIND robot_start
+    turns out to be structurally incompatible with the existing SLATE v2 trigger: the pedestrian
+    is frozen until release, so only the ROBOT's own pre-release motion can shrink
+    dist_to_pedestrian toward the trigger threshold, and the robot only ever moves FORWARD
+    (robot_start -> goal) -- a fixed point behind robot_start only gets further away as the robot
+    advances, so the distance-shrink trigger condition can never fire (confirmed empirically this
+    session: the 30s timeout guard fires instead, same failure mode --scenario crossing hit
+    before its own fix). Implemented instead as the mirror of `overtake`: ped spawns AHEAD on the
+    robot's own path (the same achievable-trigger spawn point headon/overtake use), same
+    direction of travel as the robot, default ped-speed multiplier 1.5 (faster than the robot) --
+    post-release the faster pedestrian pulls further ahead/away rather than the robot passing it,
+    the mirror dynamic of overtake's "robot catches up and passes." This is a documented
+    approximation of "overtaken," not literal starts-behind-catches-up motion -- said so plainly
+    here and in REPORT.md rather than silently claiming geometry that isn't actually produced.
+    """
+    if scenario not in SCENARIOS:
+        raise ValueError("unknown --scenario '{}', valid: {}".format(scenario, SCENARIOS))
+
+    sx, sy, sz = robot_start
+    gx, gy, gz = goal_xyz[0], goal_xyz[1], goal_xyz[2]
+    dx, dz = gx - sx, gz - sz
+    norm = math.hypot(dx, dz)
+    if norm < 1e-6:
+        raise ValueError("robot start {} and goal {} coincide on the ground plane -- cannot "
+                          "compute a bearing for --scenario '{}' placement".format(robot_start, goal_xyz, scenario))
+    ux, uz = dx / norm, dz / norm
+    # Perpendicular to the robot's bearing (rotate 90deg in the ground plane).
+    px, pz = -uz, ux
+
+    if scenario == "headon":
+        ped_pose, dest = resolve_head_on_geometry(ped_distance, goal_xyz, robot_start, overshoot)
+        return ped_pose, dest, None
+
+    if scenario == "crossing":
+        # Kept well under 1.0 -- see the crossing docstring paragraph above for why the trigger
+        # becomes unreachable as this approaches (let alone reaches) 1.0.
+        CROSSING_PERP_FRACTION = 0.4
+        perp_offset = ped_distance * CROSSING_PERP_FRACTION
+        meet_x, meet_z = sx + ux * ped_distance, sz + uz * ped_distance
+        ped_x, ped_z = meet_x + px * perp_offset, meet_z + pz * perp_offset
+        dest_x, dest_z = meet_x - px * overshoot, meet_z - pz * overshoot
+        yaw = math.degrees(math.atan2(-px, -pz)) % 360.0  # facing toward the intersection point
+        return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z), None
+
+    if scenario == "overtake":
+        ped_x, ped_z = sx + ux * ped_distance, sz + uz * ped_distance
+        dest_x, dest_z = ped_x + ux * overshoot, ped_z + uz * overshoot
+        yaw = math.degrees(math.atan2(ux, uz)) % 360.0  # same direction of travel as the robot
+        return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z), 0.5
+
+    # overtaken -- see the docstring's "HONEST GEOMETRY NOTE" above: same achievable spawn point
+    # as overtake (ahead on the robot's path), not literally behind. Only the default speed
+    # multiplier differs from overtake (1.5 vs 0.5), producing the mirror dynamic.
+    ped_x, ped_z = sx + ux * ped_distance, sz + uz * ped_distance
+    dest_x, dest_z = ped_x + ux * overshoot, ped_z + uz * overshoot
+    yaw = math.degrees(math.atan2(ux, uz)) % 360.0  # same direction of travel as the robot
+    return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z), 1.5
+
+
 # Zone A is validated by convention (snake_case -> Rocketbox PascalCase), not enumerated here --
 # Unity's Resources.Load is authoritative. This regex just catches obvious typos early.
 ZONE_A_PATTERN = re.compile(r"^[a-z]+(_[a-z0-9]+)*$")
@@ -482,6 +581,10 @@ def build_config(args, out_dir):
         "hasPedGoalPose": args.ped_goal is not None,
         "pedGoalPose": pose(args.ped_goal[0], args.ped_goal[1], args.ped_goal[2], 0.0) if args.ped_goal is not None else pose(0, 0, 0, 0),
         "triggerDistanceMeters": args.ped_distance,
+        "scenario": args.scenario,
+        "pedSpeedMultiplier": args.ped_speed,
+        "pedMotion": args.ped_motion,
+        "pedDistracted": args.ped_distracted,
         "hasPostEncounterGrace": args.post_encounter_grace is not None,
         "postEncounterGraceSec": args.post_encounter_grace if args.post_encounter_grace is not None else 8.0,
         "camera": {
@@ -996,6 +1099,28 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--appearance")
     p.add_argument("--personality", default="indifferent")
+    p.add_argument("--ped-speed", type=float, default=None, metavar="MULT",
+                   help="Session 28 PART 3b: pedestrian walk-speed multiplier, reusing the "
+                        "existing PedestrianModulator.walkSpeedMultiplier mechanism (previously "
+                        "only reachable via child-appearance presets, not a direct flag). Typical "
+                        "range 0.5-1.6 -- e.g. ~0.6-0.7 for an 'elderly' gait, ~1.3-1.5 for "
+                        "'hurried'. Zone A only (Zone B special-character containers lock their "
+                        "own behavior, ignoring this like --personality). Default: 1.0, UNLESS "
+                        "--scenario overtake/overtaken supplies its own default (0.5/1.5) when "
+                        "this flag is not explicitly given.")
+    p.add_argument("--ped-motion", choices=["normal", "standing"], default="normal",
+                   help="Session 28 PART 3a: 'standing' freezes the pedestrian at its spawn pose "
+                        "PERMANENTLY (SLATE release still fires the capture-start trigger, but "
+                        "the pedestrian's own destination stays spawnPos instead of the real "
+                        "goal) -- still a live costmap obstacle, and personality-driven upper-"
+                        "body/gaze animation (via PedestrianModulator, if a personality/--ped-"
+                        "speed/--ped-distracted forces one) continues normally. Zone A only.")
+    p.add_argument("--ped-distracted", action="store_true",
+                   help="Session 28 PART 3c: phone/texting upper-body distraction layer "
+                        "(generalizes phone_user's own animation layer to any Zone A appearance) "
+                        "+ a modulator flag that delays/suppresses the pedestrian's own reaction "
+                        "to the robot. Indifferent x --ped-distracted is the classic unaware-"
+                        "pedestrian case. Zone A only.")
     p.add_argument("--duration", type=float, default=90.0)
     p.add_argument("--fps", type=int, default=15)
     p.add_argument("--near-dist", type=float, default=3.0)
@@ -1013,6 +1138,22 @@ def main():
     p.add_argument("--reused-ros", dest="reused_ros", action="store_true", default=True,
                    help="run inter-trial ROS hygiene (cancel+clear costmaps) before launching -- default on")
     p.add_argument("--no-reused-ros-hygiene", dest="reused_ros", action="store_false")
+    p.add_argument("--scenario", choices=list(SCENARIOS), default="headon",
+                   help="Session 28 PART 2: pure-geometry encounter preset, computed from the "
+                        "robot start->goal bearing (no new assets). 'headon' (default): ped ahead "
+                        "on the robot's path, facing back, genuine pass-through -- the pipeline's "
+                        "original behavior, unchanged. 'crossing': ped path perpendicular to the "
+                        "robot's, timed by the existing SLATE freeze-until-release to intersect "
+                        "near mid-corridor. 'overtake': ped ahead, same direction as the robot, "
+                        "default --ped-speed 0.5 (robot catches up and passes). 'overtaken': ped "
+                        "ahead on the SAME spawn point as overtake (a literal starts-BEHIND spawn "
+                        "is geometrically incompatible with the SLATE trigger -- see the "
+                        "function's own docstring), default --ped-speed 1.5 -- the mirror "
+                        "dynamic: the faster pedestrian pulls further ahead/away rather than the "
+                        "robot passing it. Only takes effect when --spawn is not "
+                        "explicitly given. Near-field encounter geometry differs by scenario -- "
+                        "SIF is reported per scenario, only far-field is gated (see REPORT.md "
+                        "Session 28).")
     p.add_argument("--ped-distance", type=float, default=DEFAULT_PED_DISTANCE,
                    help="Distance in meters from the robot's start position, measured along the "
                         "robot start->goal bearing, that defines the trial's dist0 target. Since "
@@ -1210,8 +1351,10 @@ def main():
         # is frozen there (AutoTrialBootstrap.SpawnPedestrian) until TrialController's live
         # distance trigger (config.triggerDistanceMeters == args.ped_distance) fires.
         spawn_distance = args.ped_distance + args.slate_margin
-        geom_spawn, geom_ped_goal = resolve_head_on_geometry(spawn_distance, bearing_goal)
+        geom_spawn, geom_ped_goal, scenario_speed_mult = resolve_scenario_geometry(args.scenario, spawn_distance, bearing_goal)
         args.spawn = list(geom_spawn)
+        if args.ped_speed is None and scenario_speed_mult is not None:
+            args.ped_speed = scenario_speed_mult
     else:
         geom_ped_goal = None  # explicit --spawn overrides geometry; no matching auto dest to offer
 
@@ -1223,6 +1366,9 @@ def main():
                               "--ped-goal (no geometry-derived destination to fall back to); pass "
                               "--no-ped-goal for dest==spawn instead.")
         args.ped_goal = list(geom_ped_goal)
+
+    if args.ped_speed is None:
+        args.ped_speed = 1.0
 
     print("=== resolved poses ===")
     print("robot start (scene teleport target, not CLI-settable): {}".format(ROBOT_START))
