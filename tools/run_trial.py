@@ -109,13 +109,41 @@ PED_OVERSHOOT_M = 3.0
 # from the 1D bearing math alone.
 DEFAULT_PED_DISTANCE = 25.0
 
+# Session 30R (Howard priority #1): the 25m default above serves "full story arc" framing, not
+# scoring -- interaction too small/distant in frame for a human/VLM to score against. 'scoring'
+# retargets the SLATE v2 trigger to 8.0m (Session 16-and-earlier's own old default, see
+# DEFAULT_PED_DISTANCE's history above -- not a new, unvalidated number) for a shorter approach
+# and tighter framing. 'arc' preserves today's behavior byte-for-byte; default stays 'arc' so no
+# existing caller's behavior changes -- only --profile scoring (or an explicit --ped-distance)
+# moves off it.
+PROFILES = ("arc", "scoring")
+PROFILE_PED_DISTANCE = {"arc": DEFAULT_PED_DISTANCE, "scoring": 8.0}
+
 # Session 29 STEP 2: scooter_user's own default --ped-speed multiplier. Parameters.MAX_VEL
 # (Assets/Scripts/Agents/Parameters.cs) = 0.6 m/s is the shared social-force speed cap every
 # character (Zone A and B alike) was measured hitting -- walking pace, not e-scooter cruise
 # (real-world reference 3-4 m/s). 5.5x -> ~3.3 m/s, mid-range. PedestrianModulator.Scale()
 # multiplies AFTER SFAgent.UpdateVelocity()'s own MAX_VEL clamp, so this can exceed 0.6 m/s
 # without editing SFAgent.cs/Base.cs (both off-limits).
-SCOOTER_SPEED_MULT = 5.5
+# Session 30R STEP 2: real-world speed audit. Session 29's SCOOTER_SPEED_MULT=5.5 was landed via
+# commit message only -- its own REPORT.md section was never written, so the "5.5x -> ~3.3 m/s"
+# comment above was never actually verified against a live trial (see PROJECT_HANDOFF's "Session
+# 29 gap"). Measured live this session (frames.csv pedestrian_x/z, post-release): scooter_user at
+# mult=5.5 actually ran ~5.23 m/s, not ~3.3 -- well outside the 3-4 m/s real-world e-scooter
+# reference. Retuned to 3.7 below (implied base pace ~0.95 m/s * 3.7 ~= 3.5 m/s, mid-range).
+# cyclist and wheelchair_user had NO multiplier at all (both measured ~0.95 m/s,
+# walking-pace default -- cyclist is way under the 4-5 m/s bicycle reference; wheelchair_user is
+# just under the 1.0-1.5 m/s reference). white_cane_user measured ~0.2-0.25 m/s, well under the
+# 0.8-1.0 m/s reference (slower-than-walking, not stationary -- the Session 21-era transform-reset
+# defect was NOT reproduced this session, positions traced smooth/monotonic; this is a genuine
+# gait-speed gap, not that old bug resurfacing). All four retuned below from the SAME live
+# measurements (implied base pace at mult=1.0, then solved for the multiplier landing near the
+# middle of each reference range) -- see REPORT.md Session 30R STEP 2 for the full before/after
+# table and the safety-rail (min_dist/ENCOUNTER-spin/collision) check on every change.
+SCOOTER_SPEED_MULT = 3.7
+CYCLIST_SPEED_MULT = 4.8
+WHEELCHAIR_SPEED_MULT = 1.3
+WHITE_CANE_SPEED_MULT = 3.2
 
 
 def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
@@ -448,12 +476,47 @@ def check_editor_lock():
 
 
 def docker_exec(cmd, timeout=30):
-    full = ["docker", "exec", DOCKER_CONTAINER, "bash", "-lc", cmd]
+    """Session 30R fix: `subprocess.run(..., timeout=)` firing only kills the HOST-side `docker
+    exec` client -- it does not propagate to the process actually running inside the container
+    (docker exec without a TTY/signal-forwarding does not kill the in-container child on client
+    disconnect). Found live this session: a handful of timed-out diagnostic calls (an errant
+    `dynparam set`, a couple of `rostopic echo -n1` probes) left orphaned processes running
+    inside the `ros` container indefinitely -- including, worst case, extra `move_base` instances
+    contending for the same costmap/CPU budget as the real one, which is itself timing-sensitive
+    (Session 24: local costmap already runs close to its 50ms/20Hz update budget with just ONE
+    instance). Fixed at the root: wrap the inner command in the container's OWN `timeout`, so a
+    hang is killed from inside regardless of what happens to the host-side client. The host-side
+    subprocess timeout is kept as a backstop (a few seconds of slack beyond the inner one) in case
+    `docker exec` itself hangs before ever reaching the inner timeout.
+    """
+    inner_timeout = max(1, timeout - 3)
+    full = ["docker", "exec", DOCKER_CONTAINER, "bash", "-lc", "timeout {} {}".format(inner_timeout, cmd)]
     return subprocess.run(full, capture_output=True, text=True, timeout=timeout)
 
 
+def move_base_pid():
+    """Returns the live /move_base node's PID (str) or None if not resolvable. Used by
+    ros_health_check's stability check below -- see that function's Session 30R comment."""
+    info = docker_exec("rosnode info /move_base", timeout=10).stdout
+    m = re.search(r"^Pid:\s*(\d+)", info, re.MULTILINE)
+    return m.group(1) if m else None
+
+
 def ros_health_check():
-    """Returns (healthy: bool, warnings: list[str])."""
+    """Returns (healthy: bool, warnings: list[str]).
+
+    Session 30R finding: on a truly cold container (first bringup since container creation, not
+    exercised by any prior session -- all reused a long-lived warm container), `move_base` was
+    observed crash-looping (exit code 1, respawn=true) for ~14 minutes straight (312 consecutive
+    deaths, roslaunch-*.log evidence) before finally staying up. A single-snapshot `rosnode list`
+    check can catch `/move_base` mid-respawn (it re-registers near-instantly each cycle) and
+    report "healthy" even though the node is unusable a moment later -- this is exactly what
+    happened: the fresh-bringup health check passed in 2s, but the very next real trial ran with
+    move_base dying and restarting roughly once per second the whole time (robot never received a
+    stable planner to command it, robotSpeedAtTrigger stayed 0.000 for the full duration). Fixed
+    by requiring the SAME move_base PID across two checks 3s apart -- a crash-looping node fails
+    this immediately (different PID, or no PID at all), a genuinely stable one passes for free.
+    """
     warnings = []
     try:
         nodes = docker_exec("rosnode list").stdout
@@ -462,6 +525,15 @@ def ros_health_check():
 
     if "/move_base" not in nodes:
         return False, ["move_base node not running"]
+
+    pid1 = move_base_pid()
+    if pid1 is None:
+        return False, ["move_base node present in rosnode list but PID unresolvable (likely mid-respawn)"]
+    time.sleep(3)
+    pid2 = move_base_pid()
+    if pid2 is None or pid2 != pid1:
+        return False, ["move_base PID unstable across a 3s window ({} -> {}) -- crash-looping, not "
+                        "a stable planner (Session 30R)".format(pid1, pid2)]
 
     topics = docker_exec("rostopic list").stdout
     if "/map" not in topics.split():
@@ -483,7 +555,54 @@ def ros_health_check():
     return True, warnings
 
 
+def ensure_teb_plugin_installed():
+    """Session 30R ROOT CAUSE, found live this session (not the historical Session 8 oscillation
+    story -- that was ruled out first): on a truly cold container (first bringup since container
+    creation), move_base was crash-looping every ~1.1s. `rosout.log` showed the real reason
+    (never in move_base's own per-process log, which mysteriously never gets written) --
+    MoveBase::MoveBase() FATAL: "Failed to create the teb_local_planner/TebLocalPlannerROS
+    planner ... does not exist. Declared types are base_local_planner/TrajectoryPlannerROS" --
+    `rospack find teb_local_planner` confirmed the package is genuinely absent from this
+    container's ROS_PACKAGE_PATH, not a pluginlib cache race. Root cause: TEB (landed Session 23)
+    was installed live into a long-running container that never got rebuilt into the `ros:latest`
+    image (docker images don't auto-update from a live container's apt installs) -- so any FRESH
+    container built from that image (exactly what a post-reboot session gets) starts back on the
+    pre-TEB image and silently lacks it. The eventual "stabilizes on its own after several
+    minutes" behavior earlier sessions never needed to explain is roslaunch's respawn --
+    map_server.launch's OWN retries eventually happening to line up with some other transient
+    state is not what's going on; every crash in this state is the exact same deterministic FATAL,
+    forever, until the package is actually installed -- it does not self-resolve, unlike genuine
+    priming/oscillation flakiness.
+
+    Idempotent and cheap (a few hundred ms) once installed, so this runs unconditionally as a
+    preflight rather than only after detecting a crash-loop -- matches contain_ros_logs()'s own
+    "always run it, it's a no-op when already fine" pattern. Container-level package install, not
+    a tracked-file edit (sim_ws/social_sim_unity git state untouched) -- but NOT persisted to the
+    `ros:latest` image itself (would need `docker commit` or a Dockerfile change, both explicit,
+    scoped host/infra actions out of this session's writable-file scope); flagged in
+    HOWARD_HANDOFF.md as the durable fix still owed. Lost again if this container is ever
+    recreated from the stale image -- this preflight is what makes that survivable automatically
+    rather than costing another multi-hour diagnosis.
+    """
+    result = docker_exec("rospack find teb_local_planner", timeout=10)
+    if result.returncode == 0:
+        return
+    eprint("[run_trial] preflight: teb_local_planner package missing from this container (Session "
+           "30R root cause, see comment) -- installing now (apt-get, root, one-time per container "
+           "lifetime)...")
+    install = subprocess.run(
+        ["docker", "exec", "-u", "root", DOCKER_CONTAINER, "bash", "-lc",
+         "apt-get update -qq && apt-get install -y -qq ros-noetic-teb-local-planner"],
+        capture_output=True, text=True, timeout=180)
+    verify = docker_exec("rospack find teb_local_planner", timeout=10)
+    if verify.returncode != 0:
+        raise SystemExit("[run_trial] teb_local_planner install failed -- apt-get output:\n{}\n{}".format(
+            install.stdout[-2000:], install.stderr[-2000:]))
+    eprint("[run_trial] preflight: teb_local_planner installed successfully.")
+
+
 def ros_fresh_bringup(scene="outdoor", prefix="autotrial"):
+    ensure_teb_plugin_installed()
     eprint("[run_trial] --fresh-ros: tearing down existing roslaunch processes in the container...")
     docker_exec("pkill -f roslaunch || true", timeout=15)
     time.sleep(2)
@@ -499,13 +618,25 @@ def ros_fresh_bringup(scene="outdoor", prefix="autotrial"):
                      "source /opt/ros/noetic/setup.bash; source ~/sim_ws/devel/setup.bash 2>/dev/null; "
                      "roslaunch social_sim_ros sean_navstack.launch scene:={} prefix:={}".format(scene, prefix)])
 
-    for attempt in range(30):
-        time.sleep(2)
+    # Session 30R: widened from 30 attempts * 2s (60s) after live evidence of a truly cold
+    # container's move_base crash-looping for ~14 minutes (312 respawns) before stabilizing --
+    # the old 60s budget would have raised SystemExit on this exact box on this exact day. Each
+    # ros_health_check() attempt now itself costs >=3s (PID-stability check above), so the loop
+    # naturally spaces out; 300 attempts is a ~20+ minute ceiling, well past the worst case
+    # actually observed, while still failing loudly (not hanging forever) if something is
+    # genuinely broken rather than just slow to stabilize.
+    start = time.time()
+    for attempt in range(300):
         healthy, warnings = ros_health_check()
         if healthy:
-            eprint("[run_trial] fresh ROS bringup healthy after {}s.".format((attempt + 1) * 2))
+            eprint("[run_trial] fresh ROS bringup healthy after {:.0f}s.".format(time.time() - start))
             return
-    raise SystemExit("Fresh ROS bringup did not become healthy within 60s.")
+        if attempt % 10 == 0:
+            eprint("[run_trial] fresh ROS bringup not yet healthy after {:.0f}s ({}) -- move_base may "
+                   "still be crash-looping post-launch (Session 30R: observed up to ~14min on a cold "
+                   "container); continuing to wait.".format(time.time() - start, warnings))
+        time.sleep(2)
+    raise SystemExit("Fresh ROS bringup did not become healthy within ~{:.0f}s.".format(time.time() - start))
 
 
 def ensure_ros_healthy(fresh):
@@ -757,10 +888,25 @@ def warmup_ros_session():
 
     eprint("[run_trial] warmup: priming move_base (run_id={}) with a guarded DiagCmdVel nav cycle (15s)...".format(run_id))
     run_diag_cmdvel(15.0)
-    eprint("[run_trial] warmup: setting oscillation_timeout=3.0 live via dynparam...")
-    docker_exec("rosrun dynamic_reconfigure dynparam set /move_base oscillation_timeout 3.0", timeout=30)
-    val = docker_exec("rosparam get /move_base/oscillation_timeout", timeout=10).stdout.strip()
-    eprint("[run_trial] warmup: verified live oscillation_timeout={}".format(val))
+    # Session 30R: on a truly cold bringup (fresh container, cold Unity shader/asset cache -- not
+    # exercised by any prior session, which all reused a long-lived warm container), the 15s
+    # DiagCmdVel window can elapse before /move_base/set_parameters ever registers, and the CLI
+    # `dynparam set` below then hangs past its own subprocess timeout instead of failing fast,
+    # raising an uncaught TimeoutExpired that crashes the whole pipeline. Per this function's own
+    # docstring (Session 6/8 evidence, lines above): landing oscillation_timeout=3.0 is NOT the
+    # fix -- priming (the DiagCmdVel cycle just above) is -- so a failure/timeout here is cosmetic,
+    # not a warmup failure. Made non-fatal rather than touching any sim_ws launch file.
+    eprint("[run_trial] warmup: setting oscillation_timeout=3.0 live via dynparam (best-effort)...")
+    try:
+        dynparam_result = docker_exec("rosrun dynamic_reconfigure dynparam set /move_base oscillation_timeout 3.0", timeout=30)
+        if dynparam_result.returncode != 0:
+            eprint("[run_trial] warmup: dynparam set non-zero exit (harmless, see docstring) -- {}".format(
+                dynparam_result.stderr.strip()[:200]))
+        val = docker_exec("rosparam get /move_base/oscillation_timeout", timeout=10).stdout.strip()
+        eprint("[run_trial] warmup: verified live oscillation_timeout={}".format(val))
+    except subprocess.TimeoutExpired:
+        eprint("[run_trial] warmup: dynparam set timed out (harmless, see docstring -- priming above "
+               "is the real fix, this cosmetic set is not required) -- continuing.")
     if run_id:
         marker.write_text(run_id)
 
@@ -1166,15 +1312,24 @@ def main():
                         "explicitly given. Near-field encounter geometry differs by scenario -- "
                         "SIF is reported per scenario, only far-field is gated (see REPORT.md "
                         "Session 28).")
-    p.add_argument("--ped-distance", type=float, default=DEFAULT_PED_DISTANCE,
+    p.add_argument("--profile", choices=list(PROFILES), default="arc",
+                   help="Session 30R (Howard priority #1): 'arc' (default): today's 25m SLATE "
+                        "trigger distance (Session 17), unchanged -- built for a full approach "
+                        "story arc, not for scoring (interaction is small/distant in frame). "
+                        "'scoring': 8m trigger (Session 16-and-earlier's own old default, see "
+                        "--ped-distance's help) -- shorter approach, tighter framing, interaction "
+                        "fills more of the frame; for the Howard scoring batch. Only sets the "
+                        "--ped-distance DEFAULT -- an explicit --ped-distance always wins.")
+    p.add_argument("--ped-distance", type=float, default=None,
                    help="Distance in meters from the robot's start position, measured along the "
                         "robot start->goal bearing, that defines the trial's dist0 target. Since "
                         "Session 14 (SLATE v2) this is ALSO the live trigger threshold: "
                         "TrialController.PollForTrigger releases the pedestrian and starts capture "
                         "the instant robot<->pedestrian ground-plane distance first drops to this "
                         "value or below (config.triggerDistanceMeters). Only takes effect when "
-                        "--spawn is not explicitly given. Default 25.0 (Session 17) -- was 8.0 "
-                        "through Session 16.")
+                        "--spawn is not explicitly given. Default resolved from --profile (Session "
+                        "30R): 25.0 for 'arc' (Session 17) -- was 8.0 through Session 16 -- or 8.0 "
+                        "for 'scoring'. An explicit --ped-distance always overrides the profile.")
     p.add_argument("--slate-margin", type=float, default=4.0,
                    help="Session 14 (SLATE v2): extra distance beyond --ped-distance at which the "
                         "pedestrian actually spawns, frozen (default 4.0 -> ~29m from robot start "
@@ -1300,6 +1455,12 @@ def main():
     p.add_argument("--no-overlay", dest="overlay", action="store_false")
     args = p.parse_args()
 
+    # Session 30R: resolve --ped-distance's profile-dependent default. Must happen before any use
+    # of args.ped_distance below (spawn_distance computation, dist0 gate target, etc.) -- an
+    # explicit --ped-distance (not None) always wins over the profile.
+    if args.ped_distance is None:
+        args.ped_distance = PROFILE_PED_DISTANCE[args.profile]
+
     if args.compile_check:
         log_path = Path("/tmp/run_trial_compile_check.log")
         cmd = build_unity_cmd(log_path, windowed=False, quit_after=True)
@@ -1379,8 +1540,18 @@ def main():
                               "--no-ped-goal for dest==spawn instead.")
         args.ped_goal = list(geom_ped_goal)
 
-    if args.ped_speed is None and args.appearance == "scooter_user":
-        args.ped_speed = SCOOTER_SPEED_MULT
+    # Session 30R STEP 2: per-appearance real-world-speed default multipliers, same mechanism/
+    # precedent as Session 29's scooter_user default (PedestrianModulator.walkSpeedMultiplier
+    # scaling AFTER SFAgent's own MAX_VEL clamp -- never touches Base.cs/SFAgent.cs). An explicit
+    # --ped-speed always overrides.
+    APPEARANCE_SPEED_MULT = {
+        "scooter_user": SCOOTER_SPEED_MULT,
+        "cyclist": CYCLIST_SPEED_MULT,
+        "wheelchair_user": WHEELCHAIR_SPEED_MULT,
+        "white_cane_user": WHITE_CANE_SPEED_MULT,
+    }
+    if args.ped_speed is None and args.appearance in APPEARANCE_SPEED_MULT:
+        args.ped_speed = APPEARANCE_SPEED_MULT[args.appearance]
     if args.ped_speed is None:
         args.ped_speed = 1.0
 
