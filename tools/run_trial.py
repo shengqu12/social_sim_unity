@@ -67,7 +67,7 @@ import overlay
 PROJECT_DIR = Path(__file__).resolve().parent.parent  # .../social_sim_unity
 DOCKER_CONTAINER = "ros"
 DEFAULT_OUT_ROOT = Path.home() / "Desktop" / "research" / "social_navigation" / "trial_outputs"
-OUTPUT_ROOT_SENTINEL_NAME = ".output_root_on_t7"
+OUTPUT_ROOT_SENTINEL_NAME = ".output_root_ok"
 OUTPUT_ROOT_MIN_FREE_GB = 5.0
 # Ops patch (2026-07-20), post-Session-19 disk-full incident: root-caused to
 # ~/.ros/autotrial/*/*.csv, a per-bringup ROS-side telemetry log (upstream trial_info.launch,
@@ -272,13 +272,17 @@ def _docker_root_dir():
 
 
 def require_output_root_healthy(root=None, min_free_gb=OUTPUT_ROOT_MIN_FREE_GB):
-    """Round 3 (post-relocation guard): trial_outputs now resolves through a symlink onto an
-    external drive (T7). If that drive isn't mounted, the symlink either dangles (obvious failure)
-    or -- the actually dangerous case on some setups -- the path silently falls back to being
-    created fresh on the internal disk, quietly refilling it exactly the way this whole relocation
-    was meant to prevent. Guard against both: resolve the REAL path (following the symlink) and
-    REQUIRE a sentinel file that only exists on the intended drive; refuse loudly rather than
-    writing anywhere else. Also requires >= min_free_gb free on the resolved path.
+    """Round 3 (post-relocation guard); repointed Session 30 (T7 retired -> /mnt/ssd, the internal
+    2TB drive). trial_outputs resolves through a symlink onto a dedicated output-root drive. If
+    that drive isn't mounted/available, the symlink either dangles (obvious failure) or -- the
+    actually dangerous case on some setups -- the path silently falls back to being created fresh
+    on the internal `/` disk, quietly refilling it exactly the way this whole relocation was meant
+    to prevent. Guard against both: resolve the REAL path (following the symlink) and REQUIRE a
+    sentinel file (OUTPUT_ROOT_SENTINEL_NAME) that only exists on the intended drive; refuse
+    loudly rather than writing anywhere else. Also requires >= min_free_gb free on the resolved
+    path. The sentinel name itself is drive-agnostic on purpose (".output_root_ok", not
+    ".output_root_on_t7") -- the concept (verify the resolved path is really the intended output
+    drive before writing) is what matters, not which physical disk currently backs it.
 
     Ops patch (2026-07-20): Session 19's disk-full crisis was NOT on this output root (T7 had
     plenty of room) -- it was the HOST's internal `/` filesystem, which this guard never checked
@@ -295,10 +299,10 @@ def require_output_root_healthy(root=None, min_free_gb=OUTPUT_ROOT_MIN_FREE_GB):
     if not resolved.is_dir() or not sentinel.exists():
         raise SystemExit(
             "[run_trial] REFUSING TO START: output root sentinel missing ({}). Resolved path: {}. "
-            "This means either trial_outputs isn't the symlink onto the T7 drive, or T7 isn't "
-            "mounted -- writing here would silently land on the internal disk. Mount T7 (or "
-            "restore the trial_outputs -> /media/sheng/T7/Social_Navigation/trial_outputs symlink) "
-            "before running trials.".format(sentinel, resolved))
+            "This means trial_outputs isn't a symlink onto the intended output-root drive -- "
+            "writing here would silently land on the wrong disk. Restore the trial_outputs -> "
+            "/mnt/ssd/Social_Navigation/trial_outputs symlink (sentinel file {} must exist there) "
+            "before running trials.".format(sentinel, resolved, OUTPUT_ROOT_SENTINEL_NAME))
 
     free_gb = _statvfs_free_gb(resolved)
     if free_gb < min_free_gb:
