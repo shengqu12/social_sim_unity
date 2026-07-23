@@ -144,6 +144,12 @@ namespace SEAN.AutoTrial
         // RobotRepulsion, the pre-Session-34 behavior).
         public bool hasPedReactDistOverride = false;
         public float pedReactDistOverride = 2.0f;
+        // Session 36 FIX 3: Scared-specific override on top of the shared gate above -- 0 (default)
+        // means no override, Scared falls through to the shared pedReactDistOverride like every
+        // other personality. Deliberately a plain float, not a hasX/X pair, since 0 is never a
+        // meaningful gate distance on its own (see S34PedestrianReactDistGate's own "0f = no
+        // override" convention).
+        public float scaredReactDistOverride = 0f;
 
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;

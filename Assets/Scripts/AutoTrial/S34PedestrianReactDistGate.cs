@@ -38,6 +38,17 @@ namespace SEAN.AutoTrial
         // session at {1.5, 2.0, 2.5}; see REPORT.md Session 34 FIX 1 for the landed value.
         public float reactDistanceMeters = 2.0f;
 
+        // Session 36 FIX 3: Scared was reacting too LATE (same shared 1.5m gate as every other
+        // personality, so its own reaction never got a head start) -- the user wants Scared to be
+        // the EARLIEST responder, not late. Optional override, set at wiring time
+        // (AutoTrialBootstrap) from a new --scared-react-dist CLI flag; when unset (0 = "no
+        // override"), Scared falls through to the shared reactDistanceMeters like every other
+        // personality did before this fix. Kept as an override rather than baking a Scared-
+        // specific constant into reactDistanceMeters itself so the shared gate distance (which
+        // Session 34's own sweep tuned for indifferent/surprised) doesn't silently change for
+        // them as a side effect of tuning Scared alone.
+        public float scaredReactDistanceMetersOverride = 0f;
+
         // Set once at wiring time (AutoTrialBootstrap.SpawnPedestrian) from the pedestrian's own
         // PersonalityType. Drives the personality-scaled "inside the gate" repulsion value below
         // -- kept as an internal design decision (not a separate CLI knob per personality) since
@@ -85,7 +96,14 @@ namespace SEAN.AutoTrial
             toRobot.y = 0f;
             float dist = toRobot.magnitude;
 
-            sfAgent.RobotRepulsion = dist > reactDistanceMeters ? 0f : InsideGateRepulsionFor(personality);
+            float effectiveGate = reactDistanceMeters;
+            if (personality == Scenario.Agents.PedestrianModulator.PersonalityType.Scared
+                && scaredReactDistanceMetersOverride > 0f)
+            {
+                effectiveGate = scaredReactDistanceMetersOverride;
+            }
+
+            sfAgent.RobotRepulsion = dist > effectiveGate ? 0f : InsideGateRepulsionFor(personality);
         }
 
         private Vector3? TryGetRobotPosition()

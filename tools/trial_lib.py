@@ -148,6 +148,71 @@ def find_encounter_centered_span(frames_csv_path, half_window_sec=5.0):
     return (start, end)
 
 
+DEFAULT_APPROACH_RADIUS_M = 12.0
+DEFAULT_MIN_PREROLL_SEC = 8.0
+DEFAULT_APPROACH_LEAD_SEC = 2.0
+
+
+def find_approach_centered_span(frames_csv_path, approach_radius_m=DEFAULT_APPROACH_RADIUS_M,
+                                 min_preroll_sec=DEFAULT_MIN_PREROLL_SEC,
+                                 lead_sec=DEFAULT_APPROACH_LEAD_SEC, post_t_min_sec=5.0):
+    """Session 36 FIX 1: find_encounter_centered_span()'s fixed [t_min-half, t_min+half] window
+    (Session 31) works for a plain head-on pass, but for any config with a pre-encounter SEQUENCE
+    (assertive's walk-stop-gesture, dyad's side-by-side approach, ped-count's multi-actor buildup)
+    the approach itself falls outside that window -- the viewer opens the clip mid-action. This
+    instead anchors the clip START on `interaction_start`, the first frame `dist_to_pedestrian`
+    crosses `approach_radius_m` (a simple, robust proxy for "the actor becomes a relevant part of
+    the scene" -- true camera-frustum entry would need combining meta.json's camHfovDeg/camera
+    pose with frames.csv's robot_x/z/yaw and pov_cam_yaw_deg to build a real geometric frustum
+    test; NOT implemented this session, descoped for time -- the approach-radius crossing is used
+    as the sole signal, per this fix's own brief allowing exactly this fallback).
+
+    Clip = [interaction_start - lead_sec, t_min + post_t_min_sec], with a MINIMUM enforced
+    pre-encounter segment of min_preroll_sec: if interaction_start is too close to t_min (e.g. the
+    actor spawns already inside approach_radius_m, or moves fast enough to cross it and reach
+    t_min almost immediately), clip_start is pulled back further so t_min - clip_start is never
+    less than min_preroll_sec. Clamped to [0, trial_duration]. Returns
+    (start, end, seconds_of_approach_shown, interaction_start_t) or None if frames.csv has no
+    valid dist_to_pedestrian samples. seconds_of_approach_shown = t_min - start (the number this
+    fix's own bar, ">=8s of approach in every delivered clip", is checked against -- note this can
+    exceed min_preroll_sec when interaction_start is far out, since lead_sec is added on top)."""
+    with open(frames_csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+    trial_duration = float(rows[-1]["t"])
+
+    dists = []
+    for row in rows:
+        try:
+            dists.append((float(row["t"]), float(row["dist_to_pedestrian"])))
+        except (ValueError, KeyError):
+            pass
+    if not dists:
+        return None
+
+    t_min = min(dists, key=lambda p: p[1])[0]
+
+    interaction_start = None
+    for t, d in dists:
+        if d <= approach_radius_m:
+            interaction_start = t
+            break
+    if interaction_start is None:
+        # Never within the approach radius before release (e.g. a frozen/scared-radius-heavy
+        # config) -- fall back to the whole pre-t_min trial as the approach.
+        interaction_start = dists[0][0]
+
+    desired_start = interaction_start - lead_sec
+    forced_start = t_min - min_preroll_sec
+    start = min(desired_start, forced_start)
+    start = max(0.0, start)
+    end = min(trial_duration, t_min + post_t_min_sec)
+
+    seconds_of_approach_shown = t_min - start
+    return (start, end, seconds_of_approach_shown, interaction_start)
+
+
 def cut_clip(src_video, out_path, start, end):
     ss = max(0.0, start)
     duration = end - start

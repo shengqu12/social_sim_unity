@@ -179,10 +179,13 @@ def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
     if not burn_overlay(pov_full, ass_pov, pov_ov):
         return False, "ffmpeg burn-in failed"
 
-    # Session 31 FIX 2: must match post_process()'s own clip_mode exactly, or the _ov overlay
-    # clips would be cut to a different window than the plain pov_near clips they're supposed to
-    # correspond to.
-    if clip_mode == "centered":
+    # Session 31 FIX 2 (extended Session 36 FIX 1): must match post_process()'s own clip_mode
+    # exactly, or the _ov overlay clips would be cut to a different window than the plain
+    # pov_near clips they're supposed to correspond to.
+    if clip_mode == "approach":
+        result = trial_lib.find_approach_centered_span(frames_csv)
+        spans = [(result[0], result[1])] if result is not None else []
+    elif clip_mode == "centered":
         span = trial_lib.find_encounter_centered_span(frames_csv, half_window_sec=encounter_half_window)
         spans = [span] if span is not None else []
     else:

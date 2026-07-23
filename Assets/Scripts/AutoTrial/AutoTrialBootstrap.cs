@@ -842,6 +842,9 @@ namespace SEAN.AutoTrial
                         var reactGate = navAgent.gameObject.AddComponent<S34PedestrianReactDistGate>();
                         reactGate.reactDistanceMeters = config.pedReactDistOverride;
                         reactGate.personality = personalityType;
+                        // Session 36 FIX 3: Scared's own larger gate, layered on top of the shared
+                        // one above -- see S34PedestrianReactDistGate's own field doc.
+                        reactGate.scaredReactDistanceMetersOverride = config.scaredReactDistOverride;
                     }
                     // Session 32 FIX B2 diagnostic: opt-in runtime probe (env-var gated, no-op
                     // unless AUTOTRIAL_S32_PROBE_PATH is set) -- see S32SurprisedRuntimeProbe.cs.

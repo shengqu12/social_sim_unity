@@ -803,6 +803,11 @@ TEB_SCORING_COST_SCALING_FACTOR = 6.0
 # gate engages. See REPORT.md Session 34 FIX 1 for the full table.
 PED_REACT_DIST_SCORING_DEFAULT = 1.5
 
+# Session 36 FIX 3: Scared's own larger gate distance (see S34PedestrianReactDistGate's
+# scaredReactDistanceMetersOverride field) -- swept {2.5, 3.0, 3.5}m, see REPORT.md Session 36
+# FIX 3 for the landed value and the lateral-deviation-curve comparison against indifferent.
+SCARED_REACT_DIST_SCORING_DEFAULT = 3.0
+
 
 def set_costmap_inflation_params(inflation_radius, cost_scaling_factor):
     """Session 33 FIX 1: live dynamic_reconfigure set against /move_base/local_costmap/
@@ -988,6 +993,7 @@ def build_config(args, out_dir):
         "surpriseCooldownOverride": args.surprise_cooldown if args.surprise_cooldown is not None else 4.0,
         "hasPedReactDistOverride": args.ped_react_dist is not None,
         "pedReactDistOverride": args.ped_react_dist if args.ped_react_dist is not None else 2.0,
+        "scaredReactDistOverride": args.scared_react_dist if args.scared_react_dist is not None else 0.0,
         "hasPedestrian2": args.pedestrian2_spawn is not None,
         "pedestrian2Appearance": "business_male_01",
         "pedestrian2Personality": "Indifferent",
@@ -1410,7 +1416,20 @@ def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib
     if not assemble_video(pov_dir, "pov", real_fps, pov_full):
         return {"ok": False, "reason": "ffmpeg assembly failed"}
 
-    if clip_mode == "centered":
+    approach_meta = None
+    if clip_mode == "approach":
+        # Session 36 FIX 1: re-anchors on interaction_start (first approach-radius crossing), not
+        # just t_min -- see trial_lib.find_approach_centered_span()'s own docstring for the full
+        # rationale (fixes assertive/dyad/ped-count's pre-encounter sequence getting cut off).
+        result = trial_lib.find_approach_centered_span(out_dir / "frames.csv")
+        if result is not None:
+            start, end, seconds_of_approach_shown, interaction_start = result
+            spans = [(start, end)]
+            approach_meta = {"seconds_of_approach_shown": seconds_of_approach_shown,
+                              "interaction_start": interaction_start}
+        else:
+            spans = []
+    elif clip_mode == "centered":
         span = trial_lib.find_encounter_centered_span(out_dir / "frames.csv", half_window_sec=encounter_half_window)
         spans = [span] if span is not None else []
     else:
@@ -1421,6 +1440,8 @@ def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib
         pov_clip = out_dir / "pov_near_{:02d}.mp4".format(i)
         trial_lib.cut_clip(pov_full, pov_clip, start, end)
         near_clips.append({"index": i, "start": start, "end": end, "pov": pov_clip.name})
+        if approach_meta is not None:
+            near_clips[-1].update(approach_meta)
 
     if not keep_full:
         shutil.rmtree(pov_dir, ignore_errors=True)
@@ -1572,12 +1593,18 @@ def main():
                         "minimum-distance moment (bounded by trial length) until it reaches at "
                         "least this many seconds; overlapping spans after growth are merged. "
                         "Ignored when --clip-mode centered.")
-    p.add_argument("--clip-mode", choices=["threshold", "centered"], default="threshold",
+    p.add_argument("--clip-mode", choices=["threshold", "centered", "approach"], default="threshold",
                    help="Session 31 FIX 2: 'threshold' (default) is the original find_near_spans() "
                         "behavior, unchanged -- no existing caller's clips change. 'centered' cuts "
                         "a single [t_min-half, t_min+half] window anchored on the trial's own "
                         "minimum dist_to_pedestrian frame (--encounter-half-window), with no "
-                        "solo-navigation tail -- used for session31_review's delivered clips.")
+                        "solo-navigation tail -- used for session31_review's delivered clips. "
+                        "Session 36 FIX 1: 'approach' instead anchors clip START on the pedestrian's "
+                        "own approach-radius crossing (trial_lib.find_approach_centered_span(), "
+                        "default 12m radius, 8s minimum pre-encounter segment enforced) so configs "
+                        "with a pre-encounter sequence (assertive's walk-stop-gesture, dyad/ped-count's "
+                        "buildup) show the approach instead of opening mid-action -- used for "
+                        "session36_review's delivered clips.")
     p.add_argument("--encounter-half-window", type=float, default=5.0,
                    help="Session 31 FIX 2: half-width (seconds) of the --clip-mode centered "
                         "window around t_min. Default 5.0 -> a ~10s delivered clip.")
@@ -1665,6 +1692,13 @@ def main():
                         "already permanently zeroed via ModulateAssertive()). None (default) means "
                         "no gate at all -- SFAgent's own always-on random 0.5-1.0 RobotRepulsion, "
                         "the pre-Session-34 behavior. Zone A only.")
+    p.add_argument("--scared-react-dist", type=float, default=None, metavar="METERS",
+                   help="Session 36 FIX 3: Scared-specific override on top of --ped-react-dist -- "
+                        "the shared gate (1.5m under --profile scoring) made Scared react too LATE "
+                        "since it shared the same threshold as indifferent/surprised. Larger than "
+                        "the shared gate so Scared becomes the EARLIEST responder. None (default) "
+                        "falls through to the shared --ped-react-dist value like every other "
+                        "personality. Ignored for personalities other than Scared.")
     p.add_argument("--post-encounter-grace", type=float, default=None, metavar="SECONDS",
                    help="Session 15: end capture SECONDS after dist_to_pedestrian first "
                         "re-exceeds --ped-distance following a genuine pass (i.e. the encounter "
@@ -1847,6 +1881,9 @@ def main():
         # {1.5, 2.0, 2.5}m that landed this number.
         if args.personality.lower() != "assertive" and args.ped_react_dist is None:
             args.ped_react_dist = PED_REACT_DIST_SCORING_DEFAULT
+        # Session 36 FIX 3: Scared's own larger gate default under scoring.
+        if args.personality.lower() == "scared" and args.scared_react_dist is None:
+            args.scared_react_dist = SCARED_REACT_DIST_SCORING_DEFAULT
 
     if args.compile_check:
         log_path = Path("/tmp/run_trial_compile_check.log")
