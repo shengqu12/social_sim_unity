@@ -761,6 +761,16 @@ DEFAULT_COSTMAP_INFLATION_RADIUS = 0.10
 DEFAULT_COSTMAP_COST_SCALING_FACTOR = 3.0
 TEB_SCORING_COST_SCALING_FACTOR = 6.0
 
+# Session 34 FIX 1: S34PedestrianReactDistGate's shared gate distance under --profile scoring.
+# Swept {1.5, 2.0, 2.5}m, N=3 each -- all three landed safely (min_dist 0.92-1.58m across every
+# gate-passing run, comfortably above the 0.5m operational floor; 2.0/2.5's one failed run each
+# was the known cold-ROS-bringup triggerTimedOut flakiness, unrelated to the gate itself). Landed
+# the TIGHTEST candidate (1.5m): zero pipeline failures across N=3, and the tightest gate best
+# serves this session's own reframe -- "hold course longer, then react" is what makes personality
+# visibly distinct, so the pedestrian should hold its line as long as safely possible before the
+# gate engages. See REPORT.md Session 34 FIX 1 for the full table.
+PED_REACT_DIST_SCORING_DEFAULT = 1.5
+
 
 def set_costmap_inflation_params(inflation_radius, cost_scaling_factor):
     """Session 33 FIX 1: live dynamic_reconfigure set against /move_base/local_costmap/
@@ -944,6 +954,8 @@ def build_config(args, out_dir):
         "surpriseRadiusOverride": args.surprise_radius if args.surprise_radius is not None else 4.0,
         "hasSurpriseCooldownOverride": args.surprise_cooldown is not None,
         "surpriseCooldownOverride": args.surprise_cooldown if args.surprise_cooldown is not None else 4.0,
+        "hasPedReactDistOverride": args.ped_react_dist is not None,
+        "pedReactDistOverride": args.ped_react_dist if args.ped_react_dist is not None else 2.0,
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
@@ -1589,6 +1601,13 @@ def main():
                    help="Session 33 FIX 3: override PedestrianModulator.cooldownDuration (default "
                         "4.0s) -- prevents a second, spurious reaction trigger firing during "
                         "post-pass separation noise. Zone A only.")
+    p.add_argument("--ped-react-dist", type=float, default=None, metavar="METERS",
+                   help="Session 34 FIX 1: distance-gated robot repulsion (S34PedestrianReactDist"
+                        "Gate) -- zero robot-response beyond METERS, personality-scaled response "
+                        "inside it, for every non-Assertive personality (Assertive is unaffected, "
+                        "already permanently zeroed via ModulateAssertive()). None (default) means "
+                        "no gate at all -- SFAgent's own always-on random 0.5-1.0 RobotRepulsion, "
+                        "the pre-Session-34 behavior. Zone A only.")
     p.add_argument("--post-encounter-grace", type=float, default=None, metavar="SECONDS",
                    help="Session 15: end capture SECONDS after dist_to_pedestrian first "
                         "re-exceeds --ped-distance following a genuine pass (i.e. the encounter "
@@ -1765,6 +1784,12 @@ def main():
         # separation-noise re-entry into surpriseRadius can re-arm a second trigger.
         if args.personality.lower() == "surprised" and args.surprise_cooldown is None:
             args.surprise_cooldown = 30.0
+        # Session 34 FIX 1: distance-gated robot repulsion default under scoring, every
+        # non-Assertive personality (S34PedestrianReactDistGate skips Assertive at the wiring
+        # site regardless of this value). See REPORT.md Session 34 FIX 1 for the N=3 sweep across
+        # {1.5, 2.0, 2.5}m that landed this number.
+        if args.personality.lower() != "assertive" and args.ped_react_dist is None:
+            args.ped_react_dist = PED_REACT_DIST_SCORING_DEFAULT
 
     if args.compile_check:
         log_path = Path("/tmp/run_trial_compile_check.log")

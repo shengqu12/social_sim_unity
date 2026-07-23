@@ -107,6 +107,13 @@ namespace SEAN.AutoTrial
         // plain-field-override pattern as scaredRadiusOverride/surpriseRadiusOverride above.
         public bool hasSurpriseCooldownOverride = false;
         public float surpriseCooldownOverride = 4.0f;
+        // Session 34 FIX 1: distance-gated robot repulsion (S34PedestrianReactDistGate) -- zero
+        // robot-response beyond this distance, personality-scaled response inside it, for every
+        // non-Assertive personality. Same hasX/X on-off convention as the overrides above; false
+        // leaves the pedestrian with no gate at all (SFAgent's own always-on random 0.5-1.0
+        // RobotRepulsion, the pre-Session-34 behavior).
+        public bool hasPedReactDistOverride = false;
+        public float pedReactDistOverride = 2.0f;
 
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;

@@ -594,6 +594,10 @@ namespace SEAN.AutoTrial
                 // speed -- general fix, every Zone B appearance (see S32AnimatorSpeedScaler's own
                 // class doc for why this wasn't already happening).
                 navAgent.transform.gameObject.AddComponent<S32AnimatorSpeedScaler>();
+                // Session 34 FIX 4: force AlwaysAnimate so a reacting pedestrian's Animator never
+                // silently stalls while out of camera frame -- see S34AnimatorCullingFix's own
+                // class doc.
+                navAgent.transform.gameObject.AddComponent<S34AnimatorCullingFix>();
                 if (config.appearance == "white_cane_user")
                 {
                     // Diagnostic-only, kept for provenance: the per-frame transform watcher
@@ -642,6 +646,10 @@ namespace SEAN.AutoTrial
                 // presence (see S32AnimatorSpeedScaler's own class doc for why this wasn't already
                 // happening).
                 navAgent.gameObject.AddComponent<S32AnimatorSpeedScaler>();
+                // Session 34 FIX 4: force AlwaysAnimate so a reacting pedestrian's Animator never
+                // silently stalls while out of camera frame -- see S34AnimatorCullingFix's own
+                // class doc.
+                navAgent.gameObject.AddComponent<S34AnimatorCullingFix>();
 
                 // Indifferent + no patrol = no modulator at all, matching PedestrianSpawner's
                 // existing convention (Base.ModulateVelocity() no-ops via a null GetComponent).
@@ -687,6 +695,16 @@ namespace SEAN.AutoTrial
                         // Session 32 FIX B: true straight-line hold, activated at SLATE release
                         // by TrialController (see S32AssertiveStraightLineGuardian's own class doc).
                         navAgent.gameObject.AddComponent<S32AssertiveStraightLineGuardian>();
+                    }
+                    else if (config.hasPedReactDistOverride)
+                    {
+                        // Session 34 FIX 1: distance-gated robot repulsion, every non-Assertive
+                        // personality (Assertive already permanently zeroed via ModulateAssertive(),
+                        // untouched -- see S34PedestrianReactDistGate's own class doc for the full
+                        // mechanism/reframe this session established).
+                        var reactGate = navAgent.gameObject.AddComponent<S34PedestrianReactDistGate>();
+                        reactGate.reactDistanceMeters = config.pedReactDistOverride;
+                        reactGate.personality = personalityType;
                     }
                     // Session 32 FIX B2 diagnostic: opt-in runtime probe (env-var gated, no-op
                     // unless AUTOTRIAL_S32_PROBE_PATH is set) -- see S32SurprisedRuntimeProbe.cs.

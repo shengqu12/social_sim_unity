@@ -26,7 +26,7 @@ namespace SEAN.AutoTrial
             string path = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S32_PROBE_PATH");
             if (string.IsNullOrEmpty(path) || animator == null) { enabled = false; return; }
             writer = new StreamWriter(path, false);
-            writer.WriteLine("t,state,normalizedTime,layerWeight,rArmX,rArmY,rArmZ,rForeX,rForeY,rForeZ");
+            writer.WriteLine("t,state,normalizedTime,layerWeight,rArmX,rArmY,rArmZ,rForeX,rForeY,rForeZ,cullingMode,isVisible");
             Debug.LogWarning("[S32SurprisedRuntimeProbe] animator on gameObject='" + animator.gameObject.name
                 + "' controller=" + (animator.runtimeAnimatorController != null ? animator.runtimeAnimatorController.name : "NULL")
                 + " layerCount=" + animator.layerCount + " isHuman=" + (animator.avatar != null ? animator.avatar.isHuman.ToString() : "no-avatar"));
@@ -48,9 +48,18 @@ namespace SEAN.AutoTrial
             var rFore = animator.GetBoneTransform(HumanBodyBones.RightLowerArm);
             Vector3 rArmE = rArm != null ? rArm.localEulerAngles : Vector3.zero;
             Vector3 rForeE = rFore != null ? rFore.localEulerAngles : Vector3.zero;
-            writer.WriteLine(string.Format("{0:F3},{1},{2:F3},{3:F3},{4:F2},{5:F2},{6:F2},{7:F2},{8:F2},{9:F2}",
+            // Session 34 FIX 4: directly log cullingMode + whether any renderer under this
+            // GameObject is currently visible to a camera -- settles whether the S33-flagged
+            // multi-second play delay correlates with the pedestrian being out of frame.
+            bool anyVisible = false;
+            foreach (var r in GetComponentsInChildren<Renderer>())
+            {
+                if (r.isVisible) { anyVisible = true; break; }
+            }
+            writer.WriteLine(string.Format("{0:F3},{1},{2:F3},{3:F3},{4:F2},{5:F2},{6:F2},{7:F2},{8:F2},{9:F2},{10},{11}",
                 Time.time, stateName, info.normalizedTime, animator.GetLayerWeight(0),
-                rArmE.x, rArmE.y, rArmE.z, rForeE.x, rForeE.y, rForeE.z));
+                rArmE.x, rArmE.y, rArmE.z, rForeE.x, rForeE.y, rForeE.z,
+                animator.cullingMode, anyVisible));
             writer.Flush();
         }
 
