@@ -176,12 +176,43 @@ namespace SEAN.AutoTrial
             Transform pedestrianTransform = SpawnPedestrian(config, zone, appearancePrefab, personalityType,
                 out IVI.INavigable pedestrianNavAgent, out Vector3 pedestrianReleaseDest);
 
+            // Session 35 BLOCK 4 (FIX 8/9): dyad/ped-count-3 extra pedestrians, spawned via the
+            // exact same SpawnPedestrian() path as the primary one above -- see SpawnExtraPedestrian's
+            // own doc comment for why a throwaway sub-config is the least invasive way to reuse it.
+            List<Transform> extraPedestrianTransforms = new List<Transform>();
+            List<IVI.INavigable> extraPedestrianNavAgents = new List<IVI.INavigable>();
+            List<Vector3> extraPedestrianReleaseDests = new List<Vector3>();
+            if (config.hasPedestrian2)
+            {
+                Transform t2 = SpawnExtraPedestrian(config, config.pedestrian2Appearance, config.pedestrian2Personality,
+                    config.pedestrian2SpawnPose, config.hasPedestrian2GoalPose, config.pedestrian2GoalPose,
+                    out IVI.INavigable nav2, out Vector3 dest2);
+                if (t2 != null)
+                {
+                    extraPedestrianTransforms.Add(t2);
+                    extraPedestrianNavAgents.Add(nav2);
+                    extraPedestrianReleaseDests.Add(dest2);
+                }
+            }
+            if (config.hasPedestrian3)
+            {
+                Transform t3 = SpawnExtraPedestrian(config, config.pedestrian3Appearance, config.pedestrian3Personality,
+                    config.pedestrian3SpawnPose, config.hasPedestrian3GoalPose, config.pedestrian3GoalPose,
+                    out IVI.INavigable nav3, out Vector3 dest3);
+                if (t3 != null)
+                {
+                    extraPedestrianTransforms.Add(t3);
+                    extraPedestrianNavAgents.Add(nav3);
+                    extraPedestrianReleaseDests.Add(dest3);
+                }
+            }
+
             // Session 10 (D3, belt-and-suspenders half): the disable pass above should mean no
             // stray spawner ever fired, but assert it rather than assume it -- census every
             // INavigable in the scene, destroy anything that isn't the one pedestrian AutoTrial
             // itself just spawned, and record the full census (including what was destroyed) into
             // meta.json so a failed assertion is visible in the trial output, not silent.
-            List<string> agentCensus = CensusAndDestroyStrayAgents(pedestrianTransform);
+            List<string> agentCensus = CensusAndDestroyStrayAgents(pedestrianTransform, extraPedestrianTransforms);
 
             Tasks.Base activeTask = null;
             waitStart = Time.time;
@@ -266,7 +297,8 @@ namespace SEAN.AutoTrial
             var controller = controllerGO.AddComponent<TrialController>();
             controller.Initialize(config, robot, povCam, pedestrianTransform, zone, resourcePath, agentCensus,
                 pedestrianNavAgent, pedestrianReleaseDest, bootstrapStartTime, config.triggerDistanceMeters,
-                resolvedCamHeightWorldY, camHeightRaycastHit, resolvedCamVfovDeg);
+                resolvedCamHeightWorldY, camHeightRaycastHit, resolvedCamVfovDeg,
+                extraPedestrianTransforms, extraPedestrianNavAgents, extraPedestrianReleaseDests);
         }
 
         /// <summary>
@@ -329,7 +361,7 @@ namespace SEAN.AutoTrial
         /// meta.json, including anything that had to be destroyed (which should be empty if the
         /// disable pass above worked as intended -- surfaced, not hidden, either way).
         /// </summary>
-        private List<string> CensusAndDestroyStrayAgents(Transform ownPedestrian)
+        private List<string> CensusAndDestroyStrayAgents(Transform ownPedestrian, List<Transform> ownExtraPedestrians = null)
         {
             var census = new List<string>();
             var strays = new List<GameObject>();
@@ -339,7 +371,12 @@ namespace SEAN.AutoTrial
                 {
                     continue;
                 }
-                bool isOwn = nav.transform == ownPedestrian;
+                // Session 35 BLOCK 4: multi-pedestrian scenarios (dyad, ped-count-3) spawn extra
+                // pedestrians via this same SpawnPedestrian() path -- they must NOT be destroyed
+                // as strays. ownExtraPedestrians is empty/null for every single-pedestrian trial
+                // (the overwhelming majority), so this is a pure no-op addition for that case.
+                bool isOwn = nav.transform == ownPedestrian
+                    || (ownExtraPedestrians != null && ownExtraPedestrians.Contains(nav.transform));
                 census.Add((isOwn ? "AutoTrial: " : "STRAY (destroyed): ") + nav.transform.name
                     + " [" + mb.GetType().FullName + "]");
                 if (!isOwn)
@@ -541,6 +578,56 @@ namespace SEAN.AutoTrial
                 + "NavMesh point " + hit.position.ToString("F3") + " (" + missDist.ToString("F3") + "m away) -- OK.");
         }
 
+        /// <summary>
+        /// Session 35 BLOCK 4 (FIX 8/9): spawns a SECOND/THIRD pedestrian (dyad, ped-count-3) by
+        /// reusing the exact same ResolveAppearance()/SpawnPedestrian() path the primary
+        /// pedestrian goes through -- not a parallel/duplicated spawn mechanism. Builds a
+        /// throwaway `AutoTrialConfig` substituting only the fields SpawnPedestrian() actually
+        /// reads (appearance/personality/spawnPose/pedGoalPose/outDir) rather than adding a
+        /// second overload of SpawnPedestrian itself, since JsonUtility-style config objects in
+        /// this codebase are plain data containers with no established cloning convention.
+        /// Speed multiplier is left at the default 1.0 (extra pedestrians in dyad/ped-count-3 are
+        /// plain walkers, not appearance-speed-tiered Zone B containers) -- can be revisited if a
+        /// future session needs otherwise. Returns null (logs a warning, does not fail the whole
+        /// trial) if the appearance string doesn't resolve, rather than throwing -- a malformed
+        /// extra-pedestrian request shouldn't take down an otherwise-valid primary trial.
+        /// </summary>
+        private Transform SpawnExtraPedestrian(AutoTrialConfig primaryConfig, string appearance, string personality,
+            PoseXYZYaw spawnPose, bool hasGoalPose, PoseXYZYaw goalPose,
+            out IVI.INavigable extraNavAgentOut, out Vector3 extraReleaseDestOut)
+        {
+            extraNavAgentOut = null;
+            extraReleaseDestOut = Vector3.zero;
+            if (!ResolveAppearance(appearance, out GameObject prefab, out string zone, out string resourcePath))
+            {
+                Debug.LogWarning("[AutoTrial] extra pedestrian: unknown appearance '" + appearance + "' -- skipping this pedestrian, primary trial continues.");
+                return null;
+            }
+            if (!Enum.TryParse(personality, true, out Scenario.Agents.PedestrianModulator.PersonalityType personalityType))
+            {
+                Debug.LogWarning("[AutoTrial] extra pedestrian: unknown personality '" + personality + "' -- defaulting to Indifferent.");
+                personalityType = Scenario.Agents.PedestrianModulator.PersonalityType.Indifferent;
+            }
+
+            var subConfig = new AutoTrialConfig
+            {
+                appearance = appearance,
+                personality = personality,
+                spawnPose = spawnPose,
+                hasPedGoalPose = hasGoalPose,
+                pedGoalPose = goalPose,
+                outDir = primaryConfig.outDir,
+                pedSpeedMultiplier = 1.0f,
+            };
+            ValidateSpawnOnNavMesh(spawnPose.Position);
+            // SpawnPedestrian() already calls InitDest(spawnPos) internally in both the Zone A and
+            // Zone B branches (Session 13's freeze-at-spawn convention) -- no extra call needed
+            // here, the extra pedestrian freezes at spawn exactly like the primary one.
+            Transform t = SpawnPedestrian(subConfig, zone, prefab, personalityType,
+                out extraNavAgentOut, out extraReleaseDestOut);
+            return t;
+        }
+
         private Transform SpawnPedestrian(AutoTrialConfig config, string zone, GameObject prefab, Scenario.Agents.PedestrianModulator.PersonalityType personalityType,
             out IVI.INavigable navAgentOut, out Vector3 releaseDest)
         {
@@ -598,6 +685,32 @@ namespace SEAN.AutoTrial
                 // silently stalls while out of camera frame -- see S34AnimatorCullingFix's own
                 // class doc.
                 navAgent.transform.gameObject.AddComponent<S34AnimatorCullingFix>();
+                // Session 35 FIX 1/2: heading-alignment guardian -- this Zone B branch was
+                // MISSING this wiring in an earlier pass this session (only the Zone A/"else"
+                // branch below had it), which is exactly why wheelchair_user/white_cane_user/
+                // scooter_user showed zero improvement in initial verification despite the
+                // component existing and working correctly for Zone A appearances. Every Zone B
+                // container needs both mechanisms (facing correction AND the position/lateral-
+                // offset correction -- wheelchair_user in particular is directVelocityDrive, so
+                // the facing correction alone is a no-op for it; see the component's own class
+                // doc). Does not conflict with S21PedestrianPositionGuardian above (that one only
+                // intervenes on an implausible multi-meter single-frame jump, this corrects a
+                // small per-frame lateral offset -- different thresholds, same LateUpdate
+                // ordering concerns don't apply since neither fights the other's normal range).
+                {
+                    var headingGuardianB = navAgent.transform.gameObject.AddComponent<S35HeadingAlignmentGuardian>();
+                    headingGuardianB.personality = personalityType;
+                    Vector3 destB = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
+                    Vector3 dB = destB - spawnPos;
+                    if (new Vector2(dB.x, dB.z).magnitude > 1e-3f)
+                    {
+                        headingGuardianB.targetHeadingDeg = Mathf.Atan2(dB.x, dB.z) * Mathf.Rad2Deg;
+                        headingGuardianB.hasTargetHeading = true;
+                        headingGuardianB.lineStart = spawnPos;
+                        headingGuardianB.lineEnd = destB;
+                        headingGuardianB.hasLine = true;
+                    }
+                }
                 if (config.appearance == "white_cane_user")
                 {
                     // Diagnostic-only, kept for provenance: the per-frame transform watcher
@@ -650,6 +763,30 @@ namespace SEAN.AutoTrial
                 // silently stalls while out of camera frame -- see S34AnimatorCullingFix's own
                 // class doc.
                 navAgent.gameObject.AddComponent<S34AnimatorCullingFix>();
+                // Session 35 FIX 1/2: heading-alignment guardian -- added unconditionally (this
+                // transient reproduces even for business_male_01 x indifferent, which gets NO
+                // PedestrianModulator at all per this codebase's own "Indifferent + no patrol =
+                // no modulator" convention, so this can't live inside the modulator-conditional
+                // branch below). Self-excludes Assertive/Surprised internally -- see its own
+                // class doc for why and the full root-cause diagnosis.
+                var headingGuardian = navAgent.gameObject.AddComponent<S35HeadingAlignmentGuardian>();
+                headingGuardian.personality = personalityType;
+                {
+                    Vector3 dest = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
+                    Vector3 d = dest - spawnPos;
+                    if (new Vector2(d.x, d.z).magnitude > 1e-3f)
+                    {
+                        headingGuardian.targetHeadingDeg = Mathf.Atan2(d.x, d.z) * Mathf.Rad2Deg;
+                        headingGuardian.hasTargetHeading = true;
+                        // Session 35 FIX 1/2 second mechanism: also correct lateral position
+                        // directly, for directVelocityDrive appearances (e.g. wheelchair_user)
+                        // where the facing correction above is a no-op -- see the component's own
+                        // class doc for why both are needed.
+                        headingGuardian.lineStart = spawnPos;
+                        headingGuardian.lineEnd = dest;
+                        headingGuardian.hasLine = true;
+                    }
+                }
 
                 // Indifferent + no patrol = no modulator at all, matching PedestrianSpawner's
                 // existing convention (Base.ModulateVelocity() no-ops via a null GetComponent).

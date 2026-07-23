@@ -326,6 +326,38 @@ def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBO
     return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z), 1.5
 
 
+DYAD_LATERAL_OFFSET_M = 0.9
+PED_COUNT3_LATERAL_OFFSET_M = 1.8
+
+
+def resolve_extra_pedestrian_geometry(primary_spawn, primary_dest, robot_start, goal_xyz, lateral_offset_m):
+    """Session 35 BLOCK 4 (FIX 8/9): places an EXTRA pedestrian (dyad's partner, or ped-count-3's
+    third walker) by offsetting the PRIMARY pedestrian's own already-resolved spawn/dest pair
+    sideways by `lateral_offset_m`, along the perpendicular to the robot's own start->goal bearing
+    -- not re-derived from robot_start/goal_xyz independently. This makes the extra pedestrian
+    walk a path parallel to whatever the primary pedestrian is doing, regardless of which
+    --scenario produced the primary's own geometry (headon/overtake/overtaken all work
+    identically here, since this only needs the corridor's own perpendicular direction, computed
+    fresh from robot_start/goal_xyz exactly like resolve_scenario_geometry's own bearing math).
+    Same facing (yaw) as the primary pedestrian -- a dyad partner walks the same direction, not a
+    mirror image. Returns ((x,y,z,yawDeg), (dest_x,dest_y,dest_z))."""
+    sx, sy, sz = robot_start
+    gx, gz = goal_xyz[0], goal_xyz[2]
+    dx, dz = gx - sx, gz - sz
+    norm = math.hypot(dx, dz)
+    if norm < 1e-6:
+        raise ValueError("robot start {} and goal {} coincide -- cannot compute a perpendicular "
+                          "offset for an extra pedestrian".format(robot_start, goal_xyz))
+    ux, uz = dx / norm, dz / norm
+    px, pz = -uz, ux  # perpendicular (rotate 90deg in the ground plane), same convention as crossing
+
+    (spawn_x, spawn_y, spawn_z, yaw_deg) = primary_spawn
+    (dest_x, dest_y, dest_z) = primary_dest
+    extra_spawn = (spawn_x + px * lateral_offset_m, spawn_y, spawn_z + pz * lateral_offset_m, yaw_deg)
+    extra_dest = (dest_x + px * lateral_offset_m, dest_y, dest_z + pz * lateral_offset_m)
+    return extra_spawn, extra_dest
+
+
 # Zone A is validated by convention (snake_case -> Rocketbox PascalCase), not enumerated here --
 # Unity's Resources.Load is authoritative. This regex just catches obvious typos early.
 ZONE_A_PATTERN = re.compile(r"^[a-z]+(_[a-z0-9]+)*$")
@@ -956,6 +988,18 @@ def build_config(args, out_dir):
         "surpriseCooldownOverride": args.surprise_cooldown if args.surprise_cooldown is not None else 4.0,
         "hasPedReactDistOverride": args.ped_react_dist is not None,
         "pedReactDistOverride": args.ped_react_dist if args.ped_react_dist is not None else 2.0,
+        "hasPedestrian2": args.pedestrian2_spawn is not None,
+        "pedestrian2Appearance": "business_male_01",
+        "pedestrian2Personality": "Indifferent",
+        "pedestrian2SpawnPose": pose(*args.pedestrian2_spawn) if args.pedestrian2_spawn is not None else pose(0, 0, 0, 0),
+        "hasPedestrian2GoalPose": args.pedestrian2_goal is not None,
+        "pedestrian2GoalPose": pose(args.pedestrian2_goal[0], args.pedestrian2_goal[1], args.pedestrian2_goal[2], 0.0) if args.pedestrian2_goal is not None else pose(0, 0, 0, 0),
+        "hasPedestrian3": args.pedestrian3_spawn is not None,
+        "pedestrian3Appearance": "business_male_01",
+        "pedestrian3Personality": "Indifferent",
+        "pedestrian3SpawnPose": pose(*args.pedestrian3_spawn) if args.pedestrian3_spawn is not None else pose(0, 0, 0, 0),
+        "hasPedestrian3GoalPose": args.pedestrian3_goal is not None,
+        "pedestrian3GoalPose": pose(args.pedestrian3_goal[0], args.pedestrian3_goal[1], args.pedestrian3_goal[2], 0.0) if args.pedestrian3_goal is not None else pose(0, 0, 0, 0),
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
@@ -1563,6 +1607,19 @@ def main():
                         "explicitly given. Near-field encounter geometry differs by scenario -- "
                         "SIF is reported per scenario, only far-field is gated (see REPORT.md "
                         "Session 28).")
+    p.add_argument("--dyad", action="store_true",
+                   help="Session 35 BLOCK 4 (FIX 8): adds a second pedestrian (business_male_01, "
+                        "Indifferent) walking in parallel with the primary one, offset sideways "
+                        "by DYAD_LATERAL_OFFSET_M (0.9m -- shoulder-width-plus) along the corridor's "
+                        "perpendicular, same facing/destination direction -- a walking PAIR, not "
+                        "two independent walkers. Combine with --ped-count 3 to add a third.")
+    p.add_argument("--ped-count", type=int, choices=[1, 2, 3], default=1,
+                   help="Session 35 BLOCK 4 (FIX 9): total pedestrian count in the scene. 1 "
+                        "(default): unchanged, single-pedestrian trials exactly as every prior "
+                        "session. 2: same as --dyad if --dyad wasn't already given. 3: adds a "
+                        "THIRD pedestrian beyond --dyad's pair, offset further out "
+                        "(PED_COUNT3_LATERAL_OFFSET_M, 1.8m) on the opposite side -- a small group "
+                        "of 3, for scene diversity beyond a single walker or a pair.")
     p.add_argument("--profile", choices=list(PROFILES), default="arc",
                    help="Session 30R (Howard priority #1): 'arc' (default): today's 25m SLATE "
                         "trigger distance (Session 17), unchanged -- built for a full approach "
@@ -1870,6 +1927,30 @@ def main():
                               "--ped-goal (no geometry-derived destination to fall back to); pass "
                               "--no-ped-goal for dest==spawn instead.")
         args.ped_goal = list(geom_ped_goal)
+
+    # Session 35 BLOCK 4 (FIX 8/9): extra pedestrians, offset from the PRIMARY pedestrian's own
+    # final resolved spawn/goal (whatever --scenario produced, or an explicit --spawn/--ped-goal)
+    # -- computed here, after args.spawn/args.ped_goal are both finalized above, not from
+    # resolve_scenario_geometry's own internal bearing math directly.
+    args.pedestrian2_spawn = None
+    args.pedestrian2_goal = None
+    args.pedestrian3_spawn = None
+    args.pedestrian3_goal = None
+    want_dyad = args.dyad or args.ped_count >= 2
+    want_third = args.ped_count >= 3
+    if want_dyad or want_third:
+        primary_spawn = tuple(args.spawn)
+        primary_dest = tuple(args.ped_goal) if args.ped_goal is not None else tuple(args.spawn[:3])
+        if want_dyad:
+            p2_spawn, p2_dest = resolve_extra_pedestrian_geometry(
+                primary_spawn, primary_dest, ROBOT_START, bearing_goal, DYAD_LATERAL_OFFSET_M)
+            args.pedestrian2_spawn = p2_spawn
+            args.pedestrian2_goal = p2_dest
+        if want_third:
+            p3_spawn, p3_dest = resolve_extra_pedestrian_geometry(
+                primary_spawn, primary_dest, ROBOT_START, bearing_goal, -PED_COUNT3_LATERAL_OFFSET_M)
+            args.pedestrian3_spawn = p3_spawn
+            args.pedestrian3_goal = p3_dest
 
     # Session 30R STEP 2: per-appearance real-world-speed default multipliers, same mechanism/
     # precedent as Session 29's scooter_user default (PedestrianModulator.walkSpeedMultiplier

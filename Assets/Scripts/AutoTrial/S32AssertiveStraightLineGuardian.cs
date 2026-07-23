@@ -54,8 +54,12 @@ namespace SEAN.AutoTrial
         public float speedMps = 1.3f;
 
         // Forward-progress pause threshold (first-line defense, keeps the pedestrian from closing
-        // distance further once the robot is already near).
-        public float emergencyStopDistanceMeters = 1.5f;
+        // distance further once the robot is already near). Also gates the walk->stop->gesture
+        // trigger (same variable, see the state machine below) -- Session 35 FIX 3: raised from
+        // 1.5m to 3.5m per the user's own "gestures too close to see" complaint -- the gesture
+        // needs the robot and pedestrian both legible in frame together, which 1.5m didn't allow.
+        // Purely a safety-positive change (more clearance at the stop point, not less).
+        public float emergencyStopDistanceMeters = 3.5f;
 
         // Absolute last-resort lateral evasion -- deliberately smaller/closer than
         // emergencyStopDistanceMeters so it almost never engages; only fires when forward-pausing

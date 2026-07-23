@@ -11,6 +11,36 @@ namespace SEAN.AutoTrial
     [Serializable]
     public class AutoTrialConfig
     {
+        // Session 35 BLOCK 4 (FIX 8/9): optional additional pedestrians beyond the primary one
+        // below -- `dyad` (--scenario dyad) uses exactly one (pedestrian2); `--ped-count 3` uses
+        // both. Same on/off convention as hasGoalPose/hasPedGoalPose (JsonUtility can't represent
+        // "no value" for a struct). Each is spawned via the same SpawnPedestrian() path as the
+        // primary pedestrian (AutoTrialBootstrap builds a throwaway AutoTrialConfig substituting
+        // these fields in) and logged as extra frames.csv columns by TrialController -- see both
+        // classes' own doc comments. Kept as two explicit slots rather than a real array: this
+        // project's JsonUtility-based config has no precedent for serializable nested-object
+        // arrays, and two slots is exactly what this session's asks (dyad, ped-count-3) need.
+        // NOTE: deliberately placed here, near the top of the class, not appended at the bottom
+        // -- an unexplained environment issue (full Library wipe + killing all VBCSCompiler
+        // server processes did not resolve it) made new fields appended after the class's OLD
+        // last field silently fail to resolve from AutoTrialBootstrap.cs, while fields placed
+        // here work correctly (empirically verified with a throwaway test field before landing
+        // this). Root cause not identified; flagged to Howard as a real, reproducible toolchain
+        // oddity worth a fresh pair of eyes, not swept under the rug.
+        public bool hasPedestrian2 = false;
+        public string pedestrian2Appearance = "business_male_01";
+        public string pedestrian2Personality = "Indifferent";
+        public PoseXYZYaw pedestrian2SpawnPose;
+        public bool hasPedestrian2GoalPose = false;
+        public PoseXYZYaw pedestrian2GoalPose;
+
+        public bool hasPedestrian3 = false;
+        public string pedestrian3Appearance = "business_male_01";
+        public string pedestrian3Personality = "Indifferent";
+        public PoseXYZYaw pedestrian3SpawnPose;
+        public bool hasPedestrian3GoalPose = false;
+        public PoseXYZYaw pedestrian3GoalPose;
+
         // --appearance value -- resolved against Zone A (Rocketbox convention) or Zone B
         // (hardcoded container map) by AutoTrialBootstrap. Unity is authoritative on validity.
         public string appearance;

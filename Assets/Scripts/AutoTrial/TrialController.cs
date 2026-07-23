@@ -38,6 +38,10 @@ namespace SEAN.AutoTrial
         private Vector3 lastSamplePos;
         private int frameIdx;
         private float minDistSeen = float.PositiveInfinity;
+        // Session 35 BLOCK 4: whole-trial running minimum of pedestrian1<->pedestrianN distance,
+        // for the SAME "extend zero-collision discipline to pedestrian-pedestrian clearance too"
+        // reason minDistSeen tracks robot<->pedestrian1 -- logged into meta.json alongside it.
+        private float minPedPedDistSeen = float.PositiveInfinity;
         private string terminationReason = "unknown";
 
         // Session 10 (D2 diagnosis): latest cmd_vel seen, for correlating commanded steering
@@ -67,6 +71,14 @@ namespace SEAN.AutoTrial
         // ref/out and these need to survive across yields anyway).
         private IVI.INavigable pedestrianNavAgent;
         private Vector3 pedestrianReleaseDest;
+
+        // Session 35 BLOCK 4 (FIX 8/9): dyad/ped-count-3 extra pedestrians. Empty for every
+        // single-pedestrian trial (the overwhelming majority) -- see SpawnExtraPedestrian's own
+        // doc comment in AutoTrialBootstrap for how these get spawned.
+        private List<Transform> extraPedestrianTransforms = new List<Transform>();
+        private List<IVI.INavigable> extraPedestrianNavAgents = new List<IVI.INavigable>();
+        private List<Vector3> extraPedestrianReleaseDests = new List<Vector3>();
+
         private float bootstrapStartTime;
         private float triggerDistanceMeters;
         // Session 17 (Step 3, real-A1 camera pose): resolved once at rig build time
@@ -95,8 +107,14 @@ namespace SEAN.AutoTrial
             Transform pedestrian, string appearanceZone, string appearanceResourcePath, List<string> agentCensus,
             IVI.INavigable pedestrianNavAgent, Vector3 pedestrianReleaseDest,
             float bootstrapStartTime, float triggerDistanceMeters,
-            float resolvedCamHeightWorldY, bool camHeightRaycastHit, float resolvedCamVfovDeg)
+            float resolvedCamHeightWorldY, bool camHeightRaycastHit, float resolvedCamVfovDeg,
+            List<Transform> extraPedestrianTransforms = null,
+            List<IVI.INavigable> extraPedestrianNavAgents = null,
+            List<Vector3> extraPedestrianReleaseDests = null)
         {
+            this.extraPedestrianTransforms = extraPedestrianTransforms ?? new List<Transform>();
+            this.extraPedestrianNavAgents = extraPedestrianNavAgents ?? new List<IVI.INavigable>();
+            this.extraPedestrianReleaseDests = extraPedestrianReleaseDests ?? new List<Vector3>();
             this.config = config;
             this.robot = robot;
             this.povCam = povCam;
@@ -121,7 +139,19 @@ namespace SEAN.AutoTrial
             readBuffer = new Texture2D(CaptureWidth, CaptureHeight, TextureFormat.RGB24, false);
 
             csv = new StreamWriter(Path.Combine(config.outDir, "frames.csv"), false);
-            csv.WriteLine("t,frame_idx,robot_x,robot_y,robot_z,robot_yaw_deg,robot_speed,pedestrian_appearance,pedestrian_personality,pedestrian_x,pedestrian_z,dist_to_pedestrian,min_dist,cmd_lin_x,cmd_ang_z,pov_cam_yaw_deg,pov_cam_pitch_deg,pov_cam_roll_deg");
+            // Session 35 BLOCK 4 (FIX 8/9): one extra pedestrianN_x/z + dist_to_pedestrianN column
+            // pair per extra pedestrian (dyad=1, ped-count-3=2) -- appended after the existing
+            // fixed columns so every pre-existing single-pedestrian trial's own frames.csv schema
+            // (and every downstream tool that reads it positionally by name via csv.DictReader,
+            // which every analysis script in this project already uses) is completely unaffected.
+            string header = "t,frame_idx,robot_x,robot_y,robot_z,robot_yaw_deg,robot_speed,pedestrian_appearance,pedestrian_personality,pedestrian_x,pedestrian_z,dist_to_pedestrian,min_dist,cmd_lin_x,cmd_ang_z,pov_cam_yaw_deg,pov_cam_pitch_deg,pov_cam_roll_deg";
+            for (int i = 0; i < extraPedestrianTransforms.Count; i++)
+            {
+                int n = i + 2; // pedestrian2, pedestrian3, ...
+                header += ",pedestrian" + n + "_x,pedestrian" + n + "_z,dist_to_pedestrian" + n
+                    + ",dist_pedestrian1_to_pedestrian" + n;
+            }
+            csv.WriteLine(header);
 
             TrySubscribeCmdVel();
 
@@ -227,6 +257,14 @@ namespace SEAN.AutoTrial
                     }
 
                     pedestrianNavAgent?.InitDest(pedestrianReleaseDest);
+                    // Session 35 BLOCK 4: release every extra pedestrian at the exact same SLATE
+                    // instant as the primary one -- otherwise they'd stay frozen at spawn for the
+                    // rest of the trial (InitDest(spawnPos) in SpawnExtraPedestrian never gets a
+                    // second call any other way).
+                    for (int i = 0; i < extraPedestrianNavAgents.Count; i++)
+                    {
+                        extraPedestrianNavAgents[i]?.InitDest(extraPedestrianReleaseDests[i]);
+                    }
 
                     // Session 32 FIX B: if this pedestrian carries the Assertive straight-line
                     // guardian (only true for PersonalityType.Assertive, see AutoTrialBootstrap),
@@ -398,7 +436,7 @@ namespace SEAN.AutoTrial
             float camPitch = camEuler.x > 180f ? camEuler.x - 360f : camEuler.x;
             float camRoll = camEuler.z > 180f ? camEuler.z - 360f : camEuler.z;
 
-            csv.WriteLine(string.Join(",", new string[]
+            var row = new List<string>
             {
                 t.ToString("F3", CultureInfo.InvariantCulture),
                 frameIdx.ToString(CultureInfo.InvariantCulture),
@@ -418,7 +456,29 @@ namespace SEAN.AutoTrial
                 camEuler.y.ToString("F3", CultureInfo.InvariantCulture),
                 camPitch.ToString("F3", CultureInfo.InvariantCulture),
                 camRoll.ToString("F3", CultureInfo.InvariantCulture),
-            }));
+            };
+
+            // Session 35 BLOCK 4 (FIX 8/9): extra pedestrian columns + pedestrian-pedestrian
+            // clearance -- empty strings for every single-pedestrian trial (extraPedestrianTransforms
+            // is empty), so this loop is a pure no-op there.
+            for (int i = 0; i < extraPedestrianTransforms.Count; i++)
+            {
+                Transform extraT = extraPedestrianTransforms[i];
+                bool alive = extraT != null;
+                float distRobotToExtra = alive ? Util.Geometry.GroundPlaneDist(pos, extraT.position) : float.NaN;
+                float distPed1ToExtra = (alive && pedestrian != null)
+                    ? Util.Geometry.GroundPlaneDist(pedestrian.position, extraT.position) : float.NaN;
+                if (!float.IsNaN(distPed1ToExtra))
+                {
+                    minPedPedDistSeen = Mathf.Min(minPedPedDistSeen, distPed1ToExtra);
+                }
+                row.Add(alive ? extraT.position.x.ToString("F3", CultureInfo.InvariantCulture) : "");
+                row.Add(alive ? extraT.position.z.ToString("F3", CultureInfo.InvariantCulture) : "");
+                row.Add(float.IsNaN(distRobotToExtra) ? "" : distRobotToExtra.ToString("F3", CultureInfo.InvariantCulture));
+                row.Add(float.IsNaN(distPed1ToExtra) ? "" : distPed1ToExtra.ToString("F3", CultureInfo.InvariantCulture));
+            }
+
+            csv.WriteLine(string.Join(",", row));
 
             lastSampleTime = t;
             lastSamplePos = pos;
@@ -461,6 +521,9 @@ namespace SEAN.AutoTrial
             public string terminationReason;
             public int frameCount;
             public float minDistanceMeters;
+            // Session 35 BLOCK 4: -1 (same "no valid samples" convention as minDistanceMeters
+            // above) for every single-pedestrian trial.
+            public float minPedPedDistanceMeters;
             public string startedAtUtc;
             public string endedAtUtc;
             public string unityGitSha;
@@ -516,6 +579,7 @@ namespace SEAN.AutoTrial
                 terminationReason = terminationReason,
                 frameCount = frameIdx,
                 minDistanceMeters = float.IsInfinity(minDistSeen) ? -1f : minDistSeen,
+                minPedPedDistanceMeters = float.IsInfinity(minPedPedDistSeen) ? -1f : minPedPedDistSeen,
                 startedAtUtc = DateTime.UtcNow.AddSeconds(-(Time.time - startTime)).ToString("o", CultureInfo.InvariantCulture),
                 endedAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                 unityGitSha = TryReadGitSha(),
