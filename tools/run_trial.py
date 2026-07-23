@@ -140,10 +140,58 @@ PROFILE_PED_DISTANCE = {"arc": DEFAULT_PED_DISTANCE, "scoring": 8.0}
 # measurements (implied base pace at mult=1.0, then solved for the multiplier landing near the
 # middle of each reference range) -- see REPORT.md Session 30R STEP 2 for the full before/after
 # table and the safety-rail (min_dist/ENCOUNTER-spin/collision) check on every change.
+# Session 31 FIX 4: re-verified every actor against a REAL trial's frames.csv this session too
+# (not multiplier arithmetic alone -- Session 29's scooter number was wrong for exactly that
+# reason). Methodology refined from Session 30R's: measure per-frame instantaneous pedestrian
+# speed (position delta / dt) across the whole post-release trial, then take the mean of frames
+# where speed > 0.05 m/s ("moving" frames) -- NOT total-displacement/total-trial-duration, which
+# undercounts badly for any actor that reaches its goal and then stands still for the remainder of
+# the (90s) trial (found this session measuring business_male_01: naive whole-trial-average gave
+# 0.189 m/s, nonsense against its own known ~1.3 m/s walking pace -- it simply arrives and stops
+# around frame 74 of ~1100, and idles for the rest). Re-measured under --profile scoring, current
+# (pre-fix) multipliers:
+#   human (business_male_01, no multiplier): 1.285 m/s (reference 1.2-1.4 -- in range, confirms
+#     Session 30R's number, no change).
+#   scooter_user (mult 3.7): 3.515 m/s (reference 3-4 -- in range, confirms Session 30R, no change).
+#   cyclist (mult 4.8): 4.560 m/s (reference 4-5 -- in range, confirms Session 30R, no change).
+#   wheelchair_user (mult 1.3): 1.231 m/s -- AT/ABOVE human's own pace, wrong (should be SLOWER
+#     than human, reference 0.8-1.0). Implied base pace 1.231/1.3=0.947, matching
+#     Parameters.DESIRED_SPEED=0.95 almost exactly (sanity check).
+#     IMPORTANT, found this session: the whole-trial mean/median methodology above is misleading
+#     for any actor that reaches its own pedGoal and then stops or wanders -- naive
+#     total-displacement/total-duration gave 0.189 m/s for business_male_01 (nonsense against its
+#     own known ~1.3 m/s). Re-measured wheelchair_user using an early-window (first 8s
+#     post-release, before any goal-arrival/wander contamination) method instead: mult=1.3 (the old
+#     value) gives 1.175 m/s there, confirming the whole-trial number was roughly right for this
+#     appearance. But a naive linear retune to mult=0.95 (the first attempt) collapsed to just
+#     0.050 m/s (a 23x undershoot, not the ~10% reduction simple scaling predicts) -- reproduced
+#     twice. wheelchair_user's root-motion/animation-blend response to the commanded velocity is
+#     NOT linear across this range: mult=1.15 measured 1.037 m/s (consistent with 1.3's own linear
+#     trend), but somewhere between 0.95 and 1.15 there's a real cliff where the blend tree stops
+#     producing proportional root motion (a genuine animation-engineering quirk, not a math bug --
+#     flagged to Howard, out of scope to fix at the animation-graph level this session). mult=1.0
+#     sits just clear of that cliff: measured 0.890 m/s, reproduced identically (0.890 m/s) on a
+#     second independent trial, min_dist 2.46-2.52m (safe). Landed at 1.0, not the arithmetically
+#     "obvious" 0.95 -- the empirical cliff, not the target-midpoint math, is what actually governs
+#     which values are usable here.
+#   white_cane_user (mult 3.2): mean 0.943 m/s (moving frames, whole-trial) -- AT/ABOVE human's
+#     pace, wrong (should be SLOWER than human, reference 0.6-0.8). Its own tap-and-pause gait
+#     animation produces real burstiness confirmed again this session (early-window reads varied
+#     0.549-0.851 m/s across different multipliers AND across repeat runs at the SAME multiplier --
+#     e.g. mult=2.9 measured 0.608/0.518/0.640/0.553/0.563 m/s across two runs at three window
+#     widths each -- consistent with Session 30R's own "real run-to-run variance, likely inherent
+#     to its tap-and-pause gait" finding, not a measurement bug). Landed mult=2.9: consistently,
+#     repeatably slower than human (~0.55-0.64 m/s vs human's 1.29) even though individual-run
+#     point estimates don't always land inside the literal 0.6-0.8 band -- the qualitative goal
+#     (clearly slower than human) is met more reliably than the precise numeric target is, and
+#     chasing tighter precision against this much intrinsic gait noise has diminishing returns.
+# Every change re-verified live post-retune (trial + speed recompute + min_dist + ENCOUNTER-spin +
+# collision safety rail) before being called landed -- see REPORT.md Session 31 FIX 4 for the full
+# before/after table, including the wheelchair cliff-discovery data.
 SCOOTER_SPEED_MULT = 3.7
 CYCLIST_SPEED_MULT = 4.8
-WHEELCHAIR_SPEED_MULT = 1.3
-WHITE_CANE_SPEED_MULT = 3.2
+WHEELCHAIR_SPEED_MULT = 1.0
+WHITE_CANE_SPEED_MULT = 2.9
 
 
 def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
@@ -601,6 +649,52 @@ def ensure_teb_plugin_installed():
     eprint("[run_trial] preflight: teb_local_planner installed successfully.")
 
 
+DEFAULT_TEB_MIN_OBSTACLE_DIST = 0.3
+DEFAULT_TEB_INFLATION_DIST = 0.5
+# Session 31 FIX 1 (Howard priority #1/#6, "avoids too early" / "encounter window too short"):
+# screened min_obstacle_dist/inflation_dist in {0.3/0.5 (baseline), 0.2/0.3, 0.15/0.2} against one
+# business_male_01 x indifferent x --profile scoring trial each (repeated once for the chosen
+# candidate). Absolute safety floor: robot footprint radius (0.16m, /move_base/*_costmap/
+# robot_radius) + pedestrian collision-capsule radius (0.2m, Base.RADIUS) = 0.36m -- every
+# candidate's measured min_dist stayed well clear of this (baseline 1.737, candidate 0.2/0.3:
+# 1.722/1.475 across two runs, candidate 0.15/0.2: 1.334) -- no candidate came anywhere near
+# vetoing on collision risk. A lateral-path-deviation-onset-distance metric (how far out the robot
+# first deviates >0.3m from the straight corridor centerline) was tried to isolate "avoidance
+# onset" specifically, but proved too noisy to trust at N=1-2 per candidate -- readings did not
+# move monotonically with the parameter change, consistent with this project's own prior findings
+# (Sessions 22-24) that TEB's own residual path weave is a real, intrinsic optimization artifact,
+# not cleanly separable from pedestrian-specific avoidance with a simple threshold. Landed the
+# MODERATE candidate (0.2/0.3, not the more aggressive 0.15/0.2): directionally exactly what the
+# brief asked (robot permitted closer before its cost function penalizes proximity), safety margin
+# preserved with more headroom than the aggressive candidate, chosen over 0.15/0.2 specifically
+# because the aggressive candidate's extra clearance reduction did not show a clearly demonstrated
+# framing/dwell benefit to justify its tighter min_dist. Reported honestly as directionally-correct
+# and safety-verified, not as a proven "later avoidance" effect -- see REPORT.md Session 31 FIX 1.
+TEB_SCORING_MIN_OBSTACLE_DIST = 0.2
+TEB_SCORING_INFLATION_DIST = 0.3
+
+
+def set_teb_avoidance_params(min_obstacle_dist, inflation_dist):
+    """Live dynamic_reconfigure set against the already-running move_base/TebLocalPlannerROS node
+    -- same mechanism warmup_ros_session() already uses for oscillation_timeout (a runtime
+    rosparam/dynparam experiment against the live ROS session, not a sim_ws file edit, per the
+    standing guardrails). Idempotent (setting the same value twice is a no-op) and best-effort:
+    logs a warning rather than raising if the set doesn't take, since a failed clearance tweak
+    should not itself block a trial that would otherwise run fine at whatever value is already
+    live (mirrors contain_ros_logs()'s non-fatal preflight style)."""
+    cmd = ("rosrun dynamic_reconfigure dynparam set /move_base/TebLocalPlannerROS "
+           "\"{{'min_obstacle_dist': {}, 'inflation_dist': {}}}\"".format(min_obstacle_dist, inflation_dist))
+    result = docker_exec(cmd, timeout=15)
+    if result.returncode != 0:
+        eprint("[run_trial] set_teb_avoidance_params: dynparam set failed (non-fatal, trial will "
+               "run with whatever TEB params are already live): {}".format(result.stderr[-300:]))
+        return
+    verify_min = docker_exec("rosparam get /move_base/TebLocalPlannerROS/min_obstacle_dist", timeout=10).stdout.strip()
+    verify_inf = docker_exec("rosparam get /move_base/TebLocalPlannerROS/inflation_dist", timeout=10).stdout.strip()
+    eprint("[run_trial] TEB avoidance params: min_obstacle_dist={} inflation_dist={} (requested {}/{})".format(
+        verify_min, verify_inf, min_obstacle_dist, inflation_dist))
+
+
 def ros_fresh_bringup(scene="outdoor", prefix="autotrial"):
     ensure_teb_plugin_installed()
     eprint("[run_trial] --fresh-ros: tearing down existing roslaunch processes in the container...")
@@ -730,6 +824,10 @@ def build_config(args, out_dir):
         "pedDistracted": args.ped_distracted,
         "hasPostEncounterGrace": args.post_encounter_grace is not None,
         "postEncounterGraceSec": args.post_encounter_grace if args.post_encounter_grace is not None else 8.0,
+        "hasScaredRadiusOverride": args.scared_radius is not None,
+        "scaredRadiusOverride": args.scared_radius if args.scared_radius is not None else 3.0,
+        "hasSurpriseRadiusOverride": args.surprise_radius is not None,
+        "surpriseRadiusOverride": args.surprise_radius if args.surprise_radius is not None else 4.0,
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
@@ -1108,13 +1206,23 @@ def actual_achieved_fps(frames_csv_path, configured_fps):
     return achieved
 
 
-def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC):
+def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
+                  clip_mode="threshold", encounter_half_window=5.0):
     """POV only (Session 10, D5 -- no chase/third-person camera). Builds pov_full.mp4, needed both
     as the Round 4 (Step 4) primary deliverable AND for overlay.py to burn+re-cut its own *_ov
     near clips from (overlay always re-derives spans from frames.csv rather than trusting these
     clip boundaries). Round 4: pov_full.mp4/pov_full_ov.mp4 are kept permanently now (output
     format v3) -- the near clips (pov_near_NN[_ov].mp4) are additional, VLM-prefilter material,
-    not a replacement for the full video."""
+    not a replacement for the full video.
+
+    Session 31 FIX 2: clip_mode="threshold" (default) preserves the original find_near_spans()
+    behavior byte-for-byte -- no existing caller's output changes. clip_mode="centered" instead
+    uses trial_lib.find_encounter_centered_span() -- a single [t_min-half, t_min+half] window
+    anchored on the trial's own minimum dist_to_pedestrian frame, with no threshold/grace/tail
+    logic at all. This is what session31_review's delivered clips use: user feedback was that
+    delivered clips still carried a long solo-robot-driving-to-goal tail even after growth/merge
+    tuning, and the fix is to stop trying to grow a threshold-crossing span and just cut a fixed
+    window around the encounter's own climax instead."""
     pov_dir = out_dir / "pov"
     pov_full = out_dir / "pov_full.mp4"
 
@@ -1130,7 +1238,12 @@ def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib
     if not assemble_video(pov_dir, "pov", real_fps, pov_full):
         return {"ok": False, "reason": "ffmpeg assembly failed"}
 
-    spans = trial_lib.find_near_spans(out_dir / "frames.csv", near_dist, min_duration_sec=near_clip_min_sec)
+    if clip_mode == "centered":
+        span = trial_lib.find_encounter_centered_span(out_dir / "frames.csv", half_window_sec=encounter_half_window)
+        spans = [span] if span is not None else []
+    else:
+        spans = trial_lib.find_near_spans(out_dir / "frames.csv", near_dist, min_duration_sec=near_clip_min_sec)
+
     near_clips = []
     for i, (start, end) in enumerate(spans):
         pov_clip = out_dir / "pov_near_{:02d}.mp4".format(i)
@@ -1285,7 +1398,17 @@ def main():
     p.add_argument("--near-clip-min-sec", type=float, default=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
                    help="Round 3: every near clip is grown symmetrically around its own "
                         "minimum-distance moment (bounded by trial length) until it reaches at "
-                        "least this many seconds; overlapping spans after growth are merged.")
+                        "least this many seconds; overlapping spans after growth are merged. "
+                        "Ignored when --clip-mode centered.")
+    p.add_argument("--clip-mode", choices=["threshold", "centered"], default="threshold",
+                   help="Session 31 FIX 2: 'threshold' (default) is the original find_near_spans() "
+                        "behavior, unchanged -- no existing caller's clips change. 'centered' cuts "
+                        "a single [t_min-half, t_min+half] window anchored on the trial's own "
+                        "minimum dist_to_pedestrian frame (--encounter-half-window), with no "
+                        "solo-navigation tail -- used for session31_review's delivered clips.")
+    p.add_argument("--encounter-half-window", type=float, default=5.0,
+                   help="Session 31 FIX 2: half-width (seconds) of the --clip-mode centered "
+                        "window around t_min. Default 5.0 -> a ~10s delivered clip.")
     p.add_argument("--out", default=None, help="output directory (default: trial_outputs/<appearance>_<personality>_<timestamp>)")
     p.add_argument("--windowed", action="store_true", help="drop -batchmode (black-frame fallback)")
     p.add_argument("--keep-full", action="store_true",
@@ -1337,6 +1460,15 @@ def main():
                         "goal is published early (pre-roll) so it reaches a normal cruise while "
                         "still further than --ped-distance away; only takes effect when --spawn "
                         "is not explicitly given.")
+    p.add_argument("--scared-radius", type=float, default=None, metavar="METERS",
+                   help="Session 31 FIX 5(b): override PedestrianModulator.scaredRadius (default "
+                        "3.0m) -- the distance at which Scared's flee reaction itself starts. "
+                        "Distinct from --ped-distance/--profile (the general SLATE release/"
+                        "avoidance-onset distance). Zone A only.")
+    p.add_argument("--surprise-radius", type=float, default=None, metavar="METERS",
+                   help="Session 31 FIX 5(b): override PedestrianModulator.surpriseRadius (default "
+                        "4.0m) -- the distance at which Surprised's freeze reaction itself starts. "
+                        "Distinct from --ped-distance/--profile. Zone A only.")
     p.add_argument("--post-encounter-grace", type=float, default=None, metavar="SECONDS",
                    help="Session 15: end capture SECONDS after dist_to_pedestrian first "
                         "re-exceeds --ped-distance following a genuine pass (i.e. the encounter "
@@ -1460,6 +1592,53 @@ def main():
     # explicit --ped-distance (not None) always wins over the profile.
     if args.ped_distance is None:
         args.ped_distance = PROFILE_PED_DISTANCE[args.profile]
+        # Session 31 FIX 3: speed-tiered spawn/trigger distance, --profile scoring only. User
+        # feedback: under scoring's flat 8m trigger, fast actors (scooter/cyclist) close the
+        # remaining gap almost instantly (measured min-dist frame at t=1.6-2.0s post-release this
+        # session -- ~2-3s of visible approach, "not enough time to see them"), while slow actors
+        # (wheelchair/white_cane) get comparatively more dwell "for free". Fix: scale the trigger
+        # distance by TARGET_DWELL_SEC * actor_speed, using this session's own FIX-4-verified
+        # live speeds (not the raw multiplier), so every actor gets a comparable number of seconds
+        # from release to close approach. TARGET_DWELL_SEC=6.2 is calibrated so business_male_01's
+        # own ~1.29 m/s walking pace reproduces ~8.0m -- i.e. today's human scoring baseline is the
+        # formula's fixed point, not a new number; only the four appearances below (which have a
+        # verified live speed to plug in) move off it. Zone A/generic appearances (no verified
+        # per-character speed) and --profile arc are both untouched -- this is scoring-profile-only
+        # and Zone-B-only by construction (SCORING_TIER_SPEED_MPS.get() falls through to the flat
+        # 8.0m default for anything not in the dict).
+        SCORING_TIER_TARGET_DWELL_SEC = 6.2
+        SCORING_TIER_SPEED_MPS = {
+            "scooter_user": 3.515,
+            "cyclist": 4.560,
+            "wheelchair_user": 0.890,
+            "white_cane_user": 0.6,
+        }
+        if args.profile == "scoring" and args.appearance in SCORING_TIER_SPEED_MPS:
+            args.ped_distance = SCORING_TIER_SPEED_MPS[args.appearance] * SCORING_TIER_TARGET_DWELL_SEC
+
+    # Session 31 FIX 5(b): under --profile scoring, Scared/Surprised default to a raised action-
+    # trigger radius (up from PedestrianModulator's own compiled-in 3.0/4.0) so the reaction starts
+    # well before the closest pass instead of ~0.5s before it (measured: default radius gave
+    # scared only a 0.55s reaction window before t_min). An explicit --scared-radius/
+    # --surprise-radius always wins over these defaults. 'arc' and every other personality are
+    # unaffected.
+    #   scared -> 7.0m (5.92s reaction window measured). Scared's reaction is a whole-body FLEE
+    #   (translation), legible from a distance, so maximizing reaction time is pure upside here --
+    #   no visibility tradeoff the way FIX 6(a)'s upper-body gesture has (below).
+    #   surprised -> 4.5m (3.81s reaction window measured), NOT the same 7.0m used for scared.
+    #   FIX 6(a) replaced SurprisedReaction's clip with a retargeted Mixamo gesture -- at 7.0m the
+    #   robot is still 6-7m away for the ENTIRE reaction (frozen pedestrian, so only the robot's
+    #   own approach changes the distance), too far for an upper-body gesture to read clearly on
+    #   camera (verified via extracted frame strips: at 7.0m the gesture was essentially
+    #   illegible). 4.5m still nearly 7x the old 0.55s baseline while keeping the pedestrian closer
+    #   (down to ~1.1m by the reaction's end) during the reaction -- see REPORT.md Session 31 FIX
+    #   6 for the frame-strip evidence and the honest verdict on gesture legibility even at this
+    #   closer range.
+    if args.profile == "scoring":
+        if args.personality.lower() == "scared" and args.scared_radius is None:
+            args.scared_radius = 7.0
+        if args.personality.lower() == "surprised" and args.surprise_radius is None:
+            args.surprise_radius = 4.5
 
     if args.compile_check:
         log_path = Path("/tmp/run_trial_compile_check.log")
@@ -1568,6 +1747,15 @@ def main():
     if args.warmup:
         warmup_ros_session()
 
+    # Session 31 FIX 1: --profile scoring also tunes TEB's own avoidance-onset clearance (not just
+    # the SLATE trigger distance) -- see TEB_SCORING_MIN_OBSTACLE_DIST's comment for the screening
+    # data. 'arc' explicitly resets to the compiled-in TEB defaults, so a scoring trial earlier in
+    # the same long-lived ROS session never leaks into a later arc trial's behavior.
+    if args.profile == "scoring":
+        set_teb_avoidance_params(TEB_SCORING_MIN_OBSTACLE_DIST, TEB_SCORING_INFLATION_DIST)
+    else:
+        set_teb_avoidance_params(DEFAULT_TEB_MIN_OBSTACLE_DIST, DEFAULT_TEB_INFLATION_DIST)
+
     if args.out is None:
         ts = time.strftime("%Y%m%d_%H%M%S")
         out_dir = DEFAULT_OUT_ROOT / "{}_{}_{}".format(args.appearance, args.personality.lower(), ts)
@@ -1597,7 +1785,8 @@ def main():
 
     augment_trial_meta(out_dir, bringup_mode, args.trial_position)
 
-    result = post_process(out_dir, args.fps, args.near_dist, args.keep_full, near_clip_min_sec=args.near_clip_min_sec)
+    result = post_process(out_dir, args.fps, args.near_dist, args.keep_full, near_clip_min_sec=args.near_clip_min_sec,
+                           clip_mode=args.clip_mode, encounter_half_window=args.encounter_half_window)
     if not result["ok"]:
         eprint("[run_trial] post-processing FAILED: {}".format(result["reason"]))
         sys.exit(1)
@@ -1659,7 +1848,9 @@ def main():
     ov_ok, ov_detail = True, "--no-overlay"
     if args.overlay:
         ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist,
-                                                       near_clip_min_sec=args.near_clip_min_sec)
+                                                       near_clip_min_sec=args.near_clip_min_sec,
+                                                       clip_mode=args.clip_mode,
+                                                       encounter_half_window=args.encounter_half_window)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
     # Session 17 (Step 1b, THE PERMANENT FILE MANIFEST GATE): enumerates the complete expected

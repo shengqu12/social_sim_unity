@@ -116,6 +116,38 @@ def find_near_spans(frames_csv_path, near_dist, min_duration_sec=DEFAULT_NEAR_CL
     return merged
 
 
+def find_encounter_centered_span(frames_csv_path, half_window_sec=5.0):
+    """Session 31 FIX 2: replaces the threshold/grace-based find_near_spans() for the delivered
+    review clips. User feedback: the old near-clip logic (threshold-crossing span, grown to a
+    minimum duration, sometimes merged with a post-encounter grace tail) still let a long
+    solo-robot-driving-to-goal tail leak into delivered clips. This instead anchors directly on
+    t_min -- the frame with the smallest dist_to_pedestrian in the whole trial (same definition
+    classify_spin_phases() already uses) -- and returns a single fixed [t_min-half_window_sec,
+    t_min+half_window_sec] window, clamped to [0, trial_duration]. No threshold, no growth, no
+    merging: whatever happens outside that window (including all solo-navigation time after the
+    pass) is simply not included. Returns (start, end) in seconds, or None if frames.csv has no
+    valid dist_to_pedestrian samples."""
+    with open(frames_csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+    trial_duration = float(rows[-1]["t"])
+
+    dists = []
+    for row in rows:
+        try:
+            dists.append((float(row["t"]), float(row["dist_to_pedestrian"])))
+        except (ValueError, KeyError):
+            pass
+    if not dists:
+        return None
+
+    t_min = min(dists, key=lambda p: p[1])[0]
+    start = max(0.0, t_min - half_window_sec)
+    end = min(trial_duration, t_min + half_window_sec)
+    return (start, end)
+
+
 def cut_clip(src_video, out_path, start, end):
     ss = max(0.0, start)
     duration = end - start

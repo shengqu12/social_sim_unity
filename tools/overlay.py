@@ -146,7 +146,8 @@ def burn_overlay(src_mp4, ass_path, out_mp4):
 
 
 def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
-                       near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC):
+                       near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
+                       clip_mode="threshold", encounter_half_window=5.0):
     """Returns (ok: bool, detail: str). Session 10 (D5): POV only -- no chase/third-person camera
     exists anymore. Requires pov_full.mp4 -- present on every Round-4-or-later trial (output
     format v3 keeps it permanently); a pre-Round-4 trial with pov_full.mp4 already deleted by the
@@ -178,7 +179,14 @@ def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
     if not burn_overlay(pov_full, ass_pov, pov_ov):
         return False, "ffmpeg burn-in failed"
 
-    spans = trial_lib.find_near_spans(frames_csv, near_dist, min_duration_sec=near_clip_min_sec)
+    # Session 31 FIX 2: must match post_process()'s own clip_mode exactly, or the _ov overlay
+    # clips would be cut to a different window than the plain pov_near clips they're supposed to
+    # correspond to.
+    if clip_mode == "centered":
+        span = trial_lib.find_encounter_centered_span(frames_csv, half_window_sec=encounter_half_window)
+        spans = [span] if span is not None else []
+    else:
+        spans = trial_lib.find_near_spans(frames_csv, near_dist, min_duration_sec=near_clip_min_sec)
     for i, (start, end) in enumerate(spans):
         pov_near_ov = trial_dir / "pov_near_{:02d}_ov.mp4".format(i)
         trial_lib.cut_clip(pov_ov, pov_near_ov, start, end)

@@ -83,6 +83,19 @@ namespace SEAN.AutoTrial
         public bool hasPostEncounterGrace = false;
         public float postEncounterGraceSec = 8.0f;
 
+        // Session 31 FIX 5(b): raises Scared's/Surprised's own ACTION-trigger radius
+        // (PedestrianModulator.scaredRadius/surpriseRadius -- the distance at which the flee/
+        // freeze reaction itself starts) so the reaction begins while the robot is still
+        // approaching, giving the camera time to actually capture it -- distinct from the
+        // general SLATE release/avoidance-onset distance (triggerDistanceMeters above / TEB's own
+        // costmap params). Same hasX/X on-off convention as goalPose etc.; false leaves
+        // PedestrianModulator's own compiled-in defaults (3.0/4.0) untouched. Zone A only -- see
+        // AutoTrialBootstrap.SpawnPedestrian.
+        public bool hasScaredRadiusOverride = false;
+        public float scaredRadiusOverride = 3.0f;
+        public bool hasSurpriseRadiusOverride = false;
+        public float surpriseRadiusOverride = 4.0f;
+
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;
     }

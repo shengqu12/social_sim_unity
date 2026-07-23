@@ -645,9 +645,29 @@ namespace SEAN.AutoTrial
                     var modulator = navAgent.gameObject.AddComponent<Scenario.Agents.PedestrianModulator>();
                     modulator.personality = personalityType;
                     modulator.walkSpeedMultiplier = config.pedSpeedMultiplier;
+                    // Session 31 FIX 5(b): PedestrianModulator.scaredRadius/surpriseRadius are
+                    // public runtime fields on this same component instance -- overriding them
+                    // here is a plain field assignment on a script we just instantiated, not an
+                    // edit to PedestrianModulator.cs itself (which stays untouched, outside this
+                    // project's writable scope).
+                    if (config.hasScaredRadiusOverride)
+                    {
+                        modulator.scaredRadius = config.scaredRadiusOverride;
+                    }
+                    if (config.hasSurpriseRadiusOverride)
+                    {
+                        modulator.surpriseRadius = config.surpriseRadiusOverride;
+                    }
                     if (patrolValid)
                     {
                         modulator.EnablePatrol(config.patrolWaypoints[0].ToVector3(), config.patrolWaypoints[1].ToVector3());
+                    }
+                    // Session 31 FIX 6(b): Assertive's new "back off" shooing gesture -- a separate
+                    // component (not a PedestrianModulator.cs edit, see its own class doc) since
+                    // ModulateAssertive() has no animation-trigger hook of its own.
+                    if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Assertive)
+                    {
+                        navAgent.gameObject.AddComponent<S31AssertiveGestureTrigger>();
                     }
                 }
 
