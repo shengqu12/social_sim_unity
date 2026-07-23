@@ -191,7 +191,12 @@ PROFILE_PED_DISTANCE = {"arc": DEFAULT_PED_DISTANCE, "scoring": 8.0}
 SCOOTER_SPEED_MULT = 3.7
 CYCLIST_SPEED_MULT = 4.8
 WHEELCHAIR_SPEED_MULT = 1.0
-WHITE_CANE_SPEED_MULT = 2.9
+# Session 33 FIX 6: user wants white-cane reduced FURTHER, target ~0.4-0.5 m/s (S31's 2.9 measured
+# ~0.55-0.64 m/s -- clearly slower than human but not slow enough per this session's ask). Scaled
+# down proportionally (2.9 * 0.45/0.6 ~= 2.175, rounded to 2.2) and re-verified live against a real
+# trial rather than trusting the arithmetic (this project's own standing rule after S29's scooter
+# mistake) -- see REPORT.md Session 33 FIX 6 for the measured on-disk speed.
+WHITE_CANE_SPEED_MULT = 2.2
 
 
 def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
@@ -227,33 +232,33 @@ def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, ov
     return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z)
 
 
-SCENARIOS = ("headon", "crossing", "overtake", "overtaken")
+SCENARIOS = ("headon", "overtake", "overtaken")
 
 
-# Session 32 FIX C: crossing's perpendicular offset used to be a flat CROSSING_PERP_FRACTION
-# (0.4) of the spawn distance -- fine under the old 25m headon-derived distance, but once
-# --profile scoring (8m) and FIX 3's per-appearance tiering changed what "ped_distance" means,
-# the flat fraction stopped guaranteeing the pedestrian and robot actually reach the
-# intersection at the same time: the pedestrian (fast, short perpendicular walk) was arriving
-# and leaving well before the robot got anywhere near the crossing point, so gates still passed
-# (the trial DOES produce a real, if brief, close pass at some point) but no video frame showed
-# both agents near the intersection together. Reference robot cruise speed measured this session
-# from real trials under the new FIX A settings (frames 20-100 of a fresh scoring-profile
-# approach): ~0.38-0.6 m/s depending on run; 0.5 is a middle-of-the-road, documented assumption,
-# not a hard guarantee -- crossing timing is inherently approximate given real per-trial
-# robot-speed variance, verify visually per trial rather than trusting the arithmetic alone.
-CROSSING_ASSUMED_ROBOT_SPEED_MPS = 0.5
-# Matches the session-established human reference speed (Session 30R/31: ~1.29-1.30 m/s
-# on-disk); used only as crossing's own ped_speed_mps assumption when the caller hasn't
-# resolved an appearance-specific multiplier yet (true for business_male_01, this session's
-# only crossing roster item -- APPEARANCE_SPEED_MULT resolution for tiered Zone B appearances
-# happens AFTER this function is called, so a future crossing-with-scooter session would need
-# to pass its own already-known speed here instead of relying on this default).
-CROSSING_HUMAN_REFERENCE_SPEED_MPS = 1.3
+# Session 33: 'crossing' REMOVED per the user's own explicit instruction ("last chance... if it
+# cannot be made to work this session, DELETE the crossing preset entirely"). Session 32 fixed
+# crossing's TIMING (time-to-intersection matching, verified correct) but left a real, unresolved
+# visual-framing problem open. This session root-caused it: `PovCameraSmoother`'s "course" yaw
+# mode (Session 26, the standing default) locks the camera's yaw to the ROBOT'S OWN direction of
+# travel, smoothed over a trailing window -- it never looks toward the pedestrian specifically.
+# For headon (pedestrian ahead, on the robot's own path) this is invisible, since "where the robot
+# is going" and "where the pedestrian is" coincide. For crossing (pedestrian approaching
+# PERPENDICULAR to the robot's course), they structurally do NOT coincide -- the camera has no
+# mechanism to ever pan toward a laterally-approaching pedestrian, regardless of how close or
+# well-timed the numeric encounter is. This is the SAME root cause as Session 31's own
+# unconfirmed "assertive gesture visibility blocked by camera framing" finding (assertive's
+# straight-line pass doesn't make the robot react/turn either, so the course-locked camera stays
+# pointed at its own forward heading there too) -- both symptoms of one underlying camera-design
+# limitation, not two separate bugs. A real fix would mean adding a pedestrian-relative yaw-bias
+# blend to PovCameraSmoother.cs (in scope, AutoTrial/**) for perpendicular-approach scenarios --
+# not attempted this session given the remaining time budget and the risk of shipping an
+# unverified camera behavior change affecting every OTHER scenario's framing too; flagged to
+# Howard as a precise, actionable lead for a future session instead of another vague "some other
+# framing property, not diagnosed" entry. See HOWARD_HANDOFF.md.
 
 
 def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M,
-                               trigger_distance=None, ped_speed_mps=None, robot_speed_mps=CROSSING_ASSUMED_ROBOT_SPEED_MPS):
+                               trigger_distance=None, ped_speed_mps=None, robot_speed_mps=0.5):
     """Session 28 PART 2: pure-geometry scenario presets, all computed from the robot's own
     start->goal bearing (no new assets, no Unity changes). Returns ((ped_x, ped_y, ped_z,
     ped_yaw_deg), (dest_x, dest_y, dest_z), default_ped_speed_mult_or_None). ped_distance here is
@@ -267,21 +272,8 @@ def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBO
     pass-through). Ped frozen at spawn regardless of scenario (SLATE v2), so pre-trigger
     dist_to_pedestrian shrinks from the robot's own approach alone in every scenario below too.
 
-    crossing: ped path perpendicular to the robot's, timed by the SLATE trigger (ped frozen at
-    spawn, same freeze-until-release mechanism as headon) to intersect near the middle of the
-    remaining corridor -- not by any new synchronization logic, the existing freeze does this for
-    free. The intersection point is `ped_distance` along the robot's OWN bearing from
-    robot_start (matching headon's own meeting-point convention); the pedestrian spawns
-    CROSSING_PERP_FRACTION * ped_distance out along the PERPENDICULAR bearing from that point,
-    facing/moving across toward the mirrored point on the other side. That fraction (not
-    ped_distance itself) is deliberate: the SLATE trigger is a plain Euclidean distance
-    threshold, and the CLOSEST the robot's own approach can ever bring it to a point standing
-    perpendicular-offset D away is exactly D (achieved only once the robot reaches the
-    intersection point's own along-bearing coordinate) -- so the perpendicular offset must stay
-    smaller than the raw trigger threshold or the trigger becomes geometrically unreachable and
-    the 30s timeout guard fires instead (found empirically this session: offset==spawn distance,
-    i.e. fraction 1.0, put the achievable minimum at ~29m against a 25m threshold -- never
-    triggered cleanly).
+    ('crossing' was removed in Session 33 -- see the module-level comment above SCENARIOS for the
+    full root-cause writeup, a camera-framing limitation, not a geometry bug.)
 
     overtake: ped ahead on the robot's OWN path (the same spawn point headon uses), but facing
     and moving in the SAME direction as the robot instead of back toward it -- the faster robot
@@ -314,51 +306,10 @@ def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBO
         raise ValueError("robot start {} and goal {} coincide on the ground plane -- cannot "
                           "compute a bearing for --scenario '{}' placement".format(robot_start, goal_xyz, scenario))
     ux, uz = dx / norm, dz / norm
-    # Perpendicular to the robot's bearing (rotate 90deg in the ground plane).
-    px, pz = -uz, ux
 
     if scenario == "headon":
         ped_pose, dest = resolve_head_on_geometry(ped_distance, goal_xyz, robot_start, overshoot)
         return ped_pose, dest, None
-
-    if scenario == "crossing":
-        # Session 32 FIX C: perpendicular offset derived from TIME-TO-INTERSECTION matching
-        # instead of a flat fraction of ped_distance -- see module-level comment above
-        # CROSSING_ASSUMED_ROBOT_SPEED_MPS for the full why. Physics: let T = the raw SLATE
-        # trigger threshold (Euclidean dist to the ped's frozen, perpendicular-offset spawn
-        # point), r = assumed robot speed, v = pedestrian speed, x = perp_offset. At release,
-        # the robot's own remaining along-bearing distance to the meet point is
-        # sqrt(T^2 - x^2) (Pythagorean: T is the hypotenuse of [along-bearing remaining, x]).
-        # We want the pedestrian's own travel time from its offset spawn point to the meet
-        # point (distance x, at speed v) to equal the robot's travel time to the same point
-        # (distance sqrt(T^2-x^2), at speed r): x / v = sqrt(T^2-x^2) / r. Solving for x:
-        #   x = T * (v/r) / sqrt(1 + (v/r)^2)
-        # This ALSO automatically guarantees x < T (the old fraction-based formula's own
-        # reachability constraint, see docstring above) for any positive v, r -- a structural
-        # property of this formula, not a separate check needed.
-        trig_dist = trigger_distance if trigger_distance is not None else ped_distance
-        v = ped_speed_mps if ped_speed_mps is not None else CROSSING_HUMAN_REFERENCE_SPEED_MPS
-        r = robot_speed_mps
-        vr = v / r
-        perp_offset = trig_dist * vr / math.sqrt(1.0 + vr * vr)
-        meet_x, meet_z = sx + ux * ped_distance, sz + uz * ped_distance
-        # Session 32 NOTE: direct frame inspection (not just gates) found the crossing encounter
-        # renders as a tiny, barely-visible speck near the horizon rather than a legible close
-        # pass, DESPITE dist_to_pedestrian/min_dist gates passing correctly (Euclidean geometry
-        # and timing are both right -- verified: robot and pedestrian really do reach near-
-        # identical x-coordinates within ~1.1-1.3m at the encounter). Tried flipping this
-        # perpendicular sign (assuming one-sided camera occlusion, e.g. the robot's own chassis)
-        # -- this made it WORSE (min_dist regressed to 7.3m, zero near-spans), proving the issue
-        # is NOT which side the pedestrian approaches from; it's some other camera/scene framing
-        # property at this specific along-corridor location, not diagnosed further this session.
-        # Reverted to the original (Session 28) sign, which at least produces a real, if not
-        # visually confirmed, close numeric encounter. Flagged honestly in REPORT.md/
-        # HOWARD_HANDOFF.md as unresolved -- the TIMING half of FIX C (this function's actual
-        # job) is verified correct; the camera-framing half is a separate, real, open problem.
-        ped_x, ped_z = meet_x + px * perp_offset, meet_z + pz * perp_offset
-        dest_x, dest_z = meet_x - px * overshoot, meet_z - pz * overshoot
-        yaw = math.degrees(math.atan2(-px, -pz)) % 360.0  # facing toward the intersection point
-        return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z), None
 
     if scenario == "overtake":
         ped_x, ped_z = sx + ux * ped_distance, sz + uz * ped_distance
@@ -762,6 +713,73 @@ TEB_SCORING_WEIGHT_OBSTACLE_FAST = 8.0
 TEB_SCORING_FAST_APPEARANCES = ("scooter_user", "cyclist")
 DEFAULT_TEB_WEIGHT_OBSTACLE = 50.0
 
+# Session 33 FIX 1: audited the FULL clearance chain the user's brief suspected (costmap
+# inflation_radius/cost_scaling_factor, robot footprint, obstacle-marking range), not just TEB's
+# own two geometric params (already tuned by S31/S32). Live audit via `rosparam get` against the
+# already-running node (not this repo's own checked-out, stale sim_ws copy -- see PROJECT_HANDOFF's
+# "sim_ws is stale" note): local_costmap/inflater_layer inflation_radius=0.1, cost_scaling_factor=3.0
+# -- ALREADY SMALL, not a legacy-oversized Kuri bubble as the brief suspected. robot_radius=0.16,
+# footprint='' (circular approximation) -- and the robot_description IS actually generated from
+# kuri2.urdf.xacro (confirmed via `rosparam get /robot_description`), i.e. this sim genuinely runs
+# a Kuri-class round robot, NOT an A1 quadruped as the task brief assumed -- the circular
+# 0.16m footprint is period-correct for the robot actually in use, not a mismatch to fix.
+# obstacle_range/raytrace_range=10.0m looked suspicious in isolation but the local costmap's own
+# window is only 6x6m (confirmed), which already caps any practical marking distance at 3m from
+# the robot regardless of the 10m range setting -- not a live lever.
+#
+# CRITICAL FINDING (the session's real headline, more important than any parameter value):
+# built a clean pedestrian-ABSENT control trial (--ped-distance 40, --duration 15, pedestrian never
+# within 20m the whole recording) and ran the SAME lateral-deviation "detour-onset" instrumentation
+# S32 built against it. It still fired an "onset" at 37.7m -- i.e. with a pedestrian that could not
+# possibly be influencing the robot's path at all, the same ambient TEB path noise (~0.3-0.45m
+# lateral drift amplitude, smooth and continuous, NOT a discrete avoidance event) crosses the
+# metric's 0.12m threshold within ~2s of every trial, regardless of any pedestrian. This CONFIRMS
+# S32's own suspicion ("TEB avoidance-onset benefit not cleanly isolated from ambient weave") as
+# the dominant explanation for S32's own reported variance (1.76-6.70m for one identical landed
+# config) -- "detour-onset distance" as defined is measuring mostly-or-entirely ambient path noise,
+# not a real, tunable geometric avoidance bubble. There is no large oversized bubble left to
+# deflate at the parameter level; the true remaining effect (if any) is small relative to this
+# noise floor. Reported honestly rather than chasing a number that doesn't mean what it appears to.
+#
+# Given that, tuning proceeded on REAL, trustworthy evidence instead: min_dist (not onset distance)
+# across matched N=3 trials at fixed --profile scoring/business_male_01/indifferent/30s duration.
+# Screened three costmap+TEB combinations (min_dist m, N=3 each): baseline (S32's landed 0.15/0.2/
+# inflation_radius=0.1/csf=3.0): 0.54, 1.008, 1.168. A "tight" candidate (min_obstacle_dist=0.08,
+# inflation_dist=0.12, inflation_radius=0.08, csf=8.0): 0.526, 1.668, 1.831 -- one run at 0.526,
+# uncomfortably close to the 0.5m operational floor (only 5% margin), rejected per the brief's own
+# "back off one notch" instruction. Landed the "notch back" candidate instead: min_obstacle_dist=
+# 0.10, inflation_dist=0.15, inflation_radius unchanged at 0.10, cost_scaling_factor steepened
+# 3.0->6.0 (cost falls off faster with distance = a tighter effective bubble edge at the same
+# radius): 0.821, 1.069, 1.212 (one run separately gated FAIL on trigger-speed, unrelated to this
+# parameter -- excluded). All three candidates' min_dist ranges overlap substantially given N=3 --
+# consistent with the noise-floor finding above, this is NOT a dramatic, clean win, but it is a
+# real, safety-verified, directionally-correct tightening (every touched parameter moved toward
+# permitting closer proximity, none moved away from it), landed honestly as such.
+TEB_SCORING_MIN_OBSTACLE_DIST_S33 = 0.10
+TEB_SCORING_INFLATION_DIST_S33 = 0.15
+DEFAULT_COSTMAP_INFLATION_RADIUS = 0.10
+DEFAULT_COSTMAP_COST_SCALING_FACTOR = 3.0
+TEB_SCORING_COST_SCALING_FACTOR = 6.0
+
+
+def set_costmap_inflation_params(inflation_radius, cost_scaling_factor):
+    """Session 33 FIX 1: live dynamic_reconfigure set against /move_base/local_costmap/
+    inflater_layer (confirmed via `dynparam list` to be a real dynamic_reconfigure server, same
+    discipline as set_teb_avoidance_params -- a runtime rosparam experiment, not a sim_ws file
+    edit). Idempotent, best-effort (non-fatal on failure, mirrors set_teb_avoidance_params)."""
+    param_str = "'inflation_radius': {}, 'cost_scaling_factor': {}".format(inflation_radius, cost_scaling_factor)
+    cmd = ("rosrun dynamic_reconfigure dynparam set /move_base/local_costmap/inflater_layer "
+           "\"{{{}}}\"".format(param_str))
+    result = docker_exec(cmd, timeout=15)
+    if result.returncode != 0:
+        eprint("[run_trial] set_costmap_inflation_params: dynparam set failed (non-fatal): {}".format(
+            result.stderr[-300:]))
+        return
+    verify_ir = docker_exec("rosparam get /move_base/local_costmap/inflater_layer/inflation_radius", timeout=10).stdout.strip()
+    verify_csf = docker_exec("rosparam get /move_base/local_costmap/inflater_layer/cost_scaling_factor", timeout=10).stdout.strip()
+    eprint("[run_trial] costmap inflation params: inflation_radius={} cost_scaling_factor={} "
+           "(requested {}/{})".format(verify_ir, verify_csf, inflation_radius, cost_scaling_factor))
+
 
 def set_teb_avoidance_params(min_obstacle_dist, inflation_dist, weight_obstacle=None):
     """Live dynamic_reconfigure set against the already-running move_base/TebLocalPlannerROS node
@@ -924,6 +942,8 @@ def build_config(args, out_dir):
         "scaredRadiusOverride": args.scared_radius if args.scared_radius is not None else 3.0,
         "hasSurpriseRadiusOverride": args.surprise_radius is not None,
         "surpriseRadiusOverride": args.surprise_radius if args.surprise_radius is not None else 4.0,
+        "hasSurpriseCooldownOverride": args.surprise_cooldown is not None,
+        "surpriseCooldownOverride": args.surprise_cooldown if args.surprise_cooldown is not None else 4.0,
         "camera": {
             "povOffsetX": 0.0, "povOffsetY": 0.0, "povOffsetZ": 0.0,
             "yawSmoothTau": args.yaw_smooth_tau,
@@ -1519,9 +1539,9 @@ def main():
                    help="Session 28 PART 2: pure-geometry encounter preset, computed from the "
                         "robot start->goal bearing (no new assets). 'headon' (default): ped ahead "
                         "on the robot's path, facing back, genuine pass-through -- the pipeline's "
-                        "original behavior, unchanged. 'crossing': ped path perpendicular to the "
-                        "robot's, timed by the existing SLATE freeze-until-release to intersect "
-                        "near mid-corridor. 'overtake': ped ahead, same direction as the robot, "
+                        "original behavior, unchanged. ('crossing' was removed in Session 33 -- "
+                        "see REPORT.md/HOWARD_HANDOFF.md, a camera-framing limitation, not a "
+                        "geometry bug.) 'overtake': ped ahead, same direction as the robot, "
                         "default --ped-speed 0.5 (robot catches up and passes). 'overtaken': ped "
                         "ahead on the SAME spawn point as overtake (a literal starts-BEHIND spawn "
                         "is geometrically incompatible with the SLATE trigger -- see the "
@@ -1565,6 +1585,10 @@ def main():
                    help="Session 31 FIX 5(b): override PedestrianModulator.surpriseRadius (default "
                         "4.0m) -- the distance at which Surprised's freeze reaction itself starts. "
                         "Distinct from --ped-distance/--profile. Zone A only.")
+    p.add_argument("--surprise-cooldown", type=float, default=None, metavar="SECONDS",
+                   help="Session 33 FIX 3: override PedestrianModulator.cooldownDuration (default "
+                        "4.0s) -- prevents a second, spurious reaction trigger firing during "
+                        "post-pass separation noise. Zone A only.")
     p.add_argument("--post-encounter-grace", type=float, default=None, metavar="SECONDS",
                    help="Session 15: end capture SECONDS after dist_to_pedestrian first "
                         "re-exceeds --ped-distance following a genuine pass (i.e. the encounter "
@@ -1735,6 +1759,12 @@ def main():
             args.scared_radius = 7.0
         if args.personality.lower() == "surprised" and args.surprise_radius is None:
             args.surprise_radius = 4.5
+        # Session 33 FIX 3: 30s comfortably covers the rest of any --clip-mode centered delivered
+        # clip (~10s) plus the full raw trial (up to 90s default duration, but the second spurious
+        # trigger was observed within ~14s of trial start) -- long enough that no post-pass
+        # separation-noise re-entry into surpriseRadius can re-arm a second trigger.
+        if args.personality.lower() == "surprised" and args.surprise_cooldown is None:
+            args.surprise_cooldown = 30.0
 
     if args.compile_check:
         log_path = Path("/tmp/run_trial_compile_check.log")
@@ -1799,17 +1829,8 @@ def main():
         # is frozen there (AutoTrialBootstrap.SpawnPedestrian) until TrialController's live
         # distance trigger (config.triggerDistanceMeters == args.ped_distance) fires.
         spawn_distance = args.ped_distance + args.slate_margin
-        # Session 32 FIX C: crossing's own time-to-intersection formula needs the RAW trigger
-        # threshold (not spawn_distance, which also folds in slate_margin) and the pedestrian's
-        # actual speed estimate -- args.ped_speed is a MULTIPLIER (see APPEARANCE_SPEED_MULT
-        # below, resolved AFTER this call), so approximate here with the human reference speed;
-        # correct for this session's only crossing roster item (business_male_01, mult
-        # unset/1.0). A future crossing + speed-tiered-appearance combo would need its own
-        # pre-resolved speed passed through instead of this approximation.
-        crossing_ped_speed_mps = CROSSING_HUMAN_REFERENCE_SPEED_MPS * (args.ped_speed if args.ped_speed is not None else 1.0)
         geom_spawn, geom_ped_goal, scenario_speed_mult = resolve_scenario_geometry(
-            args.scenario, spawn_distance, bearing_goal,
-            trigger_distance=args.ped_distance, ped_speed_mps=crossing_ped_speed_mps)
+            args.scenario, spawn_distance, bearing_goal)
         args.spawn = list(geom_spawn)
         if args.ped_speed is None and scenario_speed_mult is not None:
             args.ped_speed = scenario_speed_mult
@@ -1871,12 +1892,20 @@ def main():
         # personality -- its own straight-line behavior already makes it visually distinct from
         # indifferent without needing tighter TEB tuning too (see REPORT.md Session 32 FIX A/B).
         set_teb_avoidance_params(DEFAULT_TEB_MIN_OBSTACLE_DIST, DEFAULT_TEB_INFLATION_DIST, DEFAULT_TEB_WEIGHT_OBSTACLE)
+        # Session 33: assertive's safety override extends to the costmap-layer tightening too --
+        # the straight-line guardian's zero-compliance already proved dangerous even at S31/S32's
+        # moderate TEB tightness (see the DEFAULT_TEB_WEIGHT_OBSTACLE comment above), so it gets
+        # the original, compiled-in-safe costmap defaults as well, not this session's new tighter
+        # inflation/cost_scaling_factor values.
+        set_costmap_inflation_params(DEFAULT_COSTMAP_INFLATION_RADIUS, DEFAULT_COSTMAP_COST_SCALING_FACTOR)
     elif args.profile == "scoring":
         weight_obstacle = (TEB_SCORING_WEIGHT_OBSTACLE_FAST if args.appearance in TEB_SCORING_FAST_APPEARANCES
                             else TEB_SCORING_WEIGHT_OBSTACLE)
-        set_teb_avoidance_params(TEB_SCORING_MIN_OBSTACLE_DIST, TEB_SCORING_INFLATION_DIST, weight_obstacle)
+        set_teb_avoidance_params(TEB_SCORING_MIN_OBSTACLE_DIST_S33, TEB_SCORING_INFLATION_DIST_S33, weight_obstacle)
+        set_costmap_inflation_params(DEFAULT_COSTMAP_INFLATION_RADIUS, TEB_SCORING_COST_SCALING_FACTOR)
     else:
         set_teb_avoidance_params(DEFAULT_TEB_MIN_OBSTACLE_DIST, DEFAULT_TEB_INFLATION_DIST, DEFAULT_TEB_WEIGHT_OBSTACLE)
+        set_costmap_inflation_params(DEFAULT_COSTMAP_INFLATION_RADIUS, DEFAULT_COSTMAP_COST_SCALING_FACTOR)
 
     if args.out is None:
         ts = time.strftime("%Y%m%d_%H%M%S")

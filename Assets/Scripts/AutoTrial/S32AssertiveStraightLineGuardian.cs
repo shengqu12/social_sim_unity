@@ -63,11 +63,35 @@ namespace SEAN.AutoTrial
         public float emergencyLateralStepDistanceMeters = 0.8f;
         public float emergencyLateralStepSpeedMps = 0.8f;
 
+        // Session 33 FIX 2: user observed the pedestrian sliding forward WHILE the point_backwards
+        // gesture plays -- root cause was two independent components (this one's forward-progress
+        // freeze at 1.5m, and the separate S31AssertiveGestureTrigger's own proximity check at a
+        // looser 5.0m) with no shared state, so the gesture fired mid-walk long before any stop.
+        // Retired S31AssertiveGestureTrigger for Assertive (no longer attached, see
+        // AutoTrialBootstrap.cs) and folded gesture-firing into THIS component's own state machine,
+        // gated explicitly on having actually reached a stop (traveled frozen this frame due to
+        // proximity), not on robot distance alone -- an explicit walk -> stop -> gesture -> resume
+        // sequence rather than two independently-triggered behaviors that could overlap.
+        // gestureHoldSeconds matches point_backwards.fbx's own clip length (3.60s, S31 FIX 6(b)).
+        public float gestureHoldSeconds = 3.6f;
+        public float gestureCooldownSeconds = 6.0f;
+
+        private enum State { Walking, Gesturing }
+        private State state = State.Walking;
+        private float gestureEndsAt = -1f;
+        private float cooldownUntil = -1f;
+
+        private Animator animator;
         private Vector3 startPos;
         private Vector3 destPos;
         private float traveled;
         private float lateralOffset;
         private bool active;
+
+        void Awake()
+        {
+            animator = IVI.AvatarAnimatorUtility.GetLocomotionAnimator(gameObject);
+        }
 
         public void Activate(Vector3 start, Vector3 dest)
         {
@@ -76,6 +100,9 @@ namespace SEAN.AutoTrial
             traveled = 0f;
             lateralOffset = 0f;
             active = true;
+            state = State.Walking;
+            gestureEndsAt = -1f;
+            cooldownUntil = -1f;
         }
 
         void LateUpdate()
@@ -87,15 +114,31 @@ namespace SEAN.AutoTrial
             Vector3 unit = delta / totalDist;
             Vector3 perp = Vector3.Cross(Vector3.up, unit).normalized;
 
-            float proposedTraveled = Mathf.Min(traveled + speedMps * Time.deltaTime, totalDist);
+            float now = Time.time;
+
+            // Gesturing: hold position entirely (no forward advance, no lateral evasion either --
+            // the lateral evasion backstop below still runs regardless of state since zero-collision
+            // is absolute and must never be suppressed by an animation, but forward walking pauses).
+            if (state == State.Gesturing && now >= gestureEndsAt)
+            {
+                state = State.Walking;
+            }
+
+            float proposedTraveled = traveled;
+            if (state == State.Walking)
+            {
+                proposedTraveled = Mathf.Min(traveled + speedMps * Time.deltaTime, totalDist);
+            }
             Vector3 proposedForwardPos = startPos + unit * proposedTraveled + perp * lateralOffset;
 
             Vector3? robotPos = TryGetRobotPosition(proposedForwardPos.y);
 
-            bool safeToAdvanceForward = true;
+            bool safeToAdvanceForward = state == State.Walking;
+            bool stoppedByProximityThisFrame = false;
             if (robotPos.HasValue && Vector3.Distance(proposedForwardPos, robotPos.Value) < emergencyStopDistanceMeters)
             {
                 safeToAdvanceForward = false;
+                stoppedByProximityThisFrame = true;
             }
             if (!robotPos.HasValue)
             {
@@ -107,12 +150,26 @@ namespace SEAN.AutoTrial
                 traveled = proposedTraveled;
             }
 
+            // Fire the gesture exactly once per approach, on the frame proximity FIRST forces a
+            // stop (not every frame while stopped) -- rising-edge, same shape as the retired
+            // S31AssertiveGestureTrigger but now gated on an actual stop, not just raw distance.
+            if (state == State.Walking && stoppedByProximityThisFrame && now >= cooldownUntil
+                && animator != null)
+            {
+                animator.SetTrigger("AssertiveGesture");
+                state = State.Gesturing;
+                gestureEndsAt = now + gestureHoldSeconds;
+                cooldownUntil = gestureEndsAt + gestureCooldownSeconds;
+            }
+
             Vector3 currentLinePos = startPos + unit * traveled;
             Vector3 currentPos = currentLinePos + perp * lateralOffset;
 
             // Absolute last-resort lateral evasion: only engages if the robot is closer than the
             // (stricter) lateral-step threshold even at the CURRENT position -- i.e. forward
-            // pausing alone wasn't enough because the robot's own path is closing the gap.
+            // pausing alone wasn't enough because the robot's own path is closing the gap. Runs
+            // regardless of Walking/Gesturing state -- zero-collision safety is never suppressed
+            // by an animation being mid-playback.
             if (robotPos.HasValue)
             {
                 float distNow = Vector3.Distance(currentPos, robotPos.Value);

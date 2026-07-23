@@ -668,16 +668,22 @@ namespace SEAN.AutoTrial
                     {
                         modulator.surpriseRadius = config.surpriseRadiusOverride;
                     }
+                    if (config.hasSurpriseCooldownOverride)
+                    {
+                        modulator.cooldownDuration = config.surpriseCooldownOverride;
+                    }
                     if (patrolValid)
                     {
                         modulator.EnablePatrol(config.patrolWaypoints[0].ToVector3(), config.patrolWaypoints[1].ToVector3());
                     }
-                    // Session 31 FIX 6(b): Assertive's new "back off" shooing gesture -- a separate
-                    // component (not a PedestrianModulator.cs edit, see its own class doc) since
-                    // ModulateAssertive() has no animation-trigger hook of its own.
+                    // Session 31 FIX 6(b) / Session 33 FIX 2: Assertive's "back off" shooing
+                    // gesture is now fired by S32AssertiveStraightLineGuardian's own walk->stop->
+                    // gesture->resume state machine (not the standalone S31AssertiveGestureTrigger,
+                    // retired for Assertive this session -- its independent proximity-only trigger
+                    // is what caused the gesture to fire mid-walk; see S32AssertiveStraightLine
+                    // Guardian's own class doc for the full sequencing fix).
                     if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Assertive)
                     {
-                        navAgent.gameObject.AddComponent<S31AssertiveGestureTrigger>();
                         // Session 32 FIX B: true straight-line hold, activated at SLATE release
                         // by TrialController (see S32AssertiveStraightLineGuardian's own class doc).
                         navAgent.gameObject.AddComponent<S32AssertiveStraightLineGuardian>();

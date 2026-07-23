@@ -95,6 +95,18 @@ namespace SEAN.AutoTrial
         public float scaredRadiusOverride = 3.0f;
         public bool hasSurpriseRadiusOverride = false;
         public float surpriseRadiusOverride = 4.0f;
+        // Session 33 FIX 3: PedestrianModulator.ModulateSurprised()'s cooldownDuration (compiled-in
+        // default 4.0s, counted from the trigger instant) was found too short this session -- a
+        // real trial showed a SECOND, spurious rising-edge trigger firing ~5.7s after the true
+        // closest approach while distance was 7.5-9.5m and growing (i.e. during the post-pass
+        // separation phase, not a real second encounter), consistent with dist_to_pedestrian
+        // fluctuating near the surpriseRadius threshold during separation (this project's own
+        // documented TEB path-weave noise) re-arming a rising edge once the short cooldown expired.
+        // Overriding to a much longer value for the rest of a normal trial's duration prevents this
+        // without touching PedestrianModulator.cs (outside writable scope) -- same non-edit,
+        // plain-field-override pattern as scaredRadiusOverride/surpriseRadiusOverride above.
+        public bool hasSurpriseCooldownOverride = false;
+        public float surpriseCooldownOverride = 4.0f;
 
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;
