@@ -228,6 +228,19 @@ namespace SEAN.AutoTrial
 
                     pedestrianNavAgent?.InitDest(pedestrianReleaseDest);
 
+                    // Session 32 FIX B: if this pedestrian carries the Assertive straight-line
+                    // guardian (only true for PersonalityType.Assertive, see AutoTrialBootstrap),
+                    // arm it at the exact release instant -- pre-release frozen-facing behavior
+                    // is completely untouched, this only takes over from here.
+                    if (pedestrianNavAgent != null)
+                    {
+                        var straightLineGuardian = pedestrianNavAgent.GetComponent<S32AssertiveStraightLineGuardian>();
+                        if (straightLineGuardian != null)
+                        {
+                            straightLineGuardian.Activate(pedestrianNavAgent.transform.position, pedestrianReleaseDest);
+                        }
+                    }
+
                     // The trigger frame's own robot position hasn't moved since the check above
                     // (same frame, no yield) -- seed frame 0's own speed calc off the PREVIOUS
                     // poll sample so frames.csv's robot_speed column reflects the real cruising

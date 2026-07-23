@@ -590,6 +590,10 @@ namespace SEAN.AutoTrial
                 // future nested-Animator container could hit the identical window).
                 var positionGuardian = navAgent.transform.gameObject.AddComponent<S21PedestrianPositionGuardian>();
                 positionGuardian.SetIntendedPosition(spawnPos);
+                // Session 32 FIX E: locomotion animator playback rate scaled to actual movement
+                // speed -- general fix, every Zone B appearance (see S32AnimatorSpeedScaler's own
+                // class doc for why this wasn't already happening).
+                navAgent.transform.gameObject.AddComponent<S32AnimatorSpeedScaler>();
                 if (config.appearance == "white_cane_user")
                 {
                     // Diagnostic-only, kept for provenance: the per-frame transform watcher
@@ -633,6 +637,12 @@ namespace SEAN.AutoTrial
                 navAgent.transform.position = spawnPos;
                 navAgent.transform.rotation = spawnRot;
 
+                // Session 32 FIX E: locomotion animator playback rate scaled to actual movement
+                // speed -- general fix, every Zone A pedestrian regardless of personality/modulator
+                // presence (see S32AnimatorSpeedScaler's own class doc for why this wasn't already
+                // happening).
+                navAgent.gameObject.AddComponent<S32AnimatorSpeedScaler>();
+
                 // Indifferent + no patrol = no modulator at all, matching PedestrianSpawner's
                 // existing convention (Base.ModulateVelocity() no-ops via a null GetComponent).
                 // Session 28 PART 3b: ALSO force a modulator when pedSpeedMultiplier != 1.0f --
@@ -668,6 +678,16 @@ namespace SEAN.AutoTrial
                     if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Assertive)
                     {
                         navAgent.gameObject.AddComponent<S31AssertiveGestureTrigger>();
+                        // Session 32 FIX B: true straight-line hold, activated at SLATE release
+                        // by TrialController (see S32AssertiveStraightLineGuardian's own class doc).
+                        navAgent.gameObject.AddComponent<S32AssertiveStraightLineGuardian>();
+                    }
+                    // Session 32 FIX B2 diagnostic: opt-in runtime probe (env-var gated, no-op
+                    // unless AUTOTRIAL_S32_PROBE_PATH is set) -- see S32SurprisedRuntimeProbe.cs.
+                    if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Surprised
+                        && !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("AUTOTRIAL_S32_PROBE_PATH")))
+                    {
+                        navAgent.gameObject.AddComponent<S32SurprisedRuntimeProbe>();
                     }
                 }
 

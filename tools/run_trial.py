@@ -230,7 +230,30 @@ def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, ov
 SCENARIOS = ("headon", "crossing", "overtake", "overtaken")
 
 
-def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
+# Session 32 FIX C: crossing's perpendicular offset used to be a flat CROSSING_PERP_FRACTION
+# (0.4) of the spawn distance -- fine under the old 25m headon-derived distance, but once
+# --profile scoring (8m) and FIX 3's per-appearance tiering changed what "ped_distance" means,
+# the flat fraction stopped guaranteeing the pedestrian and robot actually reach the
+# intersection at the same time: the pedestrian (fast, short perpendicular walk) was arriving
+# and leaving well before the robot got anywhere near the crossing point, so gates still passed
+# (the trial DOES produce a real, if brief, close pass at some point) but no video frame showed
+# both agents near the intersection together. Reference robot cruise speed measured this session
+# from real trials under the new FIX A settings (frames 20-100 of a fresh scoring-profile
+# approach): ~0.38-0.6 m/s depending on run; 0.5 is a middle-of-the-road, documented assumption,
+# not a hard guarantee -- crossing timing is inherently approximate given real per-trial
+# robot-speed variance, verify visually per trial rather than trusting the arithmetic alone.
+CROSSING_ASSUMED_ROBOT_SPEED_MPS = 0.5
+# Matches the session-established human reference speed (Session 30R/31: ~1.29-1.30 m/s
+# on-disk); used only as crossing's own ped_speed_mps assumption when the caller hasn't
+# resolved an appearance-specific multiplier yet (true for business_male_01, this session's
+# only crossing roster item -- APPEARANCE_SPEED_MULT resolution for tiered Zone B appearances
+# happens AFTER this function is called, so a future crossing-with-scooter session would need
+# to pass its own already-known speed here instead of relying on this default).
+CROSSING_HUMAN_REFERENCE_SPEED_MPS = 1.3
+
+
+def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M,
+                               trigger_distance=None, ped_speed_mps=None, robot_speed_mps=CROSSING_ASSUMED_ROBOT_SPEED_MPS):
     """Session 28 PART 2: pure-geometry scenario presets, all computed from the robot's own
     start->goal bearing (no new assets, no Unity changes). Returns ((ped_x, ped_y, ped_z,
     ped_yaw_deg), (dest_x, dest_y, dest_z), default_ped_speed_mult_or_None). ped_distance here is
@@ -299,11 +322,39 @@ def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBO
         return ped_pose, dest, None
 
     if scenario == "crossing":
-        # Kept well under 1.0 -- see the crossing docstring paragraph above for why the trigger
-        # becomes unreachable as this approaches (let alone reaches) 1.0.
-        CROSSING_PERP_FRACTION = 0.4
-        perp_offset = ped_distance * CROSSING_PERP_FRACTION
+        # Session 32 FIX C: perpendicular offset derived from TIME-TO-INTERSECTION matching
+        # instead of a flat fraction of ped_distance -- see module-level comment above
+        # CROSSING_ASSUMED_ROBOT_SPEED_MPS for the full why. Physics: let T = the raw SLATE
+        # trigger threshold (Euclidean dist to the ped's frozen, perpendicular-offset spawn
+        # point), r = assumed robot speed, v = pedestrian speed, x = perp_offset. At release,
+        # the robot's own remaining along-bearing distance to the meet point is
+        # sqrt(T^2 - x^2) (Pythagorean: T is the hypotenuse of [along-bearing remaining, x]).
+        # We want the pedestrian's own travel time from its offset spawn point to the meet
+        # point (distance x, at speed v) to equal the robot's travel time to the same point
+        # (distance sqrt(T^2-x^2), at speed r): x / v = sqrt(T^2-x^2) / r. Solving for x:
+        #   x = T * (v/r) / sqrt(1 + (v/r)^2)
+        # This ALSO automatically guarantees x < T (the old fraction-based formula's own
+        # reachability constraint, see docstring above) for any positive v, r -- a structural
+        # property of this formula, not a separate check needed.
+        trig_dist = trigger_distance if trigger_distance is not None else ped_distance
+        v = ped_speed_mps if ped_speed_mps is not None else CROSSING_HUMAN_REFERENCE_SPEED_MPS
+        r = robot_speed_mps
+        vr = v / r
+        perp_offset = trig_dist * vr / math.sqrt(1.0 + vr * vr)
         meet_x, meet_z = sx + ux * ped_distance, sz + uz * ped_distance
+        # Session 32 NOTE: direct frame inspection (not just gates) found the crossing encounter
+        # renders as a tiny, barely-visible speck near the horizon rather than a legible close
+        # pass, DESPITE dist_to_pedestrian/min_dist gates passing correctly (Euclidean geometry
+        # and timing are both right -- verified: robot and pedestrian really do reach near-
+        # identical x-coordinates within ~1.1-1.3m at the encounter). Tried flipping this
+        # perpendicular sign (assuming one-sided camera occlusion, e.g. the robot's own chassis)
+        # -- this made it WORSE (min_dist regressed to 7.3m, zero near-spans), proving the issue
+        # is NOT which side the pedestrian approaches from; it's some other camera/scene framing
+        # property at this specific along-corridor location, not diagnosed further this session.
+        # Reverted to the original (Session 28) sign, which at least produces a real, if not
+        # visually confirmed, close numeric encounter. Flagged honestly in REPORT.md/
+        # HOWARD_HANDOFF.md as unresolved -- the TIMING half of FIX C (this function's actual
+        # job) is verified correct; the camera-framing half is a separate, real, open problem.
         ped_x, ped_z = meet_x + px * perp_offset, meet_z + pz * perp_offset
         dest_x, dest_z = meet_x - px * overshoot, meet_z - pz * overshoot
         yaw = math.degrees(math.atan2(-px, -pz)) % 360.0  # facing toward the intersection point
@@ -670,20 +721,63 @@ DEFAULT_TEB_INFLATION_DIST = 0.5
 # because the aggressive candidate's extra clearance reduction did not show a clearly demonstrated
 # framing/dwell benefit to justify its tighter min_dist. Reported honestly as directionally-correct
 # and safety-verified, not as a proven "later avoidance" effect -- see REPORT.md Session 31 FIX 1.
-TEB_SCORING_MIN_OBSTACLE_DIST = 0.2
-TEB_SCORING_INFLATION_DIST = 0.3
+# Session 32 FIX A: raised aggressiveness one notch from S31's landed 0.2/0.3 (see
+# TEB_SCORING_WEIGHT_OBSTACLE's own comment below for the full before/after data -- these two
+# geometric params turned out NOT to be the dominant lever, but were kept at this tighter setting
+# alongside the new weight_obstacle reduction since the combination is what was actually verified
+# safe and effective this session, not either change in isolation).
+TEB_SCORING_MIN_OBSTACLE_DIST = 0.15
+TEB_SCORING_INFLATION_DIST = 0.2
+
+# Session 32 FIX A: S31's own REPORT.md admitted the "later avoidance onset" causal claim was
+# never cleanly isolated from TEB's ambient weave -- the user's own eyes then confirmed it did
+# NOT visibly work (indifferent and assertive looked identical). This session actually measured
+# detour-onset distance as a hard number for the first time (lateral deviation from the corridor
+# centerline, sustained >=3 frames past a 0.12m epsilon, first 15 frames excluded as spawn-
+# transient noise -- see the analysis notes in REPORT.md Session 32). S31's own two TEB params
+# (min_obstacle_dist/inflation_dist, already at their more aggressive 0.15/0.2 candidate here)
+# were NOT the dominant lever -- baseline onset under 0.2/0.3 (S31's landed values) measured
+# 3.79-4.78m across indifferent/scared/surprised trials, essentially unchanged from pre-S31.
+# `weight_obstacle` (TEB's own optimization weight for obstacle-avoidance cost -- how strongly
+# the trajectory optimizer penalizes proximity to obstacles, independent of the geometric
+# min_obstacle_dist/inflation_dist margins) turned out to be the real lever: reducing it from its
+# compiled-in 50.0 down to 15.0 (alongside 0.15/0.2) measured onset at 1.76m and 2.79m across two
+# repeat trials (mean ~2.27m) -- squarely in the brief's ~2-3m target band, with min_dist staying
+# safely above the 0.5-0.86m operational bar (1.39-1.393m across the two indifferent runs). A
+# `social_layer` costmap plugin (amplitude=77/covariance=0.1/cutoff=10.0) also exists on both
+# costmaps and was investigated as a suspect (a Gaussian pedestrian-comfort cost layer, cutoff=10m
+# is a plausible far-field trigger) but is NOT a dynamic_reconfigure server (confirmed via
+# `dynparam list`) -- a live rosparam set would not take effect without a relaunch that risks being
+# overwritten by whatever yaml seeds it at roslaunch time, and TEB's own weight_obstacle lever
+# alone already hit the target band, so the social_layer investigation was not pursued further
+# this session (flagged to Howard as a real, uninvestigated lever if a future session needs an
+# even later onset than weight_obstacle=15 provides).
+TEB_SCORING_WEIGHT_OBSTACLE = 15.0
+# FIX D(b): fast actors (scooter/cyclist) close distance faster, so the SAME clearance distance
+# gives TEB less real time to react -- effectively an earlier onset in wall-clock terms even at
+# an identical parameter value. Compensate with an even lower weight for these two appearances
+# specifically under --profile scoring (empirically screened against a real scooter trial, see
+# REPORT.md Session 32 FIX D).
+TEB_SCORING_WEIGHT_OBSTACLE_FAST = 8.0
+TEB_SCORING_FAST_APPEARANCES = ("scooter_user", "cyclist")
+DEFAULT_TEB_WEIGHT_OBSTACLE = 50.0
 
 
-def set_teb_avoidance_params(min_obstacle_dist, inflation_dist):
+def set_teb_avoidance_params(min_obstacle_dist, inflation_dist, weight_obstacle=None):
     """Live dynamic_reconfigure set against the already-running move_base/TebLocalPlannerROS node
     -- same mechanism warmup_ros_session() already uses for oscillation_timeout (a runtime
     rosparam/dynparam experiment against the live ROS session, not a sim_ws file edit, per the
     standing guardrails). Idempotent (setting the same value twice is a no-op) and best-effort:
     logs a warning rather than raising if the set doesn't take, since a failed clearance tweak
     should not itself block a trial that would otherwise run fine at whatever value is already
-    live (mirrors contain_ros_logs()'s non-fatal preflight style)."""
+    live (mirrors contain_ros_logs()'s non-fatal preflight style). weight_obstacle is optional
+    (Session 32 FIX A addition) -- omitted, the node's currently-live value is left untouched."""
+    params = {"min_obstacle_dist": min_obstacle_dist, "inflation_dist": inflation_dist}
+    if weight_obstacle is not None:
+        params["weight_obstacle"] = weight_obstacle
+    param_str = ", ".join("'{}': {}".format(k, v) for k, v in params.items())
     cmd = ("rosrun dynamic_reconfigure dynparam set /move_base/TebLocalPlannerROS "
-           "\"{{'min_obstacle_dist': {}, 'inflation_dist': {}}}\"".format(min_obstacle_dist, inflation_dist))
+           "\"{{{}}}\"".format(param_str))
     result = docker_exec(cmd, timeout=15)
     if result.returncode != 0:
         eprint("[run_trial] set_teb_avoidance_params: dynparam set failed (non-fatal, trial will "
@@ -691,8 +785,10 @@ def set_teb_avoidance_params(min_obstacle_dist, inflation_dist):
         return
     verify_min = docker_exec("rosparam get /move_base/TebLocalPlannerROS/min_obstacle_dist", timeout=10).stdout.strip()
     verify_inf = docker_exec("rosparam get /move_base/TebLocalPlannerROS/inflation_dist", timeout=10).stdout.strip()
-    eprint("[run_trial] TEB avoidance params: min_obstacle_dist={} inflation_dist={} (requested {}/{})".format(
-        verify_min, verify_inf, min_obstacle_dist, inflation_dist))
+    verify_wt = docker_exec("rosparam get /move_base/TebLocalPlannerROS/weight_obstacle", timeout=10).stdout.strip()
+    eprint("[run_trial] TEB avoidance params: min_obstacle_dist={} inflation_dist={} weight_obstacle={} "
+           "(requested {}/{}/{})".format(verify_min, verify_inf, verify_wt, min_obstacle_dist, inflation_dist,
+                                          weight_obstacle if weight_obstacle is not None else "(unchanged)"))
 
 
 def ros_fresh_bringup(scene="outdoor", prefix="autotrial"):
@@ -1703,7 +1799,17 @@ def main():
         # is frozen there (AutoTrialBootstrap.SpawnPedestrian) until TrialController's live
         # distance trigger (config.triggerDistanceMeters == args.ped_distance) fires.
         spawn_distance = args.ped_distance + args.slate_margin
-        geom_spawn, geom_ped_goal, scenario_speed_mult = resolve_scenario_geometry(args.scenario, spawn_distance, bearing_goal)
+        # Session 32 FIX C: crossing's own time-to-intersection formula needs the RAW trigger
+        # threshold (not spawn_distance, which also folds in slate_margin) and the pedestrian's
+        # actual speed estimate -- args.ped_speed is a MULTIPLIER (see APPEARANCE_SPEED_MULT
+        # below, resolved AFTER this call), so approximate here with the human reference speed;
+        # correct for this session's only crossing roster item (business_male_01, mult
+        # unset/1.0). A future crossing + speed-tiered-appearance combo would need its own
+        # pre-resolved speed passed through instead of this approximation.
+        crossing_ped_speed_mps = CROSSING_HUMAN_REFERENCE_SPEED_MPS * (args.ped_speed if args.ped_speed is not None else 1.0)
+        geom_spawn, geom_ped_goal, scenario_speed_mult = resolve_scenario_geometry(
+            args.scenario, spawn_distance, bearing_goal,
+            trigger_distance=args.ped_distance, ped_speed_mps=crossing_ped_speed_mps)
         args.spawn = list(geom_spawn)
         if args.ped_speed is None and scenario_speed_mult is not None:
             args.ped_speed = scenario_speed_mult
@@ -1751,10 +1857,26 @@ def main():
     # the SLATE trigger distance) -- see TEB_SCORING_MIN_OBSTACLE_DIST's comment for the screening
     # data. 'arc' explicitly resets to the compiled-in TEB defaults, so a scoring trial earlier in
     # the same long-lived ROS session never leaks into a later arc trial's behavior.
-    if args.profile == "scoring":
-        set_teb_avoidance_params(TEB_SCORING_MIN_OBSTACLE_DIST, TEB_SCORING_INFLATION_DIST)
+    if args.profile == "scoring" and args.personality.lower() == "assertive":
+        # Session 32 FIX A/B SAFETY OVERRIDE: assertive's own straight-line guardian (FIX B)
+        # removes an entire safety degree of freedom other personalities still have (the
+        # pedestrian's own social-force compliance/yielding) -- empirically, combining FIX A's
+        # tuned clearance with a fully rigid pedestrian produced real, repeated sub-0.36m
+        # (physical floor) passes across repeat trials (0.318/0.299/0.333m measured this session),
+        # NOT explained by TEB parameter choice alone (0.15-0.3 min_obstacle_dist all showed at
+        # least one unsafe repeat) -- inherent run-to-run planner variance against a
+        # zero-compliance obstacle, not something a parameter value alone can guarantee against.
+        # Zero-collision is absolute, so assertive always gets the ORIGINAL, compiled-in-safe TEB
+        # defaults regardless of --profile, sacrificing FIX A's onset benefit for this one
+        # personality -- its own straight-line behavior already makes it visually distinct from
+        # indifferent without needing tighter TEB tuning too (see REPORT.md Session 32 FIX A/B).
+        set_teb_avoidance_params(DEFAULT_TEB_MIN_OBSTACLE_DIST, DEFAULT_TEB_INFLATION_DIST, DEFAULT_TEB_WEIGHT_OBSTACLE)
+    elif args.profile == "scoring":
+        weight_obstacle = (TEB_SCORING_WEIGHT_OBSTACLE_FAST if args.appearance in TEB_SCORING_FAST_APPEARANCES
+                            else TEB_SCORING_WEIGHT_OBSTACLE)
+        set_teb_avoidance_params(TEB_SCORING_MIN_OBSTACLE_DIST, TEB_SCORING_INFLATION_DIST, weight_obstacle)
     else:
-        set_teb_avoidance_params(DEFAULT_TEB_MIN_OBSTACLE_DIST, DEFAULT_TEB_INFLATION_DIST)
+        set_teb_avoidance_params(DEFAULT_TEB_MIN_OBSTACLE_DIST, DEFAULT_TEB_INFLATION_DIST, DEFAULT_TEB_WEIGHT_OBSTACLE)
 
     if args.out is None:
         ts = time.strftime("%Y%m%d_%H%M%S")
