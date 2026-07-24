@@ -30,7 +30,7 @@ namespace SEAN.AutoTrial
         {
             if (SEAN.instance == null) { return; }
             Transform robot;
-            try { robot = SEAN.instance.robot; }
+            try { robot = SEAN.instance.robot.transform; }
             catch (System.Exception) { return; }
             if (robot == null) { return; }
 
