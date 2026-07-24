@@ -214,6 +214,21 @@ namespace SEAN.AutoTrial
             // meta.json so a failed assertion is visible in the trial output, not silent.
             List<string> agentCensus = CensusAndDestroyStrayAgents(pedestrianTransform, extraPedestrianTransforms);
 
+            // Session 38 FIX 1: universal robot-side lateral-evasion backstop, always active,
+            // every config (Session 34/37 both found the robot's own clearance alone -- with zero
+            // pedestrian contribution -- is not reliably above the 0.36m physical floor). See
+            // S38RobotLateralEvasionBackstop's own class doc for the full mechanism/rationale.
+            var robotBackstop = sean.robot.gameObject.GetComponent<S38RobotLateralEvasionBackstop>();
+            if (robotBackstop == null)
+            {
+                robotBackstop = sean.robot.gameObject.AddComponent<S38RobotLateralEvasionBackstop>();
+            }
+            robotBackstop.RegisterPedestrian(pedestrianTransform);
+            foreach (Transform extra in extraPedestrianTransforms)
+            {
+                robotBackstop.RegisterPedestrian(extra);
+            }
+
             Tasks.Base activeTask = null;
             waitStart = Time.time;
             while (Time.time - waitStart < TaskWaitTimeoutSec)
@@ -903,6 +918,36 @@ namespace SEAN.AutoTrial
                         && !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("AUTOTRIAL_S32_PROBE_PATH")))
                     {
                         navAgent.gameObject.AddComponent<S32SurprisedRuntimeProbe>();
+                    }
+                }
+                else
+                {
+                    // Session 38 FIX 3: root-caused the ~0.28 m/s bug Session 37 found (and the
+                    // ~2.3 m/s over-correction its own naive "always attach a modulator" attempt
+                    // produced instead). Root cause: Base.LateUpdate() (Assets/Scripts/SEAN/
+                    // Scenario/Agents/Base.cs, forbidden to edit, read only) branches on modulator
+                    // PRESENCE for how it applies root motion -- no modulator means it reproduces
+                    // Unity's raw animator.deltaPosition application directly (line ~155), which
+                    // for this appearance's Locomotion clip does not track the SFAgent-computed
+                    // social-force velocity at all (hence ~0.28 m/s, not ~1.3). Attaching a
+                    // modulator instead routes through PedestrianModulator.ApplyAnimatorRootMotion()
+                    // -- a DIFFERENT application path Session 37 could not fully explain, which
+                    // empirically produced ~2.3 m/s. Rather than chase that further, this sidesteps
+                    // BOTH root-motion paths entirely: Base.DirectVelocityDrive (a plain public
+                    // property, Base.cs:52-56, already an established externally-settable knob for
+                    // exactly this "no usable root motion" class of appearance, e.g. wheelchair)
+                    // makes Move() apply the SFAgent-computed `velocity` straight to the transform
+                    // every frame instead of any animator-root-motion path -- the same MAX_VEL-
+                    // clamped, correctly-scaled velocity every other (modulator-having) personality
+                    // already gets via its own social-force computation, with neither buggy
+                    // application path in the loop. S32AnimatorSpeedScaler (already attached to
+                    // every appearance, see below) keeps the Locomotion clip's own playback rate
+                    // visually matched to this now-correct translation speed, the same way it
+                    // already does for other directVelocityDrive appearances (wheelchair/scooter).
+                    var baseAgent = navAgent.gameObject.GetComponent<Scenario.Agents.Base>();
+                    if (baseAgent != null)
+                    {
+                        baseAgent.DirectVelocityDrive = true;
                     }
                 }
 
