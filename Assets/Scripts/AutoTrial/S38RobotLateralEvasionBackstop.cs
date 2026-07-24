@@ -40,13 +40,16 @@ namespace SEAN.AutoTrial
     [DefaultExecutionOrder(9999)]
     public class S38RobotLateralEvasionBackstop : MonoBehaviour
     {
-        // Deliberately looser than S32's own pedestrian-side 0.8m emergency-lateral-step threshold
-        // -- this session's own explicit bar is a 0.5m OPERATIONAL floor (not just the 0.36m
-        // physical floor), so the backstop engages proactively before the harder floor is at risk,
-        // giving a larger real margin than the pedestrian-side backstop's own "absolute last
-        // resort" framing needed.
-        public float reactThresholdMeters = 0.5f;
-        public float stepSpeedMps = 0.8f;
+        // Iteration 2 (same session): the first landed values (0.5m / 0.8 m/s) measured a real
+        // N=5 STALEMATE against white_cane_user specifically -- frames.csv showed distance sitting
+        // flat at ~0.36m for 1.5+ continuous seconds before dipping to 0.31m, i.e. the lateral
+        // push and the robot's own TEB path-return were roughly canceling rather than the
+        // evasion winning cleanly. Widened the threshold (more lead time to build separation
+        // before the robot commits to its closest-pass geometry) and the step speed (a stronger
+        // push per frame) so the evasion can outrun the path-return instead of merely offsetting
+        // it. Re-verify N=5 against white_cane specifically before trusting this value further.
+        public float reactThresholdMeters = 0.9f;
+        public float stepSpeedMps = 1.2f;
 
         private readonly List<Transform> pedestrians = new List<Transform>();
 
