@@ -54,6 +54,17 @@ namespace SEAN.AutoTrial
         {
             if (animator == null || baseAgent == null || !baseAgent.DirectVelocityDrive) { return; }
 
+            // Second finding, also confirmed via live probe (not assumed): Base.cs's Start()
+            // unconditionally sets `animator.applyRootMotion = true` regardless of
+            // DirectVelocityDrive. While Forward stayed at 0 this was invisible (an idle/zero
+            // blend produces ~zero root motion), but once Forward is restored below, Unity's own
+            // automatic root-motion application STACKS with DirectVelocityDrive's own
+            // `transform.position += velocity * Time.deltaTime` -- measured on a live trial:
+            // posDeltaSpeed jumped to 2-3 m/s (vs. the correct ~0.85-0.95 m/s) the moment Forward
+            // went nonzero. Disabling applyRootMotion here decouples the two: code drives 100% of
+            // translation (already correct per Session 38), the Animator drives visuals only.
+            if (animator.applyRootMotion) { animator.applyRootMotion = false; }
+
             Vector3 local = Quaternion.Euler(0f, -transform.eulerAngles.y, 0f) * baseAgent.velocity;
             local *= AnimationScale;
             bool idle = local.magnitude < IdleSpeedThreshold;
