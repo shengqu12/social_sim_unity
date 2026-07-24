@@ -793,6 +793,9 @@ namespace SEAN.AutoTrial
                 // presence (see S32AnimatorSpeedScaler's own class doc for why this wasn't already
                 // happening).
                 navAgent.gameObject.AddComponent<S32AnimatorSpeedScaler>();
+                // Session 39 diagnostic: confirms/refutes the DirectVelocityDrive-skips-
+                // Idling/Forward hypothesis. Env-var gated (AUTOTRIAL_S39_PROBE), no-op otherwise.
+                navAgent.gameObject.AddComponent<S39LocomotionStateProbe>();
                 // Session 34 FIX 4: force AlwaysAnimate so a reacting pedestrian's Animator never
                 // silently stalls while out of camera frame -- see S34AnimatorCullingFix's own
                 // class doc.
@@ -949,6 +952,16 @@ namespace SEAN.AutoTrial
                     {
                         baseAgent.DirectVelocityDrive = true;
                     }
+                    // Session 39 FIX: DirectVelocityDrive skips Base.cs's own else-branch, which
+                    // is the ONLY place Forward/Strafe/Idling ever get set -- confirmed via a live
+                    // runtime probe this session that Forward stayed frozen at 0 the whole trial
+                    // despite real ~0.85-0.95 m/s translation, producing "idle while sliding
+                    // forward" (a real regression this session's own predecessor introduced).
+                    // This replicates that computation from outside, off Base.velocity (public),
+                    // restoring the walk cycle without reopening the two already-rejected
+                    // DirectVelocityDrive alternatives (~0.28 m/s unmanaged, ~2.3 m/s modulator
+                    // over-correction). See S39DirectVelocityDriveAnimatorSync's own class doc.
+                    navAgent.gameObject.AddComponent<S39DirectVelocityDriveAnimatorSync>();
                 }
 
                 // Session 10 (D4): same dest-defaults-to-spawn fix as Zone B above. Patrol (if
