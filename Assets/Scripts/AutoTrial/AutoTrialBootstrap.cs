@@ -885,6 +885,15 @@ namespace SEAN.AutoTrial
                     {
                         modulator.scaredRadius = config.scaredRadiusOverride;
                     }
+                    // Session 40 STEP 2: additive lateral-flee bias for Scared (see
+                    // S40ScaredLateralEvasion's own class doc for why -- the existing radial
+                    // flee retreats along the approach line, not out of the robot's path).
+                    if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Scared)
+                    {
+                        var scaredLateral = navAgent.gameObject.AddComponent<S40ScaredLateralEvasion>();
+                        scaredLateral.scaredRadiusMeters = config.hasScaredRadiusOverride
+                            ? config.scaredRadiusOverride : modulator.scaredRadius;
+                    }
                     if (config.hasSurpriseRadiusOverride)
                     {
                         modulator.surpriseRadius = config.surpriseRadiusOverride;
