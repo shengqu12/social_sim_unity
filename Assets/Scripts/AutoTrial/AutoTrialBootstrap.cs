@@ -681,6 +681,25 @@ namespace SEAN.AutoTrial
                 // speed -- general fix, every Zone B appearance (see S32AnimatorSpeedScaler's own
                 // class doc for why this wasn't already happening).
                 navAgent.transform.gameObject.AddComponent<S32AnimatorSpeedScaler>();
+                // Session 37 STEP 2: attach the (now TTC-based) reaction gate unconditionally to
+                // every Zone B appearance too -- the N=5 safety census this session found
+                // white_cane_user's own worst-case min_dist (0.321m) BELOW the 0.36m physical
+                // floor under plain defaults, and this component was previously ONLY ever attached
+                // inside the Zone A modulator-conditional block, gated further on an explicit
+                // --ped-react-dist CLI flag -- meaning it was NEVER ACTIVE for any Zone B
+                // appearance, or for plain Indifferent Zone A trials without that flag, regardless
+                // of what distance/TTC value was configured. Zone B pedestrians' own
+                // PedestrianModulator (added below, for speed-scaling) always runs
+                // PersonalityType.Indifferent's Modulate() case (Scale() only, no robot-awareness
+                // at all) -- there is no personality-specific reaction logic here the way
+                // Scared/Surprised/Assertive have, so this generic gate is the only reaction
+                // mechanism available for these appearances. See S34PedestrianReactDistGate's own
+                // class doc for the TTC mechanism -- it only needs SFAgent (GetComponent, no
+                // PedestrianModulator dependency), so attaching it here is independent of and
+                // doesn't risk the STEP 0 modulator-attachment speed regression documented below.
+                var reactGateB = navAgent.transform.gameObject.AddComponent<S34PedestrianReactDistGate>();
+                reactGateB.personality = Scenario.Agents.PedestrianModulator.PersonalityType.Indifferent;
+                reactGateB.reactDistanceMeters = 1.5f;
                 // Session 34 FIX 4: force AlwaysAnimate so a reacting pedestrian's Animator never
                 // silently stalls while out of camera frame -- see S34AnimatorCullingFix's own
                 // class doc.
@@ -771,6 +790,27 @@ namespace SEAN.AutoTrial
                 // class doc for why and the full root-cause diagnosis.
                 var headingGuardian = navAgent.gameObject.AddComponent<S35HeadingAlignmentGuardian>();
                 headingGuardian.personality = personalityType;
+                // Session 37 STEP 2: attach the (now TTC-based) reaction gate unconditionally,
+                // same reasoning as the Zone B branch above -- the N=5 safety census this session
+                // found plain business_male_01 x indifferent's own worst-case min_dist (0.323m)
+                // BELOW the 0.36m physical floor, and this component was previously gated on an
+                // explicit --ped-react-dist CLI flag inside the modulator-conditional block below,
+                // so it was NEVER ACTIVE for a plain default indifferent trial (which also gets no
+                // modulator at all, per the "Indifferent + no patrol = no modulator" convention
+                // documented below -- meaning indifferent had ZERO reaction-gate/robot-awareness
+                // mechanism of any kind under plain defaults). Attached here, before the modulator
+                // block, so it applies regardless of whether personalityType==Indifferent skips
+                // modulator creation. Excludes Assertive (its own permanent RobotRepulsion=0 via
+                // ModulateAssertive() plus S32AssertiveStraightLineGuardian already own this
+                // appearance's behavior entirely -- a gate here would fight both, matching the
+                // "assertive = never" rule this component's own class doc already establishes).
+                if (personalityType != Scenario.Agents.PedestrianModulator.PersonalityType.Assertive)
+                {
+                    var reactGateA = navAgent.gameObject.AddComponent<S34PedestrianReactDistGate>();
+                    reactGateA.personality = personalityType;
+                    reactGateA.reactDistanceMeters = config.hasPedReactDistOverride ? config.pedReactDistOverride : 1.5f;
+                    reactGateA.scaredReactDistanceMetersOverride = config.scaredReactDistOverride;
+                }
                 {
                     Vector3 dest = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
                     Vector3 d = dest - spawnPos;
@@ -794,6 +834,24 @@ namespace SEAN.AutoTrial
                 // same "force a modulator" convention PedestrianSpawner already uses for its own
                 // group.walkSpeedMultiplier (see that class).
                 bool wantsSpeedScale = !Mathf.Approximately(config.pedSpeedMultiplier, 1.0f);
+                // Session 37 STEP 0 investigated this condition (see REPORT.md for the full
+                // diagnosis): business_male_01 x indifferent measured a real, sustained ~0.28 m/s
+                // walking speed (frames.csv consecutive-frame displacement) vs. ~1.0-1.3 m/s for
+                // scared/surprised/assertive under an otherwise-identical trial -- roughly 1/4-1/5
+                // the intended pace. A trial fix (always attach the modulator, removing the
+                // Indifferent skip below) was tested empirically and produced a WORSE result: a
+                // steady ~2.3 m/s cruise, exceeding Parameters.MAX_VEL=0.95 entirely -- i.e. it
+                // traded an under-speed bug for a larger, different over-speed bug via some
+                // mechanism not fully understood in the time available (Scale()==v*
+                // walkSpeedMultiplier is mathematically a no-op at the default 1.0, so the
+                // magnitude jump isn't explained by anything this session could read in
+                // PedestrianModulator.cs/SFAgent.cs, both outside writable scope). REVERTED rather
+                // than shipped -- the original condition below is UNCHANGED, exactly as it was at
+                // the start of this session. Real, unresolved, flagged prominently to Howard: this
+                // needs live Editor/debugger instrumentation of SFAgent's own velocity computation
+                // to find out what actually changes when an IVelocityModulator is present vs.
+                // absent, since the difference is clearly NOT fully explained by Modulate()'s own
+                // returned value.
                 if (personalityType != Scenario.Agents.PedestrianModulator.PersonalityType.Indifferent
                     || patrolValid || wantsSpeedScale)
                 {
@@ -833,19 +891,12 @@ namespace SEAN.AutoTrial
                         // by TrialController (see S32AssertiveStraightLineGuardian's own class doc).
                         navAgent.gameObject.AddComponent<S32AssertiveStraightLineGuardian>();
                     }
-                    else if (config.hasPedReactDistOverride)
-                    {
-                        // Session 34 FIX 1: distance-gated robot repulsion, every non-Assertive
-                        // personality (Assertive already permanently zeroed via ModulateAssertive(),
-                        // untouched -- see S34PedestrianReactDistGate's own class doc for the full
-                        // mechanism/reframe this session established).
-                        var reactGate = navAgent.gameObject.AddComponent<S34PedestrianReactDistGate>();
-                        reactGate.reactDistanceMeters = config.pedReactDistOverride;
-                        reactGate.personality = personalityType;
-                        // Session 36 FIX 3: Scared's own larger gate, layered on top of the shared
-                        // one above -- see S34PedestrianReactDistGate's own field doc.
-                        reactGate.scaredReactDistanceMetersOverride = config.scaredReactDistOverride;
-                    }
+                    // Session 37 STEP 2: S34PedestrianReactDistGate is now attached
+                    // UNCONDITIONALLY, before this modulator block (see above) -- moved out of
+                    // this `--ped-react-dist`-gated else-if so it's active for every plain-default
+                    // trial too, not just ones that explicitly passed that CLI flag. Do not
+                    // re-attach here -- Unity would silently add a SECOND independent instance,
+                    // both writing SFAgent.RobotRepulsion in undefined per-frame order.
                     // Session 32 FIX B2 diagnostic: opt-in runtime probe (env-var gated, no-op
                     // unless AUTOTRIAL_S32_PROBE_PATH is set) -- see S32SurprisedRuntimeProbe.cs.
                     if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Surprised

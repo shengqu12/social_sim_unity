@@ -56,6 +56,27 @@ namespace SEAN.AutoTrial
         public Scenario.Agents.PedestrianModulator.PersonalityType personality =
             Scenario.Agents.PedestrianModulator.PersonalityType.Indifferent;
 
+        // Session 37 STEP 2 (root cause of white_cane_user's N=5 census failure -- 4/5 and then
+        // 2/5 samples at/below the 0.36m physical floor across two independent Session 36/37
+        // censuses): reactDistanceMeters above is a plain DISTANCE, but the time available for a
+        // pedestrian to actually generate lateral clearance once inside the gate scales with
+        // CLOSING SPEED, not distance alone. white_cane_user (~0.4 m/s) entering the same 1.5m
+        // gate as a 1.3 m/s walker has less real time to react. Converts the effective gate to
+        // max(floorDistanceMeters, closingSpeedMps * ttcThresholdSeconds) -- i.e. react whenever
+        // dist/closingSpeed < ttcThresholdSeconds, expressed as an equivalent distance so Update()
+        // below needs only one code path. closingSpeed is measured directly from consecutive-frame
+        // d(dist)/dt (EMA-smoothed, with an implausible-jump guard against teleport/position-
+        // guardian-correction artifacts -- same discipline Session 36 used fixing white_cane's
+        // animator-speed bug), not read from any single agent's own velocity API, so it is robust
+        // regardless of which agent's motion actually dominates closing speed in a given scenario.
+        public float ttcThresholdSeconds = 2.5f;
+        public float floorDistanceMeters = 1.0f;
+        public float closingSpeedEmaAlpha = 0.3f;
+        private float smoothedClosingSpeed = 0f;
+        private float prevDist = -1f;
+        private float prevTime = -1f;
+        private const float ImplausibleClosingSpeedMps = 8.0f;
+
         private IVI.SFAgent sfAgent;
 
         // Applied to SFAgent.RobotRepulsion once inside the gate. Natural compiled-in range for a
@@ -96,11 +117,30 @@ namespace SEAN.AutoTrial
             toRobot.y = 0f;
             float dist = toRobot.magnitude;
 
-            float effectiveGate = reactDistanceMeters;
+            // Closing-speed measurement (TTC gate): d(dist)/dt, EMA-smoothed, teleport-guarded.
+            float now = Time.time;
+            if (prevDist >= 0f && prevTime >= 0f)
+            {
+                float dt = now - prevTime;
+                if (dt > 1e-4f)
+                {
+                    float instClosing = (prevDist - dist) / dt;
+                    if (Mathf.Abs(instClosing) < ImplausibleClosingSpeedMps)
+                    {
+                        smoothedClosingSpeed = Mathf.Lerp(smoothedClosingSpeed, instClosing, closingSpeedEmaAlpha);
+                    }
+                }
+            }
+            prevDist = dist;
+            prevTime = now;
+
+            float ttcGate = Mathf.Max(floorDistanceMeters, smoothedClosingSpeed * ttcThresholdSeconds);
+
+            float effectiveGate = Mathf.Max(reactDistanceMeters, ttcGate);
             if (personality == Scenario.Agents.PedestrianModulator.PersonalityType.Scared
                 && scaredReactDistanceMetersOverride > 0f)
             {
-                effectiveGate = scaredReactDistanceMetersOverride;
+                effectiveGate = Mathf.Max(scaredReactDistanceMetersOverride, ttcGate);
             }
 
             sfAgent.RobotRepulsion = dist > effectiveGate ? 0f : InsideGateRepulsionFor(personality);
