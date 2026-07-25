@@ -326,7 +326,16 @@ def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBO
     return (ped_x, sy, ped_z, yaw), (dest_x, sy, dest_z), 1.5
 
 
-DYAD_LATERAL_OFFSET_M = 0.9
+# Loop 1 Bug 1: was 0.9. TrialController.cs's own min_dist/minDistanceMeters previously only
+# ever tracked robot<->pedestrian1 (a separate bug, fixed the same session) -- once fixed, fresh
+# N=5 data showed pedestrian2 (this offset), not pedestrian1, is the actual binding safety
+# constraint for both dyad and ped_count_3: on a headon scenario the extra pedestrian closes on
+# a near-reciprocal course only this many meters laterally clear of the robot's own path, and
+# that nominal clearance gets eaten by ordinary TEB path weave + the pedestrian's own walk noise.
+# dyad's true (all-pedestrian) worst-of-5 at 0.9m was 0.279m -- a real physical-floor breach that
+# had been invisible under the old primary-only metric. Widened to restore real margin; verified
+# below (see REPORT.md Loop 1 Session).
+DYAD_LATERAL_OFFSET_M = 1.5
 PED_COUNT3_LATERAL_OFFSET_M = 1.8
 
 

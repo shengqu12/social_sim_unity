@@ -410,15 +410,43 @@ namespace SEAN.AutoTrial
             float dt = Mathf.Max(t - lastSampleTime, 0.0001f);
             float speed = Vector3.Distance(pos, lastSamplePos) / dt;
 
-            // Instantaneous nearest-pedestrian distance for this frame (== distToPed with a
-            // single tracked pedestrian; kept as its own min() so this still generalizes if
-            // multiple pedestrians are ever tracked). minDistSeen is the separate whole-trial
-            // running minimum used for meta.json's summary stat, not written per-row.
+            // Instantaneous nearest-pedestrian distance for this frame. Loop 1 Bug 1 fix: this used
+            // to stop at distToPed (pedestrian1 only) -- for dyad/ped_count_3, extraPedestrianTransforms'
+            // own robot-distance was computed further down and written per-column into frames.csv
+            // but never folded into frameMinDist/minDistSeen, so every safety verdict ever reported
+            // for those configs (this project's own "min_dist"/"minDistanceMeters") silently ignored
+            // whichever extra pedestrian the robot might actually be closest to. frameMinDist is now
+            // finalized below as min(distToPed, all distRobotToExtra) before the CSV row is built.
             float distToPed = pedestrian != null ? Util.Geometry.GroundPlaneDist(pos, pedestrian.position) : float.NaN;
             float frameMinDist = distToPed;
-            if (!float.IsNaN(distToPed))
+
+            // Extra-pedestrian robot-distances (dyad/ped_count_3) computed here, BEFORE
+            // frameMinDist/minDistSeen are finalized below, so the whole-trial safety minimum
+            // reflects whichever pedestrian the robot is actually closest to, not just pedestrian1.
+            int extraCount = extraPedestrianTransforms.Count;
+            float[] extraRobotDist = extraCount > 0 ? new float[extraCount] : null;
+            float[] extraPed1Dist = extraCount > 0 ? new float[extraCount] : null;
+            for (int i = 0; i < extraCount; i++)
             {
-                minDistSeen = Mathf.Min(minDistSeen, distToPed);
+                Transform extraT = extraPedestrianTransforms[i];
+                bool alive = extraT != null;
+                float distRobotToExtra = alive ? Util.Geometry.GroundPlaneDist(pos, extraT.position) : float.NaN;
+                float distPed1ToExtra = (alive && pedestrian != null)
+                    ? Util.Geometry.GroundPlaneDist(pedestrian.position, extraT.position) : float.NaN;
+                extraRobotDist[i] = distRobotToExtra;
+                extraPed1Dist[i] = distPed1ToExtra;
+                if (!float.IsNaN(distPed1ToExtra))
+                {
+                    minPedPedDistSeen = Mathf.Min(minPedPedDistSeen, distPed1ToExtra);
+                }
+                if (!float.IsNaN(distRobotToExtra))
+                {
+                    frameMinDist = float.IsNaN(frameMinDist) ? distRobotToExtra : Mathf.Min(frameMinDist, distRobotToExtra);
+                }
+            }
+            if (!float.IsNaN(frameMinDist))
+            {
+                minDistSeen = Mathf.Min(minDistSeen, frameMinDist);
             }
 
             string appearanceLabel = pedestrian != null ? appearanceResourcePath : "";
@@ -458,20 +486,16 @@ namespace SEAN.AutoTrial
                 camRoll.ToString("F3", CultureInfo.InvariantCulture),
             };
 
-            // Session 35 BLOCK 4 (FIX 8/9): extra pedestrian columns + pedestrian-pedestrian
-            // clearance -- empty strings for every single-pedestrian trial (extraPedestrianTransforms
-            // is empty), so this loop is a pure no-op there.
-            for (int i = 0; i < extraPedestrianTransforms.Count; i++)
+            // Session 35 BLOCK 4 (FIX 8/9): extra pedestrian columns -- empty strings for every
+            // single-pedestrian trial (extraPedestrianTransforms is empty), so this loop is a pure
+            // no-op there. Distances themselves were already computed above (folded into
+            // frameMinDist/minDistSeen/minPedPedDistSeen); this just writes the per-column values.
+            for (int i = 0; i < extraCount; i++)
             {
                 Transform extraT = extraPedestrianTransforms[i];
                 bool alive = extraT != null;
-                float distRobotToExtra = alive ? Util.Geometry.GroundPlaneDist(pos, extraT.position) : float.NaN;
-                float distPed1ToExtra = (alive && pedestrian != null)
-                    ? Util.Geometry.GroundPlaneDist(pedestrian.position, extraT.position) : float.NaN;
-                if (!float.IsNaN(distPed1ToExtra))
-                {
-                    minPedPedDistSeen = Mathf.Min(minPedPedDistSeen, distPed1ToExtra);
-                }
+                float distRobotToExtra = extraRobotDist[i];
+                float distPed1ToExtra = extraPed1Dist[i];
                 row.Add(alive ? extraT.position.x.ToString("F3", CultureInfo.InvariantCulture) : "");
                 row.Add(alive ? extraT.position.z.ToString("F3", CultureInfo.InvariantCulture) : "");
                 row.Add(float.IsNaN(distRobotToExtra) ? "" : distRobotToExtra.ToString("F3", CultureInfo.InvariantCulture));
