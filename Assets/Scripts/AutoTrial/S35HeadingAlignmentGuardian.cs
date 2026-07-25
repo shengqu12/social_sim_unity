@@ -99,6 +99,26 @@ namespace SEAN.AutoTrial
         public float minBackOffMeters = 4.0f;
         public float backOffReactionSeconds = 3.0f;
 
+        // Loop 1 Bug 2: the ORIGINAL mechanism above is a hard on/off cutoff at dynamicBackOff --
+        // full correction strength right up to that distance, then instantly zero. Session 35's
+        // own real regression testing (wheelchair_user/scooter_user min_dist collapses at a
+        // FLAT, TIGHTER cutoff) is why that boundary was pushed out to 4.0m/3.0s in the first
+        // place, but a hard cutoff also means heading-vs-bearing degrades sharply and stays
+        // degraded for the entire close approach once crossed (confirmed via frames.csv: mean
+        // ~2-8deg while active, jumps to and holds ~18-20deg the instant it switches off).
+        // TAPER instead of a hard cutoff: over `taperRangeMeters` immediately inside
+        // dynamicBackOff, correction strength (`blend`, used for BOTH the facing snap and the
+        // line-position correction below) linearly ramps from 1.0 down to `nearBlendFloor`
+        // instead of dropping straight to 0 -- still yields most of its authority to the
+        // pedestrian's own natural avoidance close-in (preserving the safety property the 4.0m/
+        // 3.0s values were tuned for), but doesn't abandon heading discipline entirely the moment
+        // the threshold is crossed. Defaults (0f/0f) reproduce the exact prior hard-cutoff
+        // behavior byte-for-byte -- only overridden for specific appearances/personalities
+        // (currently just Indifferent, see AutoTrialBootstrap.cs) that measured a real, verified
+        // net improvement from a nonzero floor.
+        public float taperRangeMeters = 0f;
+        public float nearBlendFloor = 0f;
+
         private Scenario.Agents.Base baseAgent;
 
         void Awake()
@@ -130,6 +150,7 @@ namespace SEAN.AutoTrial
             if (personality == Scenario.Agents.PedestrianModulator.PersonalityType.Surprised) { return; }
 
             Vector3? robotPos = TryGetRobotPosition(transform.position.y);
+            float blend = 1f;
             if (robotPos.HasValue)
             {
                 float dist = Vector3.Distance(
@@ -137,15 +158,30 @@ namespace SEAN.AutoTrial
                     new Vector3(robotPos.Value.x, 0, robotPos.Value.z));
                 float speedNow = baseAgent.velocity.magnitude;
                 float dynamicBackOff = Mathf.Max(minBackOffMeters, speedNow * backOffReactionSeconds);
-                if (dist < dynamicBackOff) { return; }
+                if (dist >= dynamicBackOff)
+                {
+                    blend = 1f;
+                }
+                else if (taperRangeMeters <= 1e-3f || dist <= dynamicBackOff - taperRangeMeters)
+                {
+                    blend = nearBlendFloor;
+                }
+                else
+                {
+                    float t = (dist - (dynamicBackOff - taperRangeMeters)) / taperRangeMeters;
+                    blend = Mathf.Lerp(nearBlendFloor, 1f, t);
+                }
             }
+            if (blend <= 0f) { return; }
 
             Vector3 e = transform.eulerAngles;
-            transform.eulerAngles = new Vector3(e.x, targetHeadingDeg, e.z);
+            transform.eulerAngles = new Vector3(e.x, Mathf.LerpAngle(e.y, targetHeadingDeg, blend), e.z);
 
             // Second mechanism: zero lateral/perpendicular offset from the straight line, for
             // appearances (e.g. wheelchair_user) whose displacement is directVelocityDrive and so
-            // doesn't respond to the facing correction above at all. See class doc.
+            // doesn't respond to the facing correction above at all. See class doc. `blend` (1.0
+            // outside the taper zone, exactly reproducing the original hard snap) softens this to
+            // a partial pull inside it, instead of a full teleport-to-line correction.
             if (hasLine)
             {
                 Vector3 lineDelta = lineEnd - lineStart;
@@ -159,7 +195,8 @@ namespace SEAN.AutoTrial
                     float alongDist = Vector3.Dot(fromStart, unit);
                     Vector3 corrected = lineStart + unit * alongDist;
                     Vector3 p = transform.position;
-                    transform.position = new Vector3(corrected.x, p.y, corrected.z);
+                    Vector3 blended = Vector3.Lerp(p, new Vector3(corrected.x, p.y, corrected.z), blend);
+                    transform.position = blended;
                 }
             }
         }

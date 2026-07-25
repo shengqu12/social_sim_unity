@@ -808,6 +808,31 @@ namespace SEAN.AutoTrial
                 // class doc for why and the full root-cause diagnosis.
                 var headingGuardian = navAgent.gameObject.AddComponent<S35HeadingAlignmentGuardian>();
                 headingGuardian.personality = personalityType;
+                // Loop 1 Bug 2 (ATTEMPTED, REVERTED): indifferent's heading-vs-bearing residual
+                // (~9-15 deg mean, up from Session 35's original ~6.4 deg claim) traces to this
+                // guardian's own shared 4.0m/3.0s dynamic backoff -- once dist_to_pedestrian drops
+                // under it, both the facing snap and the (for DirectVelocityDrive appearances, the
+                // ONLY real-movement-affecting) position-line correction switch off, and SFAgent's
+                // own robot-repulsion visibly bends the path for the rest of the approach. Three
+                // levers were tried this session to narrow that gap for Indifferent specifically
+                // (a per-pedestrian component instance, so each was scoped to Indifferent only,
+                // never touching wheelchair_user/scooter_user/white_cane_user's own safety-tuned
+                // instances): flat backoff shrink to 1.5m (heading mean ~15->~9-12deg, but N=5
+                // min_dist worst-of-5 regressed 0.757->0.434m, missing the 0.5m operational bar);
+                // flat shrink to 3.0m (heading barely moved, worst-of-5 still marginal at 0.499m);
+                // and a tapered blend (see S35HeadingAlignmentGuardian's own taperRangeMeters/
+                // nearBlendFloor fields, kept in that file as reusable, backward-compatible
+                // infrastructure -- default 0/0 exactly reproduces the original hard cutoff)
+                // easing from full correction at 4.0m down to a 0.35 floor over 3m: heading
+                // improved to ~9-15deg mean but N=5 min_dist worst-of-5 was 0.310m -- BELOW the
+                // 0.36m PHYSICAL floor, the worst result of all three attempts. All three confirm
+                // the same underlying tension Session 35 already found for wheelchair_user/
+                // scooter_user at a tighter flat backoff: this guardian's near-robot authority is
+                // safety load-bearing, and reducing it (by any of these three mechanisms) trades
+                // real clearance for heading tightness. Left at the original, safety-proven
+                // defaults (4.0m/3.0s, blend fields at their 0/0 no-op default) -- NOT overridden
+                // for Indifferent. See REPORT.md Loop 1 Session for full N=5 tables for all three
+                // attempts and the honest ATTEMPTED-FAILED verdict.
                 // Session 37 STEP 2: attach the (now TTC-based) reaction gate unconditionally,
                 // same reasoning as the Zone B branch above -- the N=5 safety census this session
                 // found plain business_male_01 x indifferent's own worst-case min_dist (0.323m)
