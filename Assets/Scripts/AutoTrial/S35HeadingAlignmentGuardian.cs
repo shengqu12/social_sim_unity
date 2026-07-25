@@ -148,6 +148,21 @@ namespace SEAN.AutoTrial
             if (baseAgent == null || !hasTargetHeading) { return; }
             if (personality == Scenario.Agents.PedestrianModulator.PersonalityType.Assertive) { return; }
             if (personality == Scenario.Agents.PedestrianModulator.PersonalityType.Surprised) { return; }
+            // Loop 1 Bug 3, real root cause (not the flee-vector shape Sessions 38/40 tuned):
+            // this component's line-position correction below is a hard, uninterpolated
+            // `transform.position =` SNAP back onto the straight spawn->goal line, applied the
+            // instant the dynamic backoff re-engages. Scared's own erratic flee (by design, via
+            // ModulateScared/S40ScaredLateralEvasion, both untouched) legitimately roams several
+            // meters off that line while backed off near the robot -- confirmed via frames.csv
+            // across many trials: a single-frame 1.3-3.8m teleport (near-zero along-line
+            // component, almost pure perpendicular recall) lands EXACTLY at each trial's own
+            // min_dist moment, every single time, not just the ~1-in-5 that breach the 0.36m
+            // floor -- the breach rate is just how often the teleport's landing spot happens to
+            // be unlucky relative to the robot's exact position at that instant. This guardian is
+            // actively dangerous for Scared specifically, not merely unhelpful -- excluded here,
+            // same pattern as the existing Assertive/Surprised exclusions (which also own their
+            // own dedicated movement mechanisms this guardian would otherwise fight).
+            if (personality == Scenario.Agents.PedestrianModulator.PersonalityType.Scared) { return; }
 
             Vector3? robotPos = TryGetRobotPosition(transform.position.y);
             float blend = 1f;
