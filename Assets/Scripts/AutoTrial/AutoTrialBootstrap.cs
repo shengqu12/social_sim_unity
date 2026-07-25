@@ -229,6 +229,24 @@ namespace SEAN.AutoTrial
                 robotBackstop.RegisterPedestrian(extra);
             }
 
+            // Loop 1 Bug 4 (ATTEMPTED, NOT WIRED): S41PredictiveLateralAvoidance.cs (kept in the
+            // repo as documented, dormant infrastructure -- see its own class doc for the full
+            // mechanism) extrapolates robot/pedestrian velocity forward and nudges early/gently
+            // when a future close pass is predicted, instead of only reacting once already close.
+            // Four parameter iterations were tried against white_cane_user this session (the
+            // config this was built for) and none reliably beat the existing reactive-only
+            // backstop above: a same-session, apples-to-apples A/B (identical code/ROS session,
+            // only this component toggled) measured worst-of-5 min_dist 0.304m WITHOUT this
+            // component vs 0.275m WITH it (best-tuned iteration) -- no improvement, and by this
+            // specific comparison mildly worse. Diagnosis (see the class doc's own comments,
+            // updated live during iteration): the robot's own TEB path-return erases most of a
+            // gentle, early push faster than this component can accumulate real separation --
+            // widening lead time/speed across iterations didn't change that qualitative outcome.
+            // NOT instantiated/wired here as a result -- left fully inert so it cannot affect any
+            // config's behavior. See REPORT.md Loop 1 Session and HOWARD_HANDOFF.md for the full
+            // iteration table and the standing recommendation this reinforces (white_cane needs
+            // something beyond this project's runtime-script toolkit, not another tuning pass).
+
             Tasks.Base activeTask = null;
             waitStart = Time.time;
             while (Time.time - waitStart < TaskWaitTimeoutSec)
