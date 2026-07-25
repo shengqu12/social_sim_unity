@@ -26,7 +26,11 @@ namespace SEAN.AutoTrial
             string path = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S32_PROBE_PATH");
             if (string.IsNullOrEmpty(path) || animator == null) { enabled = false; return; }
             writer = new StreamWriter(path, false);
-            writer.WriteLine("t,state,normalizedTime,layerWeight,rArmX,rArmY,rArmZ,rForeX,rForeY,rForeZ,cullingMode,isVisible");
+            // Loop 1 Bug 5: added distToRobot (computed in the SAME Time.time clock as every
+            // other column here) so the actual gap between "distance crosses surpriseRadius" and
+            // "clip visibly starts" can be measured directly, without needing to reconcile this
+            // probe's raw Time.time against frames.csv's separate capture-relative clock.
+            writer.WriteLine("t,state,normalizedTime,layerWeight,rArmX,rArmY,rArmZ,rForeX,rForeY,rForeZ,cullingMode,isVisible,distToRobot");
             Debug.LogWarning("[S32SurprisedRuntimeProbe] animator on gameObject='" + animator.gameObject.name
                 + "' controller=" + (animator.runtimeAnimatorController != null ? animator.runtimeAnimatorController.name : "NULL")
                 + " layerCount=" + animator.layerCount + " isHuman=" + (animator.avatar != null ? animator.avatar.isHuman.ToString() : "no-avatar"));
@@ -56,10 +60,22 @@ namespace SEAN.AutoTrial
             {
                 if (r.isVisible) { anyVisible = true; break; }
             }
-            writer.WriteLine(string.Format("{0:F3},{1},{2:F3},{3:F3},{4:F2},{5:F2},{6:F2},{7:F2},{8:F2},{9:F2},{10},{11}",
+            float distToRobot = -1f;
+            if (SEAN.instance != null)
+            {
+                try
+                {
+                    Vector3 d = SEAN.instance.robot.position - transform.position;
+                    d.y = 0f;
+                    distToRobot = d.magnitude;
+                }
+                catch (System.Exception) { }
+            }
+
+            writer.WriteLine(string.Format("{0:F3},{1},{2:F3},{3:F3},{4:F2},{5:F2},{6:F2},{7:F2},{8:F2},{9:F2},{10},{11},{12:F3}",
                 Time.time, stateName, info.normalizedTime, animator.GetLayerWeight(0),
                 rArmE.x, rArmE.y, rArmE.z, rForeE.x, rForeE.y, rForeE.z,
-                animator.cullingMode, anyVisible));
+                animator.cullingMode, anyVisible, distToRobot));
             writer.Flush();
         }
 
