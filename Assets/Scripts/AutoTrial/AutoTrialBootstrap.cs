@@ -959,7 +959,24 @@ namespace SEAN.AutoTrial
                     {
                         // Session 32 FIX B: true straight-line hold, activated at SLATE release
                         // by TrialController (see S32AssertiveStraightLineGuardian's own class doc).
-                        navAgent.gameObject.AddComponent<S32AssertiveStraightLineGuardian>();
+                        var assertiveGuardian = navAgent.gameObject.AddComponent<S32AssertiveStraightLineGuardian>();
+
+                        // Session 41 TASK 1: reaction-latency instrumentation, env-var gated
+                        // (AUTOTRIAL_S41_LATENCY_PROBE) and inert otherwise. Radius mirrors the
+                        // guardian's own gesture gate -- the gesture fires on the frame proximity
+                        // first forces a stop, so emergencyStopDistanceMeters IS the trigger
+                        // radius here, not S31AssertiveGestureTrigger's retired 5.0m.
+                        var assertiveProbe = navAgent.gameObject.AddComponent<S41ReactionLatencyProbe>();
+                        assertiveProbe.triggerRadius = assertiveGuardian.emergencyStopDistanceMeters;
+                        assertiveProbe.reactionStateName = "AssertiveGesture";
+                        assertiveProbe.triggerParamName = "AssertiveGesture";
+                    }
+                    if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Surprised)
+                    {
+                        var surprisedProbe = navAgent.gameObject.AddComponent<S41ReactionLatencyProbe>();
+                        surprisedProbe.triggerRadius = modulator.surpriseRadius;
+                        surprisedProbe.reactionStateName = "SurprisedReaction";
+                        surprisedProbe.triggerParamName = "Surprised";
                     }
                     // Session 37 STEP 2: S34PedestrianReactDistGate is now attached
                     // UNCONDITIONALLY, before this modulator block (see above) -- moved out of
