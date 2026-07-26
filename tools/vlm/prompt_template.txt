@@ -1,0 +1,18 @@
+{viewpoint}
+
+You are shown a single image containing {num_frames} frames sampled evenly across a short
+video clip, arranged left-to-right then top-to-bottom in time order (the top-left frame is
+earliest, the bottom-right frame is latest).
+
+{task}
+
+Choose exactly one label from this list:
+{label_list}
+
+Label definitions:
+{label_definitions}
+
+Respond with ONLY a single JSON object, no other text before or after it, in exactly this
+form:
+
+{{"reasoning": "<one sentence explaining your judgment, written BEFORE you decide the label>", "label": "<one of: {label_names}>", "confidence": <number between 0 and 1>}}

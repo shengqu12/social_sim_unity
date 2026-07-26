@@ -1,0 +1,52 @@
+# ============================================================================
+# PLACEHOLDER RUBRIC -- the human (Howard / Sheng) WILL rewrite this.
+#
+# This file is read at runtime by score_batch.py (see load_rubric() in that
+# file) -- it is never hardcoded into the scoring script. Editing this file
+# and re-running `python3 score_batch.py` is the entire workflow for trying a
+# new rubric; no code changes needed.
+#
+# Schema expected by score_batch.py:
+#   labels: a mapping of LABEL_NAME -> free-text description. The label names
+#     become the literal allowed values the model must choose from -- if you
+#     rename/add/remove a label here, score_batch.py's prompt and parser pick
+#     it up automatically (parsing just checks the model's output against
+#     whatever keys exist in this mapping at runtime).
+#   viewpoint: one sentence telling the model what camera/POV it's looking at.
+#   task: one sentence telling the model what to judge (and, importantly,
+#     what NOT to judge -- see note below).
+# ============================================================================
+
+viewpoint: >
+  This is the robot's own front-facing onboard camera (first-person, POV),
+  not a third-person or bystander view.
+
+task: >
+  Judge the ROBOT's social behavior toward the pedestrian during this
+  encounter -- NOT the pedestrian's behavior, and not the robot's navigation
+  competence in general (e.g. path smoothness unrelated to the person).
+  Focus specifically on whether the robot behaves as a considerate social
+  agent sharing space with a person.
+
+labels:
+  POSITIVE_SOCIAL: >
+    The robot yields appropriately: it slows or steers early and smoothly,
+    leaves comfortable clearance (roughly >=1m), passes without forcing the
+    person to alter course abruptly, and resumes normal travel afterward.
+
+  NEUTRAL: >
+    The robot and person pass without incident but without notable
+    accommodation -- no discomfort caused, but no clear courtesy shown
+    either. A "nothing remarkable happened" pass.
+
+  NEGATIVE_SOCIAL: >
+    The robot behaves inconsiderately: it cuts in front of the person,
+    passes uncomfortably close, forces the person to stop or swerve
+    sharply, blocks their path, or hesitates erratically in a way that
+    confuses the interaction.
+
+# Placeholder note for whoever rewrites this: keep in mind the delivered
+# clips are approach-anchored (dead time before approach and the
+# solo-navigation tail after the pass are already trimmed out) -- write
+# label descriptions assuming the model sees mostly the approach + pass
+# itself, not a long lead-in.
