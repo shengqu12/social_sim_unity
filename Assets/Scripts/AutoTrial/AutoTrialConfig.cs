@@ -151,6 +151,19 @@ namespace SEAN.AutoTrial
         // override" convention).
         public float scaredReactDistOverride = 0f;
 
+        // Session 41 TASK 3/6: name of a generated single-state Mixamo controller to force onto
+        // the spawned pedestrian's Animator (Resources.Load, see S41MixamoControllerGen). Empty =
+        // untouched, every existing caller's behavior is unchanged. Zone A only.
+        public string mixamoClip = "";
+
+        // Session 41 TASK 4: attach the carried-box primitive to the pedestrian's hands.
+        public bool carriedBox = false;
+
+        // Session 41 TASK 5: narrow-corridor walls spawned around the encounter point.
+        public bool hasCorridor = false;
+        public float corridorWidthMeters = 2.0f;
+        public float corridorLengthMeters = 12.0f;
+
         public CameraParams camera = new CameraParams();
         public int jpgQuality = 85;
     }

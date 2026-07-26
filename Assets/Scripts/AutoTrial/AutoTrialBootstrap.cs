@@ -176,6 +176,24 @@ namespace SEAN.AutoTrial
             Transform pedestrianTransform = SpawnPedestrian(config, zone, appearancePrefab, personalityType,
                 out IVI.INavigable pedestrianNavAgent, out Vector3 pedestrianReleaseDest);
 
+            // Session 41 TASK 5: narrow-corridor walls. Built here, after the pedestrian exists,
+            // so the corridor can be centred on the ENCOUNTER rather than on the robot -- the
+            // midpoint of robot and pedestrian along the robot's own start->goal bearing is where
+            // the head-on pass actually happens. See S41CorridorBuilder's class doc for why this
+            // is runtime geometry in the existing Outdoor scene instead of the new scene file the
+            // ticket named (navigation is map-bound to that scene via ROS, cross-repo).
+            if (config.hasCorridor)
+            {
+                var corridorHost = new GameObject("S41CorridorHost");
+                var builder = corridorHost.AddComponent<S41CorridorBuilder>();
+                builder.widthMeters = config.corridorWidthMeters;
+                builder.lengthMeters = config.corridorLengthMeters;
+                builder.pedestrian = pedestrianTransform;
+                // Build once the pair is within the corridor's own length, so the walls appear
+                // around the encounter rather than around wherever the robot happened to start.
+                builder.buildWhenDistanceBelow = config.corridorLengthMeters;
+            }
+
             // Session 35 BLOCK 4 (FIX 8/9): dyad/ped-count-3 extra pedestrians, spawned via the
             // exact same SpawnPedestrian() path as the primary one above -- see SpawnExtraPedestrian's
             // own doc comment for why a throwaway sub-config is the least invasive way to reuse it.
@@ -826,6 +844,15 @@ namespace SEAN.AutoTrial
                 // class doc for why and the full root-cause diagnosis.
                 var headingGuardian = navAgent.gameObject.AddComponent<S35HeadingAlignmentGuardian>();
                 headingGuardian.personality = personalityType;
+                // Session 41 TASK 3/4: retarget a Mixamo behaviour clip onto this Rocketbox avatar
+                // and/or attach the carried box. No-op unless --mixamo-clip/--carried-box was
+                // given, so no existing caller's behavior changes.
+                if (!string.IsNullOrEmpty(config.mixamoClip) || config.carriedBox)
+                {
+                    var mixamoApplier = navAgent.gameObject.AddComponent<S41MixamoClipApplier>();
+                    mixamoApplier.clipControllerName = config.mixamoClip;
+                    mixamoApplier.attachCarriedBox = config.carriedBox;
+                }
                 // Loop 1 Bug 2 (ATTEMPTED, REVERTED): indifferent's heading-vs-bearing residual
                 // (~9-15 deg mean, up from Session 35's original ~6.4 deg claim) traces to this
                 // guardian's own shared 4.0m/3.0s dynamic backoff -- once dist_to_pedestrian drops

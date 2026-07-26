@@ -116,8 +116,33 @@ DEFAULT_PED_DISTANCE = 25.0
 # and tighter framing. 'arc' preserves today's behavior byte-for-byte; default stays 'arc' so no
 # existing caller's behavior changes -- only --profile scoring (or an explicit --ped-distance)
 # moves off it.
-PROFILES = ("arc", "scoring")
-PROFILE_PED_DISTANCE = {"arc": DEFAULT_PED_DISTANCE, "scoring": 8.0}
+PROFILES = ("arc", "scoring", "corridor")
+# Session 41 TASK 5: 'corridor' uses the 'scoring' trigger distance (8m) -- the corridor is only
+# 12m long, so a 25m 'arc' approach would put the encounter well outside the walls entirely.
+PROFILE_PED_DISTANCE = {"arc": DEFAULT_PED_DISTANCE, "scoring": 8.0, "corridor": 8.0}
+
+# Session 41 TASK 5: safety_label thresholds. The ticket asked for min_dist to be converted from a
+# hard pass/fail gate into a recorded label, because a 1.2m corridor head-on pass breaks 0.5m by
+# geometric necessity and the whole point of the scene is to generate those cases.
+#
+# IMPORTANT CORRECTION, verified this session: min_dist was NEVER a gate in this script. The
+# permanent gates are content / aspect / approach-geometry / trigger-speed / overlay /
+# file-manifest, plus the output-root sentinel and the editor-lock check -- min_dist is measured,
+# printed and written to meta.json but has never affected the exit code. So there was no rejection
+# to remove; what was genuinely missing, and is added here, is the LABEL itself.
+SAFETY_LABEL_SAFE_M = 0.5      # >= this: clears the operational floor
+SAFETY_LABEL_BREACH_M = 0.36   # < this: below the physical floor (robot 0.16 + pedestrian 0.2)
+
+
+def safety_label_for(min_dist):
+    """{safe|marginal|breach} for a measured min_dist, or None if unmeasured."""
+    if min_dist is None:
+        return None
+    if min_dist >= SAFETY_LABEL_SAFE_M:
+        return "safe"
+    if min_dist >= SAFETY_LABEL_BREACH_M:
+        return "marginal"
+    return "breach"
 
 # Session 29 STEP 2: scooter_user's own default --ped-speed multiplier. Parameters.MAX_VEL
 # (Assets/Scripts/Agents/Parameters.cs) = 0.6 m/s is the shared social-force speed cap every
@@ -1005,6 +1030,12 @@ def build_config(args, out_dir):
         "hasPedReactDistOverride": args.ped_react_dist is not None,
         "pedReactDistOverride": args.ped_react_dist if args.ped_react_dist is not None else 2.0,
         "scaredReactDistOverride": args.scared_react_dist if args.scared_react_dist is not None else 0.0,
+        # Session 41 TASK 3/4/5. All three default to inert, so no existing caller changes.
+        "mixamoClip": args.mixamo_clip or "",
+        "carriedBox": bool(args.carried_box),
+        "hasCorridor": args.corridor_width is not None,
+        "corridorWidthMeters": args.corridor_width if args.corridor_width is not None else 2.0,
+        "corridorLengthMeters": args.corridor_length,
         "hasPedestrian2": args.pedestrian2_spawn is not None,
         "pedestrian2Appearance": "business_male_01",
         "pedestrian2Personality": "Indifferent",
@@ -1509,7 +1540,8 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
                                   trigger_ok=None, trigger_detail=None,
                                   overlay_ok=None, overlay_detail=None,
                                   manifest_ok=None, manifest_detail=None,
-                                  spin_phases=None, full_contact_sheet=None):
+                                  spin_phases=None, full_contact_sheet=None,
+                                  min_dist=None, profile=None, corridor_width=None):
     """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
     geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
     meta.json, so a trial's pass/fail is inspectable without re-running anything."""
@@ -1537,6 +1569,16 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
         data["spinPhases"] = spin_phases
     if full_contact_sheet is not None:
         data["fullContactSheet"] = full_contact_sheet
+    # Session 41 TASK 5: min_dist recorded as a LABEL, never as a gate. Written for every profile,
+    # not just corridor, so one manifest schema covers the whole dataset.
+    if min_dist is not None:
+        data["minDistMeters"] = min_dist
+        data["safetyLabel"] = safety_label_for(min_dist)
+        data["safetyLabelThresholds"] = {"safe": SAFETY_LABEL_SAFE_M, "breach": SAFETY_LABEL_BREACH_M}
+    if profile is not None:
+        data["profile"] = profile
+    if corridor_width is not None:
+        data["corridorWidthMeters"] = corridor_width
     data["nearClips"] = [
         {
             "index": c["index"],
@@ -1676,6 +1718,31 @@ def main():
                         "--spawn is not explicitly given. Default resolved from --profile (Session "
                         "30R): 25.0 for 'arc' (Session 17) -- was 8.0 through Session 16 -- or 8.0 "
                         "for 'scoring'. An explicit --ped-distance always overrides the profile.")
+    p.add_argument("--mixamo-clip", type=str, default=None, metavar="NAME",
+                   help="Session 41 TASK 3: play one of the generated Mixamo behaviour clips on "
+                        "the pedestrian instead of its normal locomotion controller. NAME is a "
+                        "controller under Assets/PedestrianAssets/Mixamo/Resources/, e.g. "
+                        "'Old_Man_Walk', 'Drunk_Walk', 'Running', 'carry_and_walk', "
+                        "'Pacing_And_Talking_On_A_Phone', 'Sitting', 'Standing_Arguing', "
+                        "'Talking_standing', 'Stroke_Shaking_Head' (spaces in the source FBX name "
+                        "become underscores). The nine source FBXs are Mixamo animation-only "
+                        "exports with no mesh, so the character on screen stays the ordinary "
+                        "Rocketbox avatar and Unity's Humanoid retargeting supplies the motion. "
+                        "Zone A only.")
+    p.add_argument("--carried-box", action="store_true",
+                   help="Session 41 TASK 4: attach a carried cardboard box primitive "
+                        "(0.45x0.35x0.35m, matte #8B6F47, no collider) at the pedestrian's hands. "
+                        "Intended with --mixamo-clip carry_and_walk. NOTE the box rides at ~1.1m "
+                        "while the robot's sensor plane is 0.32m, so the robot cannot see it -- "
+                        "that is a deliberately retained perception case, not a bug (see "
+                        "Assets/PedestrianAssets/Mixamo/README.md).")
+    p.add_argument("--corridor-width", type=float, default=None, metavar="METERS",
+                   help="Session 41 TASK 5: spawn two parallel walls this far apart, centred on "
+                        "the robot/pedestrian encounter point along the robot's start->goal "
+                        "bearing, to force a controlled narrow pass. The ticket's sweep is "
+                        "3.0 / 2.0 / 1.5 / 1.2. Omit for no corridor (default).")
+    p.add_argument("--corridor-length", type=float, default=12.0, metavar="METERS",
+                   help="Session 41 TASK 5: corridor length along the travel bearing (default 12).")
     p.add_argument("--slate-margin", type=float, default=4.0,
                    help="Session 14 (SLATE v2): extra distance beyond --ped-distance at which the "
                         "pedestrian actually spawns, frozen (default 4.0 -> ~29m from robot start "
@@ -1780,7 +1847,10 @@ def main():
                         "S26's spec default (1.5s, which badly missed the SIF/swing bar -- a "
                         "1.5s low-pass cannot damp TEB's own ~9.6s-period residual weave) to "
                         "8.0s, period-matched -- S26's own N=3 confirmation: far-field (>15m) SIF "
-                        "98.45%, landmark swing mean 2.74deg (see REPORT.md Session 26/27).")
+                        # '%%' not '%': argparse runs every help string through %-expansion, so a
+                        # bare '%' here raised ValueError and broke --help for the WHOLE parser.
+                        # Pre-existing (Session 26/27); found in Session 41 while adding flags.
+                        "98.45%%, landmark swing mean 2.74deg (see REPORT.md Session 26/27).")
     p.add_argument("--cam-yaw-tau", type=float, default=8.0,
                    help="Session 26/27: low-pass time constant (seconds) applied to the course-"
                         "direction yaw target for --cam-yaw-mode course -- separate from and not "
@@ -2166,6 +2236,10 @@ def main():
     eprint("[run_trial] file manifest gate: {} ({})".format(
         "OK" if manifest_ok else "FAILED", manifest_detail))
 
+    # Read min_dist here rather than reusing the summarize() call further down: the safety label
+    # has to be in meta.json, and meta.json is written by this call.
+    _, meta_min_dist = summarize(out_dir)
+
     augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
                                   aspect_ok=aspect_ok, aspect_detail=aspect_detail,
                                   approach_ok=approach_ok, approach_detail=approach_detail,
@@ -2173,7 +2247,9 @@ def main():
                                   overlay_ok=ov_ok, overlay_detail=ov_detail,
                                   manifest_ok=manifest_ok, manifest_detail=manifest_detail,
                                   spin_phases=spin_phases,
-                                  full_contact_sheet=full_sheet_name if full_sheet_ok else None)
+                                  full_contact_sheet=full_sheet_name if full_sheet_ok else None,
+                                  min_dist=meta_min_dist, profile=args.profile,
+                                  corridor_width=args.corridor_width)
 
     # Round 4 (Step 4, output format v3): pov_full.mp4/pov_full_ov.mp4 are now the PRIMARY
     # deliverable, not an internal scratch file -- the old cleanup_full_video() deletion is gone.
@@ -2199,7 +2275,7 @@ def main():
     print("mode: {}".format("windowed" if windowed else "batchmode"))
     print("frames: {}".format(n_frames))
     print("near-spans: {}".format(len(result["near_clips"])))
-    print("min_dist reached: {}".format(min_dist))
+    print("min_dist reached: {} (safety_label={})".format(min_dist, safety_label_for(min_dist)))
     print("content gate: {}".format("PASS" if gate_ok else "FAIL"))
     print("aspect gate: {} ({})".format("PASS" if aspect_ok else "FAIL", aspect_detail))
     print("approach geometry gate: {} ({})".format("PASS" if approach_ok else "FAIL", approach_detail))
