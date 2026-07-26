@@ -53,6 +53,27 @@ namespace SEAN.AutoTrial
         public float minSpeedScale = 0.3f;
         public float maxSpeedScale = 1.5f;
 
+        // Session 41 TASK 2 FIX 0. `animator.speed` is a whole-Animator multiplier, not a
+        // per-state one, so the locomotion scaling above also stretches one-shot REACTION clips --
+        // which are not locomotion and whose authored timing is the point. This is worst exactly
+        // where it matters most: Assertive's gesture is fired by S32AssertiveStraightLineGuardian
+        // on the frame proximity first forces a STOP, so speed has just decayed to minSpeedScale
+        // when the gesture starts.
+        //
+        // Measured (Session 41 TASK 1, business_male_01 x assertive, probe logs in
+        // trial_outputs/s41_task1/): animatorSpeed=0.300 at gesture entry -> the authored 3.600s
+        // AssertiveGesture clip reported an effective length of 12.000s (3.6/0.3) and the authored
+        // 0.15s entry crossfade took 0.428-0.465s. The same trial for Surprised, which triggers
+        // while still moving (animatorSpeed 0.896), showed effective length 2.473s against a 2.767s
+        // authored clip and a 0.125s crossfade -- same code path, same controller, same authored
+        // transition, the ONLY difference being animator.speed. That contrast is why the user's
+        // two separate complaints ("起手慢" slow to start / "播放慢" slow playback) are one bug.
+        //
+        // Reaction states hold speed at exactly 1.0 (authored rate) rather than being scaled --
+        // matched by name because this project's controllers carry no state tags (verified in the
+        // TASK 1 graph dump); AnimatorStateInfo.IsName is a cheap hash compare, not a string op.
+        public string[] reactionStateNames = { "SurprisedReaction", "AssertiveGesture" };
+
         private Animator animator;
         private Scenario.Agents.Base baseAgent;
         private Vector3 lastPos;
@@ -93,6 +114,25 @@ namespace SEAN.AutoTrial
             }
         }
 
+        // Checks both current and next state so the hold starts on the frame the entry crossfade
+        // BEGINS, not when it completes -- otherwise the crossfade itself still plays stretched,
+        // which is the "起手慢" half of the complaint.
+        private bool IsReactionActive()
+        {
+            if (reactionStateNames == null || reactionStateNames.Length == 0) { return false; }
+            var cur = animator.GetCurrentAnimatorStateInfo(0);
+            var next = animator.GetNextAnimatorStateInfo(0);
+            bool inTransition = animator.IsInTransition(0);
+            for (int i = 0; i < reactionStateNames.Length; i++)
+            {
+                string n = reactionStateNames[i];
+                if (string.IsNullOrEmpty(n)) { continue; }
+                if (cur.IsName(n)) { return true; }
+                if (inTransition && next.IsName(n)) { return true; }
+            }
+            return false;
+        }
+
         private static string GetPath(Transform t)
         {
             string p = t.name;
@@ -128,6 +168,15 @@ namespace SEAN.AutoTrial
             // else: teleport/correction frame -- lastPos is resynced above so the NEXT frame's
             // delta is measured from the corrected position, but this frame's implausible reading
             // is discarded rather than folded into the average.
+
+            // Keep the EMA above running through the reaction (so locomotion resumes at the right
+            // rate afterwards) but don't let it drive animator.speed while a reaction clip owns
+            // the Animator -- see reactionStateNames' comment for the measured justification.
+            if (IsReactionActive())
+            {
+                animator.speed = 1.0f;
+                return;
+            }
 
             float scale = referenceSpeedMps > 0.01f ? smoothedSpeed / referenceSpeedMps : 1.0f;
             scale = Mathf.Clamp(scale, minSpeedScale, maxSpeedScale);
