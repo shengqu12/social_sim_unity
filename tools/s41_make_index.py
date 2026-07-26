@@ -68,9 +68,29 @@ def artifacts(out_dir):
     return [n for n in names if os.path.exists(os.path.join(out_dir, n))]
 
 
+def census_valid(rows):
+    """Rows admissible to a SAFETY census -- keyed on GEOMETRY gates, not the exit code.
+
+    The content gate fails on legitimately extreme-close-pass footage: w1.2_02 exited 1 on the
+    content gate alone, with trigger-speed and approach both green and a perfectly valid
+    min_dist of 0.341m -- a BREACH. Filtering on exit code would silently drop breaches and bias
+    the safety numbers optimistically, the exact failure this project's N>=5 worst-observed rule
+    exists to prevent. Trigger-speed and approach failures ARE excluded: a robot that never moved,
+    or a wrong spawn distance, makes min_dist meaningless rather than merely ugly.
+    """
+    keep = []
+    for r in rows:
+        if r.get("min_dist") in (None, "", "NA"):
+            continue
+        m = meta_of(r["out_dir"])
+        if m.get("triggerSpeedGateOk") is False or m.get("approachGateOk") is False:
+            continue
+        keep.append(r)
+    return keep
+
+
 def worst(rows):
-    vals = [float(r["min_dist"]) for r in rows
-            if r.get("min_dist") not in (None, "", "NA") and r.get("exit") == "0"]
+    vals = [float(r["min_dist"]) for r in census_valid(rows)]
     return min(vals) if vals else None
 
 
@@ -120,7 +140,7 @@ def main():
         out += ["### Per-clip worst-of-N", "", "| clip | N valid | worst min_dist |", "|---|---|---|"]
         for clip, rows in sorted(by_clip.items()):
             w = worst(rows)
-            n = sum(1 for r in rows if r.get("exit") == "0")
+            n = len(census_valid(rows))
             out.append("| {} | {} | {} |".format(clip, n, "{:.3f}".format(w) if w else "NA"))
         out.append("")
 
@@ -141,7 +161,7 @@ def main():
                 "| width | N valid | worst min_dist | label at worst |", "|---|---|---|---|"]
         for w_, rows in sorted(by_w.items(), key=lambda kv: -float(kv[0])):
             wv = worst(rows)
-            n = sum(1 for r in rows if r.get("exit") == "0")
+            n = len(census_valid(rows))
             lab = ("safe" if wv >= 0.5 else "marginal" if wv >= 0.36 else "breach") if wv else "NA"
             out.append("| {} | {} | {} | {} |".format(
                 w_, n, "{:.3f}".format(wv) if wv else "NA", lab))
