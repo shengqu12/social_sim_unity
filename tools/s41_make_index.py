@@ -94,6 +94,19 @@ def worst(rows):
     return min(vals) if vals else None
 
 
+# 6.1 screening verdicts, from known_issues/S41_mixamo_screen61.md. The screen's real
+# question is whether the animation is visually correct -- exit=0 and safetyLabel=safe say
+# nothing about that, so they must never be presented as the verdict. Four clips fail: the
+# stationary ones translate ~14m (the ticket's predicted "idle 平移"), and
+# Stroke_Shaking_Head is additionally not grounded, which is the more severe defect.
+SCREEN61_FAIL = {
+    "Sitting":             "glide",
+    "Standing_Arguing":    "glide",
+    "Talking_standing":    "glide",
+    "Stroke_Shaking_Head": "not-grounded",
+}
+
+
 def main():
     screen = load(os.path.join(ROOT, "screen61", "results.tsv"))
     corridor = load(os.path.join(ROOT, "corridor62", "results.tsv"))
@@ -110,11 +123,22 @@ def main():
                 "`frames.csv`. Together they answer the first three objectively: a moving clip",
                 "shows both large, a stationary one both near zero, and large path with near-zero",
                 "net means the character is churning in place (foot-slide / drift).", "",
-                "| clip | run | exit | min_dist | label | net_m | path_m | verdict | artifacts |",
-                "|---|---|---|---|---|---|---|---|---|"]
+                "> **`exit=0` and `label=safe` are NOT this screen's verdict.** Every one of the 18",
+                "> runs exited cleanly and every one is labelled `safe`; four clips are nonetheless",
+                "> broken. Read the `screen` column, not `exit`/`label`. Full diagnosis, including",
+                "> the measurement that exposed it and the suspected fixes:",
+                "> [`known_issues/S41_mixamo_screen61.md`](../../../social_sim_unity/known_issues/S41_mixamo_screen61.md).",
+                "",
+                "The four FAIL clips are stationary animations whose character translates ~14m -- the",
+                "same `net_m` as a running clip, which is why `translates` is a defect for them, not a",
+                "pass. `Stroke_Shaking_Head` fails additionally and more severely: it is not grounded.",
+                "**These four did not advance to 6.2.**", "",
+                "| clip | run | screen | exit | min_dist | label | net_m | path_m | verdict | artifacts |",
+                "|---|---|---|---|---|---|---|---|---|---|"]
         for r in screen:
             m = meta_of(r["out_dir"])
             net, path = ped_travel(r["out_dir"])
+            fail_reason = SCREEN61_FAIL.get(r["clip"])
             if net is None:
                 verdict, netf, pathf = "NO DATA", "NA", "NA"
             else:
@@ -125,10 +149,16 @@ def main():
                     verdict = "CHURNS IN PLACE"
                 elif path > 0 and net / path < 0.5:
                     verdict = "wanders"
+                elif fail_reason == "not-grounded":
+                    verdict = "translates, NOT GROUNDED (FAIL)"
+                elif fail_reason:
+                    verdict = "glides (FAIL)"
                 else:
                     verdict = "translates"
-            out.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
-                r["clip"], r["run"], r["exit"], r.get("min_dist", "NA"),
+            out.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                r["clip"], r["run"],
+                "**FAIL** ({})".format(fail_reason) if fail_reason else "pass",
+                r["exit"], r.get("min_dist", "NA"),
                 m.get("safetyLabel", r.get("safety_label", "NA")),
                 netf, pathf, verdict,
                 ", ".join(artifacts(r["out_dir"])) or "none"))
@@ -146,6 +176,12 @@ def main():
 
     if corridor:
         out += ["## 6.2 Corridor width sweep (N=5 per width)", "",
+                "> **This sweep used plain `business_male_01` with NO `--mixamo-clip`.** None of the",
+                "> 5 passing Mixamo clips were exercised in a corridor -- the asset dimension of the",
+                "> ticket's 6.2 matrix was dropped for budget (full matrix 5 clips x 4 widths x N=5 =",
+                "> 100 trials). This measures the corridor, not the new assets. See the Session 41",
+                "> report's scope section.",
+                "",
                 "| width | run | exit | min_dist | label |", "|---|---|---|---|---|"]
         for r in corridor:
             m = meta_of(r["out_dir"])
