@@ -99,9 +99,18 @@ namespace SEAN.AutoTrial
                 }
             }
 
-            Vector3 fwd = transform.forward;
-            partner.transform.position = transform.position + fwd * partnerSpacingMeters;
-            partner.transform.rotation = Quaternion.LookRotation(-fwd, Vector3.up);
+            // Session 45 (1.4): rotate the pair 90 degrees about the vertical axis so their
+            // conversation axis is PERPENDICULAR to the robot's approach. Facing the robot head-on,
+            // one figure occluded the other and the camera saw a front and a back; side-on, both
+            // are visible in profile and the exchange reads as an exchange. The pair still faces
+            // each other at partnerSpacingMeters with its phase offset -- only the unit's heading
+            // relative to the robot changes.
+            Vector3 axis = Quaternion.AngleAxis(90f, Vector3.up) * transform.forward;
+            partner.transform.position = transform.position + axis * partnerSpacingMeters;
+            partner.transform.rotation = Quaternion.LookRotation(-axis, Vector3.up);
+            // Turn the original to match, so the two face each other along the rotated axis rather
+            // than the original one.
+            transform.rotation = Quaternion.LookRotation(axis, Vector3.up);
 
             var pa = partner.GetComponent<Animator>();
             if (pa != null)

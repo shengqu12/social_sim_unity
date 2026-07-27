@@ -65,6 +65,17 @@ namespace SEAN.AutoTrial
                 var state = sm.AddState(Sanitize(name));
                 state.motion = clip;
                 state.speed = 1.0f;
+                // Session 45 (1.2), attempt 1 of 2 on carry_and_walk's left-leg pose. Foot IK
+                // pins the retargeted feet to the ground plane, which is the cheapest thing that
+                // could account for an ankle reading wrong. Applied to every generated Mixamo
+                // state, not just that one: these are all retargeted humanoid clips on an avatar
+                // with different proportions from the source rig, and foot placement error is the
+                // generic consequence.
+                //
+                // Note this is a POSE-layer change. carry_and_walk passes 3.2 at its clamp floor
+                // of 1.1%, so its playback rate is already correct and no speed parameter is
+                // touched here.
+                state.iKOnFeet = true;
                 sm.defaultState = state;
 
                 EditorUtility.SetDirty(controller);

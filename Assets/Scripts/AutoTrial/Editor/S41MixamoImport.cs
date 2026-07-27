@@ -109,6 +109,23 @@ namespace SEAN.AutoTrial
                         for (int i = 0; i < clips.Length; i++)
                         {
                             clips[i].loopTime = true;
+                            // Session 45 (1.3), the single sanctioned attempt on Running's legs.
+                            //
+                            // NOT the route the work order suggested. That route -- UpperLeg/
+                            // LowerLeg mapping and muscle rotation limits -- lives on the
+                            // DESTINATION avatar, which is the shared Rocketbox prefab. Editing it
+                            // is a red line and would alter every trial ever run with that avatar.
+                            //
+                            // In-bounds hypothesis instead, on the clip's own import settings:
+                            // Running is a 0.700s single stride played on loop, and loopTime alone
+                            // loops the TIME without matching the pose at the seam. A run cycle has
+                            // the legs at opposite extremes, so a mismatched seam snaps them past
+                            // each other once per 0.7s -- which is what "the legs cross" describes.
+                            // loopPose blends the cycle closed.
+                            //
+                            // Applied ONLY to Running. Old_Man_Walk and Drunk_Walk passed the
+                            // Session 44 eyeball pass and must not be disturbed.
+                            if (name == "Running") { clips[i].loopPose = true; }
                             // Stationary clips: bake the root's motion into the pose so the
                             // character animates in place instead of translating away.
                             clips[i].lockRootPositionXZ = isStationary;

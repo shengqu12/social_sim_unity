@@ -366,6 +366,20 @@ def resolve_scenario_geometry(scenario, ped_distance, goal_xyz, robot_start=ROBO
 DYAD_LATERAL_OFFSET_M = 2.0
 PED_COUNT3_LATERAL_OFFSET_M = 1.8
 
+# Session 45 (1.5): ped_count_3 read as three unrelated individuals rather than a group, so the
+# three are pulled together into one. Deliberately a SEPARATE constant rather than a change to
+# DYAD_LATERAL_OFFSET_M above: that 2.0 is a verified Loop 1 safety fix (0.9 -> 1.5 -> 2.0, each
+# step forced by a measured floor breach) and dyad passed the Session 44 eyeball pass, so neither
+# may be disturbed. This constant applies ONLY when --ped-count >= 3.
+#
+# READ THIS BEFORE QUOTING ANY ped_count_3 CLEARANCE NUMBER. Loop 1 measured ped_count_3 at 1.5m
+# spacing with worst-of-5 min_dist 0.458m -- below the 0.5m operational bar, pedestrian2. Grouping
+# at 1.2m reproduces that geometry deliberately, because the ask is a group that actually
+# constrains the robot's passage. The tighter clearance is the intended physical situation here,
+# not a regression, and this configuration must not be used for a safety claim without re-measuring
+# at N>=5.
+PED_COUNT3_GROUP_OFFSET_M = 1.2
+
 
 def resolve_extra_pedestrian_geometry(primary_spawn, primary_dest, robot_start, goal_xyz, lateral_offset_m):
     """Session 35 BLOCK 4 (FIX 8/9): places an EXTRA pedestrian (dyad's partner, or ped-count-3's
@@ -2071,8 +2085,15 @@ def main():
     #   6 for the frame-strip evidence and the honest verdict on gesture legibility even at this
     #   closer range.
     if args.profile == "scoring":
+        # Session 45 (1.6): 7.0 -> 3.5. At 7.0 the pedestrian fled while the robot was still far
+        # away, so no encounter occurred at all -- demo_s44's scared trial recorded min_dist 5.667,
+        # i.e. the robot never came near. Footage of a pedestrian running off in the distance
+        # carries no social interaction for a VLM to judge. 3.5m keeps a real reaction window while
+        # putting the robot close enough that approach -> notice -> flee reads as one sequence.
+        # Session 31 raised this to 7.0 to maximise reaction time; that reasoning optimised for
+        # reaction legibility alone and did not weigh the encounter failing to happen.
         if args.personality.lower() == "scared" and args.scared_radius is None:
-            args.scared_radius = 7.0
+            args.scared_radius = 3.5
         if args.personality.lower() == "surprised" and args.surprise_radius is None:
             args.surprise_radius = 4.5
         # Session 33 FIX 3: 30s comfortably covers the rest of any --clip-mode centered delivered
@@ -2184,14 +2205,18 @@ def main():
     if want_dyad or want_third:
         primary_spawn = tuple(args.spawn)
         primary_dest = tuple(args.ped_goal) if args.ped_goal is not None else tuple(args.spawn[:3])
+        # Session 45 (1.5): when there are three, they are one group and use the tighter grouping
+        # offset. A plain dyad keeps the verified 2.0.
+        p2_offset = PED_COUNT3_GROUP_OFFSET_M if want_third else DYAD_LATERAL_OFFSET_M
+        p3_offset = PED_COUNT3_GROUP_OFFSET_M
         if want_dyad:
             p2_spawn, p2_dest = resolve_extra_pedestrian_geometry(
-                primary_spawn, primary_dest, ROBOT_START, bearing_goal, DYAD_LATERAL_OFFSET_M)
+                primary_spawn, primary_dest, ROBOT_START, bearing_goal, p2_offset)
             args.pedestrian2_spawn = p2_spawn
             args.pedestrian2_goal = p2_dest
         if want_third:
             p3_spawn, p3_dest = resolve_extra_pedestrian_geometry(
-                primary_spawn, primary_dest, ROBOT_START, bearing_goal, -PED_COUNT3_LATERAL_OFFSET_M)
+                primary_spawn, primary_dest, ROBOT_START, bearing_goal, -p3_offset)
             args.pedestrian3_spawn = p3_spawn
             args.pedestrian3_goal = p3_dest
 
