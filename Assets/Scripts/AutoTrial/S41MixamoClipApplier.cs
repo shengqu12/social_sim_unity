@@ -72,6 +72,11 @@ namespace SEAN.AutoTrial
                     animator.runtimeAnimatorController = rac;
                 }
                 ApplyAuthoredSpeed();
+                // Session 44 TASK 5.2/5.3: per-clip staging (Sitting's stool, Standing_Arguing's
+                // second person). Additive and self-selecting on the clip name, so every other clip
+                // is untouched.
+                var props = gameObject.AddComponent<S44ClipProps>();
+                props.clipName = clipControllerName;
             }
 
             if (attachCarriedBox)
