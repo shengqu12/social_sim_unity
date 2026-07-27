@@ -1,5 +1,31 @@
 # Session 41 — TASK 6.1 survival-screen failures
 
+> **Session 43 update — the glide is fixed; the grounding defect is not.**
+>
+> `--ped-motion standing` was tested (the "suspected fix, not yet verified" below) and works. Net
+> pedestrian displacement, N=1 per clip, measured from `frames.csv` in
+> `trial_outputs/s43_verify/standing_*`:
+>
+> | clip | S41 net | S43 net, `--ped-motion standing` | path |
+> |---|---|---|---|
+> | `Sitting` | 14.04 m | **0.211 m** | 0.454 m |
+> | `Standing_Arguing` | 14.04 m | **0.012 m** | 0.211 m |
+> | `Talking_standing` | 14.04 m | **0.012 m** | 0.207 m |
+> | `Stroke_Shaking_Head` | 14.04 m | **0.012 m** | 0.217 m |
+>
+> The mechanism is exactly the one diagnosed below: the translation was `SFAgent` walking to its
+> release destination, and the flag pins that destination to the spawn pose
+> (`AutoTrialBootstrap.cs:1076`). No new code.
+>
+> **`Stroke_Shaking_Head` is only half fixed.** Its second defect — not grounded — is *vertical*,
+> and a horizontal-destination flag cannot address it. Note what the table above can and cannot
+> show: `frames.csv` logs `pedestrian_x` and `pedestrian_z` but **no `pedestrian_y`**, so grounding
+> is not measurable from the pipeline's data at all. Its 0.012 m displacement is evidence about
+> gliding and *no* evidence about floating. Treat this clip as unresolved until someone watches it.
+>
+> Still open: whether the 0.32 m laser plane intersects a seated figure. Now testable, since
+> `Sitting` holds station — but not yet tested.
+
 Screen: `business_male_01` × indifferent × `--profile scoring`, N=2 per clip, open field.
 Raw data: `trial_outputs/demo_s41/screen61/results.tsv`, per-run `meta.json`, contact sheets.
 Index with per-run displacement figures: `trial_outputs/demo_s41/INDEX.md`.
