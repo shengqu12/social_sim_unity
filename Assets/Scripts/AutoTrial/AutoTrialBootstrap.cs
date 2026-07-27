@@ -954,6 +954,13 @@ namespace SEAN.AutoTrial
                     if (config.hasScaredRadiusOverride)
                     {
                         modulator.scaredRadius = config.scaredRadiusOverride;
+                        // Session 46 (1.2): decouple trigger distance from flee strength. The
+                        // override above sets BOTH, because closeness is normalised by
+                        // scaredRadius. The gate holds the flee off until the trigger distance and
+                        // then applies the full 7.0 profile whose shape was accepted on review.
+                        var scaredGate = navAgent.gameObject.AddComponent<S46ScaredTriggerGate>();
+                        scaredGate.triggerDistanceMeters = config.scaredRadiusOverride;
+                        scaredGate.profileRadiusMeters = 7.0f;
                     }
                     // Session 40 STEP 2: additive lateral-flee bias for Scared (see
                     // S40ScaredLateralEvasion's own class doc for why -- the existing radial

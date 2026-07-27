@@ -77,6 +77,8 @@ namespace SEAN.AutoTrial
                 // is untouched.
                 var props = gameObject.AddComponent<S44ClipProps>();
                 props.clipName = clipControllerName;
+                // Session 46 (2): in-place clips are exactly the ones that must not travel.
+                props.suppressRootMotion = inPlaceClip;
             }
 
             if (attachCarriedBox)
@@ -106,6 +108,10 @@ namespace SEAN.AutoTrial
         /// for a clip that does not travel, and their measured authored speed is ~0, which would
         /// divide through to an absurd scale.
         /// </summary>
+        // Set by ApplyAuthoredSpeed so the caller can act on it (Session 46: root-motion
+        // suppression applies to exactly the in-place clips).
+        private bool inPlaceClip;
+
         private void ApplyAuthoredSpeed()
         {
             var scaler = GetComponent<S32AnimatorSpeedScaler>();
@@ -129,7 +135,8 @@ namespace SEAN.AutoTrial
                     + "leaving referenceSpeedMps=" + scaler.referenceSpeedMps);
                 return;
             }
-            if (inPlace || authored < 0.05f)
+            inPlaceClip = inPlace || authored < 0.05f;
+            if (inPlaceClip)
             {
                 Debug.Log("[S41Mixamo] '" + clipControllerName + "' is in-place (authored "
                     + authored.ToString("F4") + " m/s) -- animation speed scaling left untouched.");

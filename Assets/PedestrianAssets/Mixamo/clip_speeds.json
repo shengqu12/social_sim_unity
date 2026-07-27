@@ -9,7 +9,6 @@
     { "clip": "Drunk_Walk", "asset": "Drunk Walk.fbx", "authoredSpeedMps": 0.7160, "inPlace": false, "targetSpeedMps": 0.6, "refSource": "averageSpeed (monotonic)" },
     { "clip": "Old_Man_Walk", "asset": "Old Man Walk.fbx", "authoredSpeedMps": 0.3915, "inPlace": false, "targetSpeedMps": 0.7, "refSource": "averageSpeed (monotonic)" },
     { "clip": "Pacing_And_Talking_On_A_Phone", "asset": "Pacing And Talking On A Phone.fbx", "authoredSpeedMps": 0.5636, "inPlace": false, "targetSpeedMps": 0.8, "refSource": "median-moving (NON_MONOTONIC: net/path = 0.144, averageSpeed invalid)" },
-    { "clip": "Running", "asset": "Running.fbx", "authoredSpeedMps": 4.4063, "inPlace": false, "targetSpeedMps": 2.5, "refSource": "averageSpeed (monotonic)" },
     { "clip": "Sitting", "asset": "Sitting.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 },
     { "clip": "Standing_Arguing", "asset": "Standing Arguing.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 },
     { "clip": "Stroke_Shaking_Head", "asset": "Stroke Shaking Head.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 }

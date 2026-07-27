@@ -39,12 +39,62 @@ namespace SEAN.AutoTrial
 
         private bool done;
 
+        /// <summary>Session 46 (2): in-place clips must not apply root motion at all.</summary>
+        public bool suppressRootMotion = false;
+
+        private Animator rootMotionTarget;
+        private int verifyFrames;
+
         private void Start()
         {
             if (done) { return; }
             done = true;
+            if (suppressRootMotion) { SuppressRootMotion(); }
             if (clipName == "Sitting") { AddStool(); }
             else if (clipName == "Standing_Arguing") { AddArguingPartner(); }
+        }
+
+        /// <summary>
+        /// Session 46 (2), authorised after three failed attempts at the rotation itself.
+        ///
+        /// A character that must not travel should not be applying root motion. Base.cs:32
+        /// hardcodes applyRootMotion = true and is off-limits to edit, but the Animator field is
+        /// writable at runtime -- the same pattern as Session 44's Idling override and execution
+        /// order, i.e. drive the public surface rather than modify upstream source.
+        ///
+        /// This removes the cause rather than fighting the symptom. The 7.779 m drift appeared only
+        /// once a component started forcing transform.rotation every LateUpdate, which conflicts
+        /// with Unity's root-motion auto-apply writing position and rotation in the same frame. The
+        /// clip's own root motion nets to zero over a loop (avgSpeed 0.0000 across its 20.8 s), so
+        /// accumulation was never the explanation.
+        /// </summary>
+        private void SuppressRootMotion()
+        {
+            rootMotionTarget = IVI.AvatarAnimatorUtility.GetLocomotionAnimator(gameObject);
+            if (rootMotionTarget == null)
+            {
+                Debug.LogWarning("[S46RootMotion] no animator resolved -- root motion NOT suppressed.");
+                return;
+            }
+            rootMotionTarget.applyRootMotion = false;
+            Debug.Log("[S46RootMotion] applyRootMotion set false on '" + rootMotionTarget.gameObject.name
+                + "' (clip=" + clipName + ")");
+        }
+
+        // Base.Start() sets applyRootMotion = true from its own hardcoded field, so the write above
+        // has to be confirmed to survive rather than assumed. Logged for the first frames after
+        // init; if any of these reports True the suppression lost a race and the result is void.
+        private void LateUpdate()
+        {
+            if (!suppressRootMotion || rootMotionTarget == null || verifyFrames >= 5) { return; }
+            verifyFrames++;
+            Debug.Log("[S46RootMotion] verify frame " + verifyFrames + ": applyRootMotion="
+                + rootMotionTarget.applyRootMotion);
+            if (rootMotionTarget.applyRootMotion)
+            {
+                rootMotionTarget.applyRootMotion = false;
+                Debug.LogWarning("[S46RootMotion] was re-enabled by another component -- re-suppressed.");
+            }
         }
 
         private void AddStool()
@@ -107,14 +157,19 @@ namespace SEAN.AutoTrial
             // relative to the robot changes.
             Vector3 axis = Quaternion.AngleAxis(90f, Vector3.up) * transform.forward;
             partner.transform.position = transform.position + axis * partnerSpacingMeters;
-            partner.transform.rotation = Quaternion.LookRotation(-axis, Vector3.up);
-            // Turn the original to match -- but on its VISUAL transform, never the agent root.
-            // Rotating the root the first time broke station-holding outright: the character
-            // translated 7.130 m in a trial where it must not move at all (check 3.4, limit 0.20 m),
-            // because Scenario.Agents.Base steers and applies root motion through that same
-            // transform. The visual child carries the facing; the agent root stays exactly as the
-            // navigation layer left it.
-            src.transform.rotation = Quaternion.LookRotation(axis, Vector3.up);
+            // Session 46 (1.1): the facing has to be HELD, not set once. Setting the visual's world
+            // rotation in Start() lasted only until the next frame -- the visual is a child of the
+            // agent root, Base rewrites that root's rotation every Update, and the child's world
+            // rotation follows it. The result was two figures standing on the correct perpendicular
+            // axis while one of them faced the robot.
+            //
+            // Both figures now hold an explicit world yaw each LateUpdate, after Base has run. The
+            // agent root is never written to (Session 45: writing it made the character translate
+            // 7.130 m in a trial where it must not move at all).
+            var holdSelf = src.AddComponent<HoldWorldYaw>();
+            holdSelf.worldForward = axis;
+            var holdPartner = partner.AddComponent<HoldWorldYaw>();
+            holdPartner.worldForward = -axis;
 
             var pa = partner.GetComponent<Animator>();
             if (pa != null)
@@ -129,6 +184,28 @@ namespace SEAN.AutoTrial
                 pa.Play(st.fullPathHash, 0, phase);
                 Debug.Log("[S44Props] Standing_Arguing: partner at " + partnerSpacingMeters.ToString("F2")
                     + " m facing back, phase offset " + phase.ToString("F2") + " s");
+            }
+        }
+
+        /// <summary>
+        /// Session 46 (1.1): pins a transform's world yaw every LateUpdate.
+        ///
+        /// LateUpdate specifically -- Base.Move() rewrites the agent root's rotation in Update, and
+        /// this transform is a child of it, so anything applied earlier is inherited away. The
+        /// three conditions the staging has to satisfy simultaneously are: the pair's axis
+        /// perpendicular to the robot's approach, the two yaws 180 degrees apart, and both yaws
+        /// themselves perpendicular to the approach so the camera sees two profiles.
+        /// </summary>
+        private class HoldWorldYaw : MonoBehaviour
+        {
+            public Vector3 worldForward = Vector3.forward;
+
+            private void LateUpdate()
+            {
+                Vector3 f = worldForward;
+                f.y = 0f;
+                if (f.sqrMagnitude < 1e-6f) { return; }
+                transform.rotation = Quaternion.LookRotation(f.normalized, Vector3.up);
             }
         }
     }

@@ -49,8 +49,6 @@ run mixamo_Old_Man_Walk    mixamo $COMMON --appearance business_male_01 --person
     --mixamo-clip Old_Man_Walk
 run mixamo_Drunk_Walk      mixamo $COMMON --appearance business_male_01 --personality indifferent \
     --mixamo-clip Drunk_Walk
-run mixamo_Running         mixamo $COMMON --appearance business_male_01 --personality indifferent \
-    --mixamo-clip Running
 # Stationary pair: --ped-motion standing pins the release destination (S42 TASK A).
 run mixamo_Standing_Arguing static $COMMON --appearance business_male_01 --personality indifferent \
     --mixamo-clip Standing_Arguing --ped-motion standing
