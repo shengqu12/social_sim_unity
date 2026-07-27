@@ -40,6 +40,13 @@ namespace SEAN.AutoTrial
         };
 
         // Clips that must hold station. Root motion off, or they slide.
+        //
+        // Session 44 (5.1 / 0): "Talking_standing" and "Stroke Shaking Head" remain listed here so
+        // that the FBXs still import correctly if anyone opens them, but neither ships. Both are
+        // off the roster:
+        //   Talking_standing    -- dropped on request (5.1)
+        //   Stroke Shaking Head -- permanently excluded, see
+        //                          known_issues/S44_stroke_shaking_head_excluded.md
         private static readonly HashSet<string> Stationary = new HashSet<string>
         {
             "Standing Arguing",
