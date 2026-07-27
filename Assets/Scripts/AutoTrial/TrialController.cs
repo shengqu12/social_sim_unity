@@ -174,6 +174,12 @@ namespace SEAN.AutoTrial
             // the comparison basis for every trial ever run.
             header += ",robot_vel_x,robot_vel_y,robot_vel_z,robot_speed_ground,robot_ang_vel_y"
                 + ",robot_yaw_ros_rad,robot_ang_vel_ros";
+            // Session 44 (3.5): the pedestrian's VERTICAL position. Its absence is why
+            // Stroke_Shaking_Head's "floating" defect could only ever be judged by eye --
+            // frames.csv carried pedestrian_x and pedestrian_z but no y, so a displacement
+            // measurement was evidence about gliding and no evidence at all about grounding.
+            // Appended last, after every other column, so no existing schema position moves.
+            header += ",pedestrian_y";
             csv.WriteLine(header);
 
             ResolveRobotBody();
@@ -610,6 +616,9 @@ namespace SEAN.AutoTrial
             row.Add(haveBody ? F4(angVel.y) : "");
             row.Add(F4(yawRosUnwrappedRad));
             row.Add(haveBody ? F4(-angVel.y) : "");
+            // Session 44 (3.5): vertical position of the pedestrian, for the grounding check.
+            row.Add(pedestrian != null
+                ? pedestrian.position.y.ToString("F3", CultureInfo.InvariantCulture) : "");
 
             csv.WriteLine(string.Join(",", row));
 

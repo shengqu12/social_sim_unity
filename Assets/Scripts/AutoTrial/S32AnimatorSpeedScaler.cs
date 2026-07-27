@@ -50,8 +50,34 @@ namespace SEAN.AutoTrial
         // speed at which the underlying Locomotion clip's own root motion/authored cadence reads
         // as natural.
         public float referenceSpeedMps = 1.3f;
-        public float minSpeedScale = 0.3f;
-        public float maxSpeedScale = 1.5f;
+
+        // Session 44. A clamp here is a FUSE against bad data, not a constraint meant to bind in
+        // normal operation -- if it engages on a healthy sample, it is set wrong.
+        //
+        // minSpeedScale 0.3 -> 0.05. A fixed scale floor stopped being meaningful once
+        // referenceSpeedMps became per-clip (FIX C): the floor's equivalent GROUND speed is
+        // minSpeedScale * referenceSpeedMps, and authored speeds now span an 11x range.
+        //   Old_Man_Walk (ref 0.392):  0.3 floor == 0.118 m/s ground
+        //   Running      (ref 4.406):  0.3 floor == 1.32  m/s ground  <- binds on ordinary walking
+        // Running would have sat on the floor for any pace below 1.32 m/s. Standing still is
+        // handled by FIX A's idle regime (animator.speed = 1.0), not by this floor, so lowering it
+        // cannot reintroduce the frozen-statue case.
+        //
+        // maxSpeedScale 1.5 -> 3.0. Measured requirement after FIX C: Old_Man_Walk needs 1.788 and
+        // Pacing_And_Talking_On_A_Phone 1.928, so 1.5 was clamping healthy samples and leaving 19%
+        // and 29% residual mismatch. Neither is the "absurd, blurring playback" the original
+        // comment guards against. 3.0 still catches genuine garbage -- e.g. an in-place clip whose
+        // authored speed measures 0.01 would demand a scale near 100.
+        public float minSpeedScale = 0.05f;
+        public float maxSpeedScale = 3.0f;
+
+        // Session 44 (1.3): a clamp that engages silently degrades a sample without telling anyone.
+        // Counted per agent and reported once at teardown, so INDEX.md can show which clip hit which
+        // clamp and how often. This is the clamp's real job: signalling that the data is wrong.
+        private int clampLoHits;
+        private int clampHiHits;
+        private int scaleFrames;
+        private float worstRequiredScale;
 
         // Session 41 TASK 2 FIX 0. `animator.speed` is a whole-Animator multiplier, not a
         // per-state one, so the locomotion scaling above also stretches one-shot REACTION clips --
@@ -166,6 +192,24 @@ namespace SEAN.AutoTrial
             return false;
         }
 
+        /// <summary>
+        /// Session 44 (1.3). Emitted once per agent so a clamp engagement is never silent. Parsed
+        /// out of unity.log into INDEX.md -- a clamp firing does not necessarily mean the trial is
+        /// bad, but it must be visible, because it means a sample was played at a rate other than
+        /// the one the geometry demanded.
+        /// </summary>
+        private void OnDisable()
+        {
+            if (scaleFrames == 0 || (clampLoHits == 0 && clampHiHits == 0)) { return; }
+            Debug.Log(string.Format(
+                "[S44Clamp] agent={0} ref={1:F4} frames={2} loHits={3} ({4:P1}) hiHits={5} ({6:P1}) "
+                + "worstRequired={7:F3} range=[{8:F2},{9:F2}]",
+                gameObject.name, referenceSpeedMps, scaleFrames,
+                clampLoHits, (float)clampLoHits / scaleFrames,
+                clampHiHits, (float)clampHiHits / scaleFrames,
+                worstRequiredScale, minSpeedScale, maxSpeedScale));
+        }
+
         // Cached so the parameter list isn't walked every frame.
         private bool idlingParamChecked;
         private bool idlingParamExists;
@@ -261,8 +305,15 @@ namespace SEAN.AutoTrial
                 return;
             }
 
-            float scale = referenceSpeedMps > 0.01f ? smoothedSpeed / referenceSpeedMps : 1.0f;
-            scale = Mathf.Clamp(scale, minSpeedScale, maxSpeedScale);
+            float required = referenceSpeedMps > 0.01f ? smoothedSpeed / referenceSpeedMps : 1.0f;
+            float scale = Mathf.Clamp(required, minSpeedScale, maxSpeedScale);
+
+            // Session 44 (1.3): count clamp engagements so they are visible rather than silent.
+            scaleFrames++;
+            if (required < minSpeedScale) { clampLoHits++; }
+            else if (required > maxSpeedScale) { clampHiHits++; }
+            if (required > worstRequiredScale) { worstRequiredScale = required; }
+
             animator.speed = scale;
             if (DiagEnabled && Time.frameCount % 60 == 0)
             {
