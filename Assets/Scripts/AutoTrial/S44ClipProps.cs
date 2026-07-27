@@ -108,9 +108,13 @@ namespace SEAN.AutoTrial
             Vector3 axis = Quaternion.AngleAxis(90f, Vector3.up) * transform.forward;
             partner.transform.position = transform.position + axis * partnerSpacingMeters;
             partner.transform.rotation = Quaternion.LookRotation(-axis, Vector3.up);
-            // Turn the original to match, so the two face each other along the rotated axis rather
-            // than the original one.
-            transform.rotation = Quaternion.LookRotation(axis, Vector3.up);
+            // Turn the original to match -- but on its VISUAL transform, never the agent root.
+            // Rotating the root the first time broke station-holding outright: the character
+            // translated 7.130 m in a trial where it must not move at all (check 3.4, limit 0.20 m),
+            // because Scenario.Agents.Base steers and applies root motion through that same
+            // transform. The visual child carries the facing; the agent root stays exactly as the
+            // navigation layer left it.
+            src.transform.rotation = Quaternion.LookRotation(axis, Vector3.up);
 
             var pa = partner.GetComponent<Animator>();
             if (pa != null)
