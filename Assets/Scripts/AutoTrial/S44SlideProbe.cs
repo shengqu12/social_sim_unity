@@ -52,7 +52,10 @@ namespace SEAN.AutoTrial
         private const float MinSpeedScale = 0.3f;
         private const float MaxSpeedScale = 1.5f;
         private const float SmoothingTau = 0.25f;
+        private const float IdleSpeedThresholdMps = 0.15f;
+        private const float IdleDwellSec = 0.20f;
         private static readonly string[] ReactionStates = { "SurprisedReaction", "AssertiveGesture" };
+        private float belowSince = -1f;
 
         private Animator animator;
         private Scenario.Agents.Base baseAgent;
@@ -177,7 +180,19 @@ namespace SEAN.AutoTrial
             bool hold = ReactionActive();
             float baseVel = baseAgent != null ? baseAgent.velocity.magnitude : float.NaN;
 
-            float scalerWould = hold
+            // Mirrors S32AnimatorSpeedScaler including Session 44 FIX A's stationary rule. Kept in
+            // step deliberately: a reconstruction that lags the component it models silently turns
+            // every frame "ambiguous" and the winner-identification column stops meaning anything.
+            if (smoothed < IdleSpeedThresholdMps)
+            {
+                if (belowSince < 0f) { belowSince = Time.time; }
+            }
+            else
+            {
+                belowSince = -1f;
+            }
+            bool stationary = belowSince >= 0f && (Time.time - belowSince) >= IdleDwellSec;
+            float scalerWould = (hold || stationary)
                 ? 1.0f
                 : Mathf.Clamp(smoothed / ReferenceSpeedMps, MinSpeedScale, MaxSpeedScale);
 

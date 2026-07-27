@@ -74,6 +74,39 @@ namespace SEAN.AutoTrial
         // TASK 1 graph dump); AnimatorStateInfo.IsName is a cheap hash compare, not a string op.
         public string[] reactionStateNames = { "SurprisedReaction", "AssertiveGesture" };
 
+        // Session 44 FIX A. `animator.speed` is only meaningful while a LOCOMOTION clip is playing:
+        // it is the knob that matches footfall cadence to ground travel, and a character that is
+        // not travelling has no cadence to match. Session 41 already established this for one-shot
+        // reaction states (hold at 1.0 above); this extends the same rule to standing still.
+        //
+        // Measured (Session 44 TASK 1, business_male_01, probe CSVs in trial_outputs/s44_diag/):
+        // while stopped or creeping at 0.000-0.116 m/s the required scale is 0.00-0.09, but
+        // minSpeedScale pinned animator.speed at 0.300 -- the legs cycled 353-447% faster than the
+        // ground demanded. Scared's stopped segment measured 217% with 96% of frames on the floor.
+        // Sustained walking measured 95-103%, i.e. correct, which is why the defect reads as
+        // "slides only after the reaction / only while turning" rather than as a constant fault.
+        //
+        // Below this ground speed the character is treated as stationary and the Animator is
+        // returned to its authored rate. NOT a hard freeze: 1.0 keeps an idle clip breathing at its
+        // designed pace, where scaling toward 0 would produce the frozen-statue failure a human
+        // reviewer has caught on this project before.
+        public float idleSpeedThresholdMps = 0.15f;
+        // Hysteresis, so a character hovering either side of the threshold doesn't flicker between
+        // scaled and authored playback -- must fall below for this long to count as stopped, and
+        // any sample above it resumes scaling immediately.
+        public float idleDwellSec = 0.20f;
+
+        // Session 44 FIX A, second half: Base.cs:351 computes `idle` as
+        // `animParams.magnitude < idleSpeed && !applyRootMotion`, and Base.cs:32 hardcodes
+        // applyRootMotion = true, so that expression is ALWAYS false and the Animator's "Idling"
+        // bool is never set true by the upstream code. Base.cs is off-limits, so the parameter is
+        // driven from here instead. Ordering makes this safe rather than a second race: this
+        // component now runs at execution order 100, after Base's default 0 (see
+        // Editor/S44ExecutionOrder.cs), so this write lands after Base's write every frame.
+        public bool driveIdlingParameter = true;
+
+        private float belowThresholdSince = -1f;
+
         private Animator animator;
         private Scenario.Agents.Base baseAgent;
         private Vector3 lastPos;
@@ -133,6 +166,27 @@ namespace SEAN.AutoTrial
             return false;
         }
 
+        // Cached so the parameter list isn't walked every frame.
+        private bool idlingParamChecked;
+        private bool idlingParamExists;
+
+        private void SetBoolIfPresent(string name, bool value)
+        {
+            if (!idlingParamChecked)
+            {
+                idlingParamChecked = true;
+                foreach (var p in animator.parameters)
+                {
+                    if (p.type == AnimatorControllerParameterType.Bool && p.name == name)
+                    {
+                        idlingParamExists = true;
+                        break;
+                    }
+                }
+            }
+            if (idlingParamExists) { animator.SetBool(name, value); }
+        }
+
         private static string GetPath(Transform t)
         {
             string p = t.name;
@@ -174,6 +228,35 @@ namespace SEAN.AutoTrial
             // the Animator -- see reactionStateNames' comment for the measured justification.
             if (IsReactionActive())
             {
+                animator.speed = 1.0f;
+                belowThresholdSince = -1f;
+                return;
+            }
+
+            // Session 44 FIX A: treat "not travelling" as its own regime rather than as very slow
+            // travel. See idleSpeedThresholdMps for the measurements this closes.
+            if (smoothedSpeed < idleSpeedThresholdMps)
+            {
+                if (belowThresholdSince < 0f) { belowThresholdSince = Time.time; }
+            }
+            else
+            {
+                belowThresholdSince = -1f;
+            }
+            bool stationary = belowThresholdSince >= 0f && (Time.time - belowThresholdSince) >= idleDwellSec;
+
+            if (driveIdlingParameter)
+            {
+                // Best-effort: controllers without an "Idling" bool (the generated single-state
+                // Mixamo ones) simply have no such parameter, and Unity logs a warning per call
+                // rather than throwing -- so check before setting rather than swallowing exceptions.
+                SetBoolIfPresent("Idling", stationary);
+            }
+
+            if (stationary)
+            {
+                // Authored rate, not zero: an idle clip should play at its designed pace. Scaling
+                // it toward zero is the frozen-statue failure mode.
                 animator.speed = 1.0f;
                 return;
             }
