@@ -111,7 +111,14 @@ namespace SEAN.AutoTrial
                 {
                     writer.WriteLine("t,agent,animator_speed_final,base_would_write,scaler_would_write,"
                         + "ground_speed_mps,base_velocity_mps,state,reaction_hold,"
-                        + "clip_length,clip_authored_name,scale_needed_vs_ref");
+                        + "clip_length,clip_authored_name,scale_needed_vs_ref,"
+                        // Session 44 §9: AnimatorStateInfo.length and state.speed alongside
+                        // clip.length and animator.speed, all sampled in the SAME frame. Session
+                        // 41 reported an effective Surprised length of 2.473s that no combination
+                        // of its recorded inputs reproduces (2.767 / 0.896 = 3.088), and the
+                        // question has stayed open across three work orders because the four
+                        // quantities were never captured together.
+                        + "state_length,state_speed");
                 }
             }
             catch (System.Exception e)
@@ -193,7 +200,13 @@ namespace SEAN.AutoTrial
             // What animator.speed WOULD have to be for the feet to match the ground, if the clip
             // really is authored for ReferenceSpeedMps. Divergence between this and the final
             // animator.speed is the slide, signed: above = feet outrun the ground.
-            sb.Append((ground / ReferenceSpeedMps).ToString("F4", CultureInfo.InvariantCulture));
+            sb.Append((ground / ReferenceSpeedMps).ToString("F4", CultureInfo.InvariantCulture)).Append(',');
+            // Session 44 §9. AnimatorStateInfo.length is the state's duration AFTER speed scaling;
+            // clip_length above is the authored duration. Logging both, plus info.speed and
+            // animator.speed, in one frame is what makes the relationship checkable rather than
+            // inferred: length should equal clip_length / (animator.speed * state.speed).
+            sb.Append(info.length.ToString("F4", CultureInfo.InvariantCulture)).Append(',');
+            sb.Append(info.speed.ToString("F4", CultureInfo.InvariantCulture));
             writer.WriteLine(sb.ToString());
         }
 
