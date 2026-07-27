@@ -101,7 +101,7 @@ def main():
             cells.append("**FAIL**" if s == "FAIL" else s)
             if s == "FAIL":
                 details.append("- **{}** {} ({}): {}".format(name, tag, c["name"], c["detail"]))
-        out.append("| {} | {} | {} | {} | PENDING | {} |".format(
+        out.append("| {} | {} | {} | PENDING | {} |".format(
             name, " | ".join(cells), clamp_cell(d), r.get("min_dist", "NA")))
 
     out += ["", "### Gates, per trial", "",
