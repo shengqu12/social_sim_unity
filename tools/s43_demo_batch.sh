@@ -42,8 +42,6 @@ run wheelchair_user v6config $COMMON --appearance wheelchair_user --personality 
 run cyclist        v6config $COMMON --appearance cyclist         --personality indifferent
 
 # --- the five Mixamo clips that survived Session 41's screen ---
-# The other four (Sitting, Standing_Arguing, Talking_standing, Stroke_Shaking_Head) are excluded:
-# see known_issues/S41_mixamo_screen61.md. They are handled separately, not silently dropped.
 run mixamo_carry_and_walk mixamo $COMMON --appearance business_male_01 --personality indifferent \
     --mixamo-clip carry_and_walk --carried-box
 run mixamo_Drunk_Walk     mixamo $COMMON --appearance business_male_01 --personality indifferent \
@@ -54,6 +52,26 @@ run mixamo_Pacing_Phone   mixamo $COMMON --appearance business_male_01 --persona
     --mixamo-clip Pacing_And_Talking_On_A_Phone
 run mixamo_Running        mixamo $COMMON --appearance business_male_01 --personality indifferent \
     --mixamo-clip Running
+
+# --- the four clips Session 41 failed, re-run with --ped-motion standing ---
+# S42 TASK A, folded in here. These are stationary animations, and the bug was that SFAgent walked
+# the character ~14m anyway while the clip played in place. --ped-motion standing pins the release
+# destination to the spawn point so the agent never navigates. Measured net displacement, S41 -> now:
+#   Sitting 14.04 -> 0.211m   Standing_Arguing -> 0.012m   Talking_standing -> 0.012m
+#   Stroke_Shaking_Head -> 0.012m
+#
+# Stroke_Shaking_Head had a SECOND and more severe defect: it is not grounded. That is a vertical
+# problem and this flag only addresses horizontal translation. frames.csv logs no pedestrian_y, so
+# grounding cannot be checked from the data at all -- it needs the eyeball pass, and until then this
+# clip is NOT fixed, only half-fixed. See known_issues/S41_mixamo_screen61.md.
+run mixamo_Sitting_standing      mixamo_recovered $COMMON --appearance business_male_01 \
+    --personality indifferent --mixamo-clip Sitting --ped-motion standing
+run mixamo_Standing_Arguing_standing mixamo_recovered $COMMON --appearance business_male_01 \
+    --personality indifferent --mixamo-clip Standing_Arguing --ped-motion standing
+run mixamo_Talking_standing_standing mixamo_recovered $COMMON --appearance business_male_01 \
+    --personality indifferent --mixamo-clip Talking_standing --ped-motion standing
+run mixamo_Stroke_Shaking_Head_standing mixamo_recovered $COMMON --appearance business_male_01 \
+    --personality indifferent --mixamo-clip Stroke_Shaking_Head --ped-motion standing
 
 # --- one corridor, to exercise event frames on a genuine close pass ---
 # 1.5m was chosen because Session 41 measured worst-of-5 = 0.539m there: close enough that the
