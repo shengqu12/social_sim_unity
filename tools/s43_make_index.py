@@ -22,6 +22,21 @@ import s43_selfcheck  # noqa: E402
 
 ROOT = "/mnt/ssd/Social_Navigation/trial_outputs/demo_s43"
 
+# An accidental control. This batch was run twice with byte-identical commands: once before
+# frame_idx/video_time were added to states.csv, once after. The second run overwrote the first, so
+# only these min_dist values survive from it -- recorded here because the comparison is the most
+# direct evidence available that a single sample says nothing about a configuration's clearance.
+# Provenance: demo_s43/results.tsv as of the first run, same 18 configs, same arguments.
+FIRST_RUN_MIN_DIST = {
+    "indifferent": 0.866, "assertive": 0.782, "scared": 3.486, "dyad": 0.659,
+    "ped_count_3": 1.032, "scooter_user": 1.012, "wheelchair_user": 1.391, "cyclist": 1.176,
+    "mixamo_carry_and_walk": 1.435, "mixamo_Drunk_Walk": 1.036, "mixamo_Old_Man_Walk": 0.959,
+    "mixamo_Pacing_Phone": 0.614, "mixamo_Running": 0.770,
+    "mixamo_Sitting_standing": 0.333, "mixamo_Standing_Arguing_standing": 0.333,
+    "mixamo_Talking_standing_standing": 0.333, "mixamo_Stroke_Shaking_Head_standing": 0.333,
+    "corridor_w1.5": 0.568,
+}
+
 HEADER = [
     "# Session 43 -- demo_s43",
     "",
@@ -148,6 +163,36 @@ def main():
                 if not c["ok"]:
                     out.append("- **{}** check {} ({}): {}".format(cfg, c["n"], c["name"], c["detail"]))
     out.append("")
+
+    # Same 18 configs, same commands, run twice. If one sample characterised a configuration these
+    # two columns would agree.
+    pairs = [(r["config"], FIRST_RUN_MIN_DIST.get(r["config"]), r.get("min_dist"))
+             for r in rows if FIRST_RUN_MIN_DIST.get(r["config"]) is not None]
+    deltas = []
+    for cfg, a, b in pairs:
+        try:
+            deltas.append((cfg, a, float(b), float(b) - a))
+        except (TypeError, ValueError):
+            pass
+    if deltas:
+        worst = max(deltas, key=lambda d: abs(d[3]))
+        out += ["## Why the N=1 warning is not boilerplate", "",
+                "This batch was run **twice**, with byte-identical commands (the first run predated",
+                "`frame_idx`/`video_time` in `states.csv`). That makes an accidental control. If a",
+                "single trial characterised a configuration, these two columns would agree.", "",
+                "| config | run 1 min_dist | run 2 min_dist | delta |", "|---|---|---|---|"]
+        for cfg, a, b, d in deltas:
+            out.append("| `{}` | {:.3f} | {:.3f} | {:+.3f} |".format(cfg, a, b, d))
+        out += ["",
+                "Largest swing: **`{}`, {:+.3f} m** ({:.3f} -> {:.3f}).".format(
+                    worst[0], worst[3], worst[1], worst[2]),
+                "",
+                "Note especially the four `mixamo_*_standing` rows. In run 1 all four landed on",
+                "0.333 m, agreeing to five decimal places, which looks exactly like deterministic",
+                "geometry -- a robot halting at a fixed distance from a static obstacle, matching a",
+                "value already recorded in `S38RobotLateralEvasionBackstop.cs`. Run 2 gave 0.776,",
+                "0.528, 0.335 and 1.110. The apparent determinism was a coincidence of one batch.",
+                "Four identical readings were not enough to establish it, and neither is one.", ""]
 
     if sample_dir:
         out += ["## `states.csv` sample", "",
