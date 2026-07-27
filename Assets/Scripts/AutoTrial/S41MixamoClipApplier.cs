@@ -71,6 +71,7 @@ namespace SEAN.AutoTrial
                         + (animator.avatar != null && animator.avatar.isHuman) + ")");
                     animator.runtimeAnimatorController = rac;
                 }
+                ApplyAuthoredSpeed();
             }
 
             if (attachCarriedBox)
@@ -80,6 +81,100 @@ namespace SEAN.AutoTrial
                 yield return null;
                 AttachBox(animator);
             }
+        }
+
+        /// <summary>
+        /// Session 44 FIX C: point S32AnimatorSpeedScaler at the pace THIS clip was actually
+        /// authored for, instead of the single hard-coded 1.3 m/s it applied to every clip.
+        ///
+        /// That constant was measured wrong for every Mixamo asset, in both directions -- Old Man
+        /// Walk is authored at 0.392 m/s (3.3x over-estimated) and Running at 4.406 m/s (3.4x
+        /// under). The scaler normalises correctly; it was normalising against a pace none of these
+        /// clips were authored for, which is why the animation could match travel speed or footfall
+        /// cadence but never both.
+        ///
+        /// Reads Assets/PedestrianAssets/Mixamo/clip_speeds.json -- the SAME file run_trial.py
+        /// derives the SFM speed multiplier from. One source, deliberately: two would drift, and
+        /// the drift would present as a slide with no obvious cause.
+        ///
+        /// in-place clips (no root translation) are skipped: animation speed scaling has no meaning
+        /// for a clip that does not travel, and their measured authored speed is ~0, which would
+        /// divide through to an absurd scale.
+        /// </summary>
+        private void ApplyAuthoredSpeed()
+        {
+            var scaler = GetComponent<S32AnimatorSpeedScaler>();
+            if (scaler == null) { return; }
+
+            var cfg = Resources.Load<TextAsset>("clip_speeds");
+            string json = cfg != null ? cfg.text : ReadFromAssetPath();
+            if (string.IsNullOrEmpty(json))
+            {
+                Debug.LogWarning("[S41Mixamo] clip_speeds.json not found -- S32AnimatorSpeedScaler "
+                    + "keeps its default referenceSpeedMps=" + scaler.referenceSpeedMps
+                    + ", which is WRONG for every Mixamo clip. Animation scaling will be off.");
+                return;
+            }
+
+            float authored;
+            bool inPlace;
+            if (!TryLookup(json, clipControllerName, out authored, out inPlace))
+            {
+                Debug.LogWarning("[S41Mixamo] '" + clipControllerName + "' has no clip_speeds.json entry -- "
+                    + "leaving referenceSpeedMps=" + scaler.referenceSpeedMps);
+                return;
+            }
+            if (inPlace || authored < 0.05f)
+            {
+                Debug.Log("[S41Mixamo] '" + clipControllerName + "' is in-place (authored "
+                    + authored.ToString("F4") + " m/s) -- animation speed scaling left untouched.");
+                return;
+            }
+
+            float before = scaler.referenceSpeedMps;
+            scaler.referenceSpeedMps = authored;
+            Debug.Log("[S41Mixamo] '" + clipControllerName + "' referenceSpeedMps "
+                + before.ToString("F4") + " -> " + authored.ToString("F4") + " m/s (measured authored pace)");
+        }
+
+        private static string ReadFromAssetPath()
+        {
+            const string p = "Assets/PedestrianAssets/Mixamo/clip_speeds.json";
+            try
+            {
+                return System.IO.File.Exists(p) ? System.IO.File.ReadAllText(p) : null;
+            }
+            catch (System.Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Minimal field scan -- JsonUtility cannot parse a top-level array of objects with
+        /// mixed types, and pulling in a JSON dependency for four numbers is not worth it.</summary>
+        private static bool TryLookup(string json, string clip, out float authored, out bool inPlace)
+        {
+            authored = 0f;
+            inPlace = true;
+            int i = json.IndexOf("\"clip\": \"" + clip + "\"");
+            if (i < 0) { return false; }
+            int end = json.IndexOf('}', i);
+            if (end < 0) { end = json.Length; }
+            string rec = json.Substring(i, end - i);
+
+            int a = rec.IndexOf("\"authoredSpeedMps\":");
+            if (a < 0) { return false; }
+            a += "\"authoredSpeedMps\":".Length;
+            int aEnd = rec.IndexOf(',', a);
+            if (aEnd < 0) { aEnd = rec.Length; }
+            if (!float.TryParse(rec.Substring(a, aEnd - a).Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out authored))
+            {
+                return false;
+            }
+            inPlace = rec.Contains("\"inPlace\": true");
+            return true;
         }
 
         // GetBoneTransform is the correct, rig-naming-agnostic lookup, but it returns null on rigs

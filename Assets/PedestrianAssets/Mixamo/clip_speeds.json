@@ -1,0 +1,16 @@
+{
+  "_comment": "Session 44 FIX C. THE single source both consumers read: S41MixamoClipApplier sets S32AnimatorSpeedScaler.referenceSpeedMps from authoredSpeedMps, and tools/run_trial.py derives the SFM speed multiplier from targetSpeedMps. Two different quantities -- conflating them into one constant is what caused the slide.",
+  "_authored": "MEASURED from AnimationClip.averageSpeed (ground plane), never hand-edited. Regenerate with AutoTrial/Session 44/Refresh clip_speeds.json after any asset re-export; it preserves targetSpeedMps.",
+  "_target": "DESIGN CHOICE, hand-set. null means 'no override, use the pipeline default'. 0 means the character should not travel at all.",
+  "_inPlace": "true = the clip carries no root translation, so authoredSpeedMps could not be measured and animation scaling is meaningless for it.",
+  "clips": [
+    { "clip": "carry_and_walk", "asset": "carry_and_walk.fbx", "authoredSpeedMps": 0.8969, "inPlace": false, "targetSpeedMps": 1.0 },
+    { "clip": "Drunk_Walk", "asset": "Drunk Walk.fbx", "authoredSpeedMps": 0.7160, "inPlace": false, "targetSpeedMps": 0.6 },
+    { "clip": "Old_Man_Walk", "asset": "Old Man Walk.fbx", "authoredSpeedMps": 0.3915, "inPlace": false, "targetSpeedMps": 0.7 },
+    { "clip": "Pacing_And_Talking_On_A_Phone", "asset": "Pacing And Talking On A Phone.fbx", "authoredSpeedMps": 0.4150, "inPlace": false, "targetSpeedMps": 0.8 },
+    { "clip": "Running", "asset": "Running.fbx", "authoredSpeedMps": 4.4063, "inPlace": false, "targetSpeedMps": 2.5 },
+    { "clip": "Sitting", "asset": "Sitting.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 },
+    { "clip": "Standing_Arguing", "asset": "Standing Arguing.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 },
+    { "clip": "Stroke_Shaking_Head", "asset": "Stroke Shaking Head.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 }
+  ]
+}

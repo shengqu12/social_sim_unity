@@ -32,6 +32,16 @@ namespace SEAN.AutoTrial.EditorTools
         private const string OutPath = "Assets/PedestrianAssets/Mixamo/authored_speeds.json";
         private const float InPlaceThresholdMps = 0.05f;
 
+        /// <summary>
+        /// The one config BOTH consumers read: S41MixamoClipApplier feeds `authoredSpeedMps` into
+        /// S32AnimatorSpeedScaler.referenceSpeedMps, and run_trial.py derives the SFM speed
+        /// multiplier from `targetSpeedMps`. Session 44 FIX C's whole point is that these are two
+        /// DIFFERENT quantities that were previously conflated into one hard-coded 1.3 -- and that
+        /// they must come from one file, because two files drift and the drift shows up as a slide
+        /// nobody can attribute.
+        /// </summary>
+        public const string ClipSpeedsPath = "Assets/PedestrianAssets/Mixamo/clip_speeds.json";
+
         [MenuItem("AutoTrial/Session 44/Dump authored clip speeds")]
         public static void Dump()
         {
@@ -83,6 +93,95 @@ namespace SEAN.AutoTrial.EditorTools
             File.WriteAllText(OutPath, json.ToString());
             AssetDatabase.ImportAsset(OutPath);
             Debug.Log("[S44AuthoredSpeed] wrote " + OutPath + " (" + lines.Count + " clips)\n" + report);
+        }
+
+        /// <summary>
+        /// Refresh clip_speeds.json's measured column while PRESERVING every hand-chosen
+        /// targetSpeedMps. Re-running after an asset re-export must not silently revert a design
+        /// decision, and must not leave a stale authored value behind either.
+        /// </summary>
+        [MenuItem("AutoTrial/Session 44/Refresh clip_speeds.json (keeps targets)")]
+        public static void RefreshClipSpeeds()
+        {
+            var targets = new Dictionary<string, string>();
+            if (File.Exists(ClipSpeedsPath))
+            {
+                foreach (var raw in File.ReadAllLines(ClipSpeedsPath))
+                {
+                    string clip = Between(raw, "\"clip\": \"", "\"");
+                    string tgt = Between(raw, "\"targetSpeedMps\": ", ",");
+                    if (clip != null && tgt != null) { targets[clip] = tgt.Trim(); }
+                }
+            }
+
+            // controller/--mixamo-clip name -> source FBX, so the measured value can be looked up.
+            var byController = new Dictionary<string, string>
+            {
+                { "carry_and_walk", "carry_and_walk.fbx" },
+                { "Drunk_Walk", "Drunk Walk.fbx" },
+                { "Old_Man_Walk", "Old Man Walk.fbx" },
+                { "Pacing_And_Talking_On_A_Phone", "Pacing And Talking On A Phone.fbx" },
+                { "Running", "Running.fbx" },
+                { "Sitting", "Sitting.fbx" },
+                { "Standing_Arguing", "Standing Arguing.fbx" },
+                { "Stroke_Shaking_Head", "Stroke Shaking Head.fbx" },
+            };
+
+            var measured = new Dictionary<string, KeyValuePair<float, bool>>();
+            foreach (var guid in AssetDatabase.FindAssets("t:AnimationClip", new[] { "Assets/PedestrianAssets" }))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(path))
+                {
+                    var clip = obj as AnimationClip;
+                    if (clip == null || clip.name.StartsWith("__preview__")) { continue; }
+                    Vector3 a = clip.averageSpeed;
+                    float ground = new Vector2(a.x, a.z).magnitude;
+                    measured[Path.GetFileName(path)] =
+                        new KeyValuePair<float, bool>(ground, ground < InPlaceThresholdMps);
+                }
+            }
+
+            var entries = new List<string>();
+            foreach (var kv in byController)
+            {
+                float authored = 0f; bool inPlace = true;
+                if (measured.ContainsKey(kv.Value))
+                {
+                    authored = measured[kv.Value].Key;
+                    inPlace = measured[kv.Value].Value;
+                }
+                string target = targets.ContainsKey(kv.Key) ? targets[kv.Key] : "null";
+                entries.Add(string.Format(CultureInfo.InvariantCulture,
+                    "    {{ \"clip\": \"{0}\", \"asset\": \"{1}\", \"authoredSpeedMps\": {2:F4}, " +
+                    "\"inPlace\": {3}, \"targetSpeedMps\": {4} }}",
+                    kv.Key, EscapeJson(kv.Value), authored, inPlace ? "true" : "false", target));
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("{");
+            sb.AppendLine("  \"_comment\": \"Session 44 FIX C. THE single source both consumers read: S41MixamoClipApplier sets S32AnimatorSpeedScaler.referenceSpeedMps from authoredSpeedMps, and tools/run_trial.py derives the SFM speed multiplier from targetSpeedMps. Two different quantities -- conflating them into one constant is what caused the slide.\",");
+            sb.AppendLine("  \"_authored\": \"MEASURED from AnimationClip.averageSpeed (ground plane), never hand-edited. Regenerate with AutoTrial/Session 44/Refresh clip_speeds.json after any asset re-export; it preserves targetSpeedMps.\",");
+            sb.AppendLine("  \"_target\": \"DESIGN CHOICE, hand-set. null means 'no override, use the pipeline default'. 0 means the character should not travel at all.\",");
+            sb.AppendLine("  \"_inPlace\": \"true = the clip carries no root translation, so authoredSpeedMps could not be measured and animation scaling is meaningless for it.\",");
+            sb.AppendLine("  \"clips\": [");
+            sb.AppendLine(string.Join(",\n", entries.ToArray()));
+            sb.AppendLine("  ]");
+            sb.AppendLine("}");
+
+            File.WriteAllText(ClipSpeedsPath, sb.ToString());
+            AssetDatabase.ImportAsset(ClipSpeedsPath);
+            Debug.Log("[S44ClipSpeeds] wrote " + ClipSpeedsPath + " (" + entries.Count
+                + " clips; preserved " + targets.Count + " existing target value(s))");
+        }
+
+        private static string Between(string s, string a, string b)
+        {
+            int i = s.IndexOf(a);
+            if (i < 0) { return null; }
+            i += a.Length;
+            int j = s.IndexOf(b, i);
+            return j < 0 ? null : s.Substring(i, j - i);
         }
 
         private static string EscapeJson(string s)

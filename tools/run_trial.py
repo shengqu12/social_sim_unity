@@ -1408,6 +1408,35 @@ def green_pixel_fraction(jpg_path, g_dominance=1.5, g_min=120):
     return hits / len(pixels)
 
 
+# Session 44 FIX C. The unmodulated social-force pace of the Rocketbox actors, measured repeatedly
+# across sessions at ~1.29-1.30 m/s (Session 30R, Session 41, and Session 44's own probe: sustained
+# walking 1.27-1.31 m/s). walkSpeedMultiplier scales the social-force velocity, so a desired target
+# speed becomes target / this.
+BASE_PED_SPEED_MPS = 1.3
+
+CLIP_SPEEDS_PATH = Path(__file__).resolve().parent.parent / "Assets/PedestrianAssets/Mixamo/clip_speeds.json"
+
+
+def mixamo_target_speed(clip_name):
+    """targetSpeedMps for a --mixamo-clip, or None if absent/unset.
+
+    Deliberately the same file S41MixamoClipApplier reads authoredSpeedMps from: FIX C's whole
+    point is that the authored pace (measured) and the target pace (designed) are two different
+    quantities that must not live in two places. `null` means "no override", which is different
+    from 0 ("should not travel") and must not collapse to it.
+    """
+    try:
+        data = json.loads(CLIP_SPEEDS_PATH.read_text())
+    except Exception as e:
+        eprint("[run_trial] could not read {} ({}) -- no per-clip target speed applied.".format(
+            CLIP_SPEEDS_PATH, e))
+        return None
+    for entry in data.get("clips", []):
+        if entry.get("clip") == clip_name:
+            return entry.get("targetSpeedMps")
+    return None
+
+
 def actual_achieved_fps(frames_csv_path, configured_fps):
     """Real per-tick capture cost (two 1280x720 Camera.Render()+ReadPixels()+JPEG-encode+write
     calls) can exceed the 1/fps budget under sustained load, so the achieved rate may fall short
@@ -2135,6 +2164,22 @@ def main():
         "wheelchair_user": WHEELCHAIR_SPEED_MULT,
         "white_cane_user": WHITE_CANE_SPEED_MULT,
     }
+    # Session 44 FIX C: a Mixamo clip's own target pace, read from the SAME clip_speeds.json that
+    # S41MixamoClipApplier reads its authored pace from. Two quantities, one file -- separate files
+    # would drift, and the drift presents as a slide with no obvious cause.
+    #
+    # Only applies when --mixamo-clip was given and --ped-speed was NOT set explicitly, so no
+    # existing invocation changes behaviour. An explicit --ped-speed always wins.
+    if args.ped_speed is None and getattr(args, "mixamo_clip", None):
+        target = mixamo_target_speed(args.mixamo_clip)
+        if target is not None:
+            # walkSpeedMultiplier scales the social-force velocity, whose unmodulated pace for the
+            # Rocketbox actors measures ~1.3 m/s (Session 30R/41). The multiplier is therefore
+            # target / that base, not the target itself.
+            args.ped_speed = target / BASE_PED_SPEED_MPS
+            eprint("[run_trial] --mixamo-clip {}: target {:.2f} m/s -> --ped-speed {:.3f} "
+                   "(base {:.2f} m/s, from clip_speeds.json)".format(
+                       args.mixamo_clip, target, args.ped_speed, BASE_PED_SPEED_MPS))
     if args.ped_speed is None and args.appearance in APPEARANCE_SPEED_MULT:
         args.ped_speed = APPEARANCE_SPEED_MULT[args.appearance]
     if args.ped_speed is None:
