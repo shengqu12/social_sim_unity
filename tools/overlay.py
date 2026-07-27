@@ -147,7 +147,8 @@ def burn_overlay(src_mp4, ass_path, out_mp4):
 
 def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
                        near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
-                       clip_mode="threshold", encounter_half_window=5.0):
+                       clip_mode="threshold", encounter_half_window=5.0,
+                       near_pre=trial_lib.DEFAULT_APPROACH_LEAD_SEC, near_post=5.0):
     """Returns (ok: bool, detail: str). Session 10 (D5): POV only -- no chase/third-person camera
     exists anymore. Requires pov_full.mp4 -- present on every Round-4-or-later trial (output
     format v3 keeps it permanently); a pre-Round-4 trial with pov_full.mp4 already deleted by the
@@ -183,7 +184,12 @@ def process_trial_dir(trial_dir, near_dist=DEFAULT_NEAR_DIST, force=False,
     # exactly, or the _ov overlay clips would be cut to a different window than the plain
     # pov_near clips they're supposed to correspond to.
     if clip_mode == "approach":
-        result = trial_lib.find_approach_centered_span(frames_csv)
+        # Session 44 TASK 2: near_pre/near_post must be forwarded for the same reason the
+        # comment above gives for clip_mode -- defaulting them here while run_trial used
+        # non-default values would cut the _ov clip to a different window than its plain
+        # sibling, which is precisely the desync this block exists to prevent.
+        result = trial_lib.find_approach_centered_span(
+            frames_csv, lead_sec=near_pre, post_t_min_sec=near_post)
         spans = [(result[0], result[1])] if result is not None else []
     elif clip_mode == "centered":
         span = trial_lib.find_encounter_centered_span(frames_csv, half_window_sec=encounter_half_window)

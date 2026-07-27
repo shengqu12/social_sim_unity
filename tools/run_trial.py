@@ -1457,7 +1457,8 @@ def actual_achieved_fps(frames_csv_path, configured_fps):
 
 
 def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
-                  clip_mode="threshold", encounter_half_window=5.0, dense_encounter=False):
+                  clip_mode="threshold", encounter_half_window=5.0, dense_encounter=False,
+                  near_pre=trial_lib.DEFAULT_APPROACH_LEAD_SEC, near_post=5.0):
     """POV only (Session 10, D5 -- no chase/third-person camera). Builds pov_full.mp4, needed both
     as the Round 4 (Step 4) primary deliverable AND for overlay.py to burn+re-cut its own *_ov
     near clips from (overlay always re-derives spans from frames.csv rather than trusting these
@@ -1493,7 +1494,8 @@ def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib
         # Session 36 FIX 1: re-anchors on interaction_start (first approach-radius crossing), not
         # just t_min -- see trial_lib.find_approach_centered_span()'s own docstring for the full
         # rationale (fixes assertive/dyad/ped-count's pre-encounter sequence getting cut off).
-        result = trial_lib.find_approach_centered_span(out_dir / "frames.csv")
+        result = trial_lib.find_approach_centered_span(
+            out_dir / "frames.csv", lead_sec=near_pre, post_t_min_sec=near_post)
         if result is not None:
             start, end, seconds_of_approach_shown, interaction_start = result
             spans = [(start, end)]
@@ -1725,7 +1727,7 @@ def main():
                         "minimum-distance moment (bounded by trial length) until it reaches at "
                         "least this many seconds; overlapping spans after growth are merged. "
                         "Ignored when --clip-mode centered.")
-    p.add_argument("--clip-mode", choices=["threshold", "centered", "approach"], default="threshold",
+    p.add_argument("--clip-mode", choices=["threshold", "centered", "approach"], default="approach",
                    help="Session 31 FIX 2: 'threshold' (default) is the original find_near_spans() "
                         "behavior, unchanged -- no existing caller's clips change. 'centered' cuts "
                         "a single [t_min-half, t_min+half] window anchored on the trial's own "
@@ -1742,6 +1744,21 @@ def main():
                         "window around t_min. Default 5.0 -> a ~10s delivered clip.")
     p.add_argument("--out", default=None, help="output directory (default: trial_outputs/<appearance>_<personality>_<timestamp>)")
     p.add_argument("--windowed", action="store_true", help="drop -batchmode (black-frame fallback)")
+    # Session 44 TASK 2. The near clip is the VLM's material, so a clip that opens after the
+    # pedestrian has already reacted contains the outcome but not the behaviour -- there is nothing
+    # left to judge. Measured on the Session 43 demo, the old t_min-anchored window cut the first
+    # 5.25s of the assertive trial and the first 26.5s of every standing-clip trial, and produced NO
+    # near clip at all for `scared` (its min_dist of 4.89m never crossed the 3.0m threshold).
+    #
+    # These name the two edges of the approach-anchored window directly.
+    p.add_argument("--near-pre", type=float, default=trial_lib.DEFAULT_APPROACH_LEAD_SEC,
+                   help="seconds of lead-in before the pedestrian first crosses the approach "
+                        "radius (--clip-mode approach only). Default {}s; the window is additionally "
+                        "pulled back so at least {}s of approach always precedes the closest point."
+                        .format(trial_lib.DEFAULT_APPROACH_LEAD_SEC, trial_lib.DEFAULT_MIN_PREROLL_SEC))
+    p.add_argument("--near-post", type=float, default=5.0,
+                   help="seconds retained after the closest-approach frame (--clip-mode approach "
+                        "only). Default 5.0s.")
     p.add_argument("--dense-encounter", action="store_true",
                    help="Session 43: additionally infill the encounter span of vlm_eval/frames at "
                         "5 Hz (frame_NNNN_dK.png). OFF by default -- the agreed 1 Hz sequence is "
@@ -2262,7 +2279,8 @@ def main():
 
     result = post_process(out_dir, args.fps, args.near_dist, args.keep_full, near_clip_min_sec=args.near_clip_min_sec,
                            clip_mode=args.clip_mode, encounter_half_window=args.encounter_half_window,
-                           dense_encounter=args.dense_encounter)
+                           dense_encounter=args.dense_encounter,
+                           near_pre=args.near_pre, near_post=args.near_post)
     if not result["ok"]:
         eprint("[run_trial] post-processing FAILED: {}".format(result["reason"]))
         sys.exit(1)
@@ -2326,7 +2344,8 @@ def main():
         ov_ok, ov_detail = overlay.process_trial_dir(out_dir, near_dist=args.near_dist,
                                                        near_clip_min_sec=args.near_clip_min_sec,
                                                        clip_mode=args.clip_mode,
-                                                       encounter_half_window=args.encounter_half_window)
+                                                       encounter_half_window=args.encounter_half_window,
+                                                       near_pre=args.near_pre, near_post=args.near_post)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
     # Session 43: re-link video/ now that the overlay exists. post_process's own call ran before
