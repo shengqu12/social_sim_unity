@@ -2028,6 +2028,23 @@ def main():
         if args.profile == "scoring" and args.appearance in SCORING_TIER_SPEED_MPS:
             args.ped_distance = SCORING_TIER_SPEED_MPS[args.appearance] * SCORING_TIER_TARGET_DWELL_SEC
 
+        # Session 44 FIX C, second half. A --mixamo-clip target speed changes how fast the
+        # pedestrian travels, so it has to feed the SAME constant-dwell formula the Zone B
+        # appearances above use -- otherwise the spawn geometry is sized for a pace the actor no
+        # longer walks at.
+        #
+        # Caught by the checkpoint run: Running's target of 2.5 m/s against the unscaled 8.0m
+        # spawn gave dist0=4.976 (target 8.000, FAIL) and robotSpeedAtTrigger=0.000 (FAIL) -- the
+        # pedestrian crossed the trigger radius before the robot had even started moving. At
+        # 2.5 m/s the correct distance is 2.5 * 6.2 = 15.5m.
+        #
+        # Static clips (target 0) are excluded: they do not travel, so dwell time is set by the
+        # robot's own approach and scaling the distance to zero would be nonsense.
+        if args.profile == "scoring" and getattr(args, "mixamo_clip", None):
+            _t = mixamo_target_speed(args.mixamo_clip)
+            if _t is not None and _t > 0.05:
+                args.ped_distance = _t * SCORING_TIER_TARGET_DWELL_SEC
+
     # Session 31 FIX 5(b): under --profile scoring, Scared/Surprised default to a raised action-
     # trigger radius (up from PedestrianModulator's own compiled-in 3.0/4.0) so the reaction starts
     # well before the closest pass instead of ~0.5s before it (measured: default radius gave
