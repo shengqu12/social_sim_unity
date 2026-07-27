@@ -61,6 +61,21 @@ namespace SEAN.AutoTrial
         private float preRollDurationSec;
         private float robotSpeedAtTrigger;
         private bool triggerTimedOut;
+
+        // Session 43: the robot's own physics body, for measured (signed, vector) velocity instead
+        // of the unsigned finite difference robot_speed carries. SEAN.Control.VelocityController
+        // drives exactly one of these two -- ArticulationBody root if the robot has one (legged,
+        // e.g. Unitree A1), else the base_link Rigidbody (wheeled, e.g. Kuri) -- so we resolve the
+        // same pair the same way and read back whichever one is live. Best-effort: if neither
+        // exists the seven new columns are blank and nothing else about the trial changes.
+        private Rigidbody robotRb;
+        private ArticulationBody robotArt;
+        private string robotBodySource = "none";
+        // Unwrapped ROS-convention yaw, accumulated across frames so the column never jumps by 2*pi
+        // at the wrap point (a consumer differentiating or plotting it would otherwise see a spike).
+        private float yawRosUnwrappedRad;
+        private float lastYawRosRawRad;
+        private bool yawRosSeeded;
         // Session 17 (Step 3.5): true if one or more implausible-speed readings were rejected and
         // resampled before the trigger actually fired -- see PollForTrigger's own comment for why
         // this recurred even after Session 14's capture-cadence fix.
@@ -151,7 +166,17 @@ namespace SEAN.AutoTrial
                 header += ",pedestrian" + n + "_x,pedestrian" + n + "_z,dist_to_pedestrian" + n
                     + ",dist_pedestrian1_to_pedestrian" + n;
             }
+            // Session 43: measured body velocity, straight off the physics body. Appended at the
+            // very END -- after the variable-width extra-pedestrian block -- so BOTH the
+            // single-pedestrian and the dyad/ped_count_3 schemas keep their exact existing prefix
+            // and every historical frames.csv stays byte-comparable through its old columns.
+            // robot_speed is deliberately NOT touched: it is the trigger-speed gate's input and
+            // the comparison basis for every trial ever run.
+            header += ",robot_vel_x,robot_vel_y,robot_vel_z,robot_speed_ground,robot_ang_vel_y"
+                + ",robot_yaw_ros_rad,robot_ang_vel_ros";
             csv.WriteLine(header);
+
+            ResolveRobotBody();
 
             TrySubscribeCmdVel();
 
@@ -298,6 +323,48 @@ namespace SEAN.AutoTrial
                     lastPollTime = Time.time;
                 }
                 yield return null;
+            }
+        }
+
+        /// <summary>
+        /// Session 43: find the physics body SEAN.Control.VelocityController is actually driving.
+        /// Mirrors that class's own resolution order exactly (ArticulationBody root first, then the
+        /// base_link Rigidbody) so we never read a body the controller isn't writing -- reading the
+        /// wrong one is the failure mode that would silently produce all-zero velocity columns.
+        /// </summary>
+        private void ResolveRobotBody()
+        {
+            try
+            {
+                GameObject baseLink = robot != null ? robot.base_link : null;
+                if (baseLink == null)
+                {
+                    Debug.LogWarning("[AutoTrial] no robot.base_link -- Session 43 velocity columns will be blank.");
+                    return;
+                }
+                foreach (ArticulationBody body in baseLink.GetComponentsInChildren<ArticulationBody>())
+                {
+                    if (body.isRoot)
+                    {
+                        robotArt = body;
+                        robotBodySource = "ArticulationBody:" + body.name;
+                        break;
+                    }
+                }
+                if (robotArt == null)
+                {
+                    robotRb = baseLink.GetComponent<Rigidbody>();
+                    if (robotRb != null)
+                    {
+                        robotBodySource = "Rigidbody:" + robotRb.name;
+                    }
+                }
+                Debug.Log("[AutoTrial] Session 43 velocity source: " + robotBodySource);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[AutoTrial] could not resolve the robot physics body (non-fatal, "
+                    + "Session 43 velocity columns will be blank): " + e.Message);
             }
         }
 
@@ -502,6 +569,48 @@ namespace SEAN.AutoTrial
                 row.Add(float.IsNaN(distPed1ToExtra) ? "" : distPed1ToExtra.ToString("F3", CultureInfo.InvariantCulture));
             }
 
+            // Session 43: measured body velocity + the ROS-convention heading pair.
+            //
+            // Unity here is left-handed Y-up: yaw grows CLOCKWISE seen from above, starting at +Z.
+            // ROS map frame is right-handed Z-up: yaw grows COUNTER-clockwise, starting at +x, and
+            // Unity->FLU maps +Z to +x. The two therefore differ by exactly a sign, which is the
+            // same sign SEAN.TF.OdometryPublisher already applies when it negates its angular
+            // velocity before sending. So: ros = -unity, for both the heading and its rate.
+            //
+            // The Unity-convention robot_yaw_deg column is left exactly as it was -- there must not
+            // be two different histories of the same column name.
+            bool haveBody = robotArt != null || robotRb != null;
+            Vector3 vel = robotArt != null ? robotArt.velocity : (robotRb != null ? robotRb.velocity : Vector3.zero);
+            Vector3 angVel = robotArt != null ? robotArt.angularVelocity
+                : (robotRb != null ? robotRb.angularVelocity : Vector3.zero);
+
+            float yawRosRaw = -yawDeg * Mathf.Deg2Rad;
+            if (!yawRosSeeded)
+            {
+                yawRosUnwrappedRad = yawRosRaw;
+                lastYawRosRawRad = yawRosRaw;
+                yawRosSeeded = true;
+            }
+            else
+            {
+                float d = Mathf.DeltaAngle(lastYawRosRawRad * Mathf.Rad2Deg, yawRosRaw * Mathf.Rad2Deg) * Mathf.Deg2Rad;
+                yawRosUnwrappedRad += d;
+                lastYawRosRawRad = yawRosRaw;
+            }
+
+            string F4(float v) { return v.ToString("F4", CultureInfo.InvariantCulture); }
+
+            row.Add(haveBody ? F4(vel.x) : "");
+            row.Add(haveBody ? F4(vel.y) : "");
+            row.Add(haveBody ? F4(vel.z) : "");
+            // Ground-plane speed only. The existing robot_speed is a 3D displacement difference and
+            // so folds in vertical bob -- real on the legged robot, whose body rises and falls with
+            // every step. robot_speed_ground <= robot_speed is the invariant to check.
+            row.Add(haveBody ? F4(Mathf.Sqrt(vel.x * vel.x + vel.z * vel.z)) : "");
+            row.Add(haveBody ? F4(angVel.y) : "");
+            row.Add(F4(yawRosUnwrappedRad));
+            row.Add(haveBody ? F4(-angVel.y) : "");
+
             csv.WriteLine(string.Join(",", row));
 
             lastSampleTime = t;
@@ -575,6 +684,11 @@ namespace SEAN.AutoTrial
             public float preRollDurationSec;
             public float robotSpeedAtTrigger;
             public bool triggerTimedOut;
+            // Session 43: which physics body the new robot_vel_*/robot_ang_vel_y columns were read
+            // off ("Rigidbody:<name>", "ArticulationBody:<name>", or "none"). Recorded so a blank
+            // velocity column is always attributable from meta.json alone, rather than being
+            // mistaken downstream for a robot that genuinely never moved.
+            public string velocitySource;
             // Session 17 (Step 3.5): true if one or more implausible-speed readings (see
             // PollForTrigger's MaxPlausibleTriggerSpeedMps) were rejected before the recorded
             // robotSpeedAtTrigger value above was accepted -- never itself a bad value (a rejected
@@ -618,6 +732,7 @@ namespace SEAN.AutoTrial
                 preRollDurationSec = preRollDurationSec,
                 robotSpeedAtTrigger = robotSpeedAtTrigger,
                 triggerTimedOut = triggerTimedOut,
+                velocitySource = robotBodySource,
                 triggerSpeedResampled = triggerSpeedResampled,
                 resolvedCamHeightWorldY = resolvedCamHeightWorldY,
                 camHeightRaycastHit = camHeightRaycastHit,

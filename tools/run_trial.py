@@ -62,6 +62,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import trial_lib
+import vlm_eval_export
 import overlay
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent  # .../social_sim_unity
@@ -1427,7 +1428,7 @@ def actual_achieved_fps(frames_csv_path, configured_fps):
 
 
 def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib.DEFAULT_NEAR_CLIP_MIN_SEC,
-                  clip_mode="threshold", encounter_half_window=5.0):
+                  clip_mode="threshold", encounter_half_window=5.0, dense_encounter=False):
     """POV only (Session 10, D5 -- no chase/third-person camera). Builds pov_full.mp4, needed both
     as the Round 4 (Step 4) primary deliverable AND for overlay.py to burn+re-cut its own *_ov
     near clips from (overlay always re-derives spans from frames.csv rather than trusting these
@@ -1485,10 +1486,31 @@ def post_process(out_dir, fps, near_dist, keep_full, near_clip_min_sec=trial_lib
         if approach_meta is not None:
             near_clips[-1].update(approach_meta)
 
+    # Session 43: export the VLM-teacher format (video/ + vlm_eval/) HERE, in the last moment the
+    # raw frames still exist. Order is load-bearing: the exporter reads pov/*.jpg at native
+    # 1280x720, which is both higher quality than re-decoding the H.264 we just muxed and immune to
+    # burned-in telemetry by construction (the overlay is applied later, only to *_ov.mp4). Keeping
+    # --keep-full on instead would cost ~180 MB/trial against ~13 MB for the export.
+    #
+    # Deliberately runs BEFORE any gate has been evaluated, so a trial that later fails a gate still
+    # has a complete vlm_eval/ directory. A rejected trial is data, not garbage -- Session 40's
+    # "39 of 40 have no meta.json" episode taught this project that a silently absent output reads
+    # downstream as a bad result rather than as an absent one. The gate verdicts themselves land in
+    # meta.json (augment_trial_meta_with_gate) and are what downstream should filter on.
+    vlm_eval = None
+    try:
+        vlm_eval = vlm_eval_export.export(out_dir, dense_encounter=dense_encounter, quiet=True)
+        eprint("[run_trial] vlm_eval export: {} frame(s), {} event frame(s){}".format(
+            vlm_eval.get("framesWritten"), vlm_eval.get("eventFrames"),
+            "" if vlm_eval.get("ok") else " -- FAILED: {}".format(vlm_eval.get("reason", "see result"))))
+    except Exception as e:  # never let the export break a trial that otherwise succeeded
+        vlm_eval = {"ok": False, "reason": "{}: {}".format(type(e).__name__, e)}
+        eprint("[run_trial] vlm_eval export FAILED (non-fatal): {}".format(vlm_eval["reason"]))
+
     if not keep_full:
         shutil.rmtree(pov_dir, ignore_errors=True)
 
-    return {"ok": True, "near_clips": near_clips, "pov_full": pov_full.name}
+    return {"ok": True, "near_clips": near_clips, "pov_full": pov_full.name, "vlm_eval": vlm_eval}
 
 
 def run_content_gate(out_dir, near_clips):
@@ -1535,13 +1557,15 @@ def run_content_gate(out_dir, near_clips):
     return all_ok, "; ".join(details)
 
 
-def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, aspect_detail=None,
+def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, gate_detail=None,
+                                  aspect_ok=None, aspect_detail=None,
                                   approach_ok=None, approach_detail=None,
                                   trigger_ok=None, trigger_detail=None,
                                   overlay_ok=None, overlay_detail=None,
                                   manifest_ok=None, manifest_detail=None,
                                   spin_phases=None, full_contact_sheet=None,
-                                  min_dist=None, profile=None, corridor_width=None):
+                                  min_dist=None, profile=None, corridor_width=None,
+                                  vlm_eval=None):
     """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
     geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
     meta.json, so a trial's pass/fail is inspectable without re-running anything."""
@@ -1550,6 +1574,13 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
         return
     data = json.loads(meta_path.read_text())
     data["contentGateOk"] = gate_ok
+    # Session 43: the content gate was the ONE gate whose verdict was recorded without its reason
+    # -- every other gate below writes an ok/detail pair, this one wrote only the bool. Session 41's
+    # w1.2_02 is the case that exposed it: contentGateOk=False with no contentGateDetail field at
+    # all, so the only failing corridor trial in the sweep could not be explained from its own
+    # meta.json. Unconditional, not `if gate_detail is not None` -- an absent reason is exactly the
+    # state this fixes, so a None here must be recorded as an explicit null, never as a missing key.
+    data["contentGateDetail"] = gate_detail
     if aspect_ok is not None:
         data["aspectGateOk"] = aspect_ok
         data["aspectGateDetail"] = aspect_detail
@@ -1575,6 +1606,25 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, aspect_ok=None, a
         data["minDistMeters"] = min_dist
         data["safetyLabel"] = safety_label_for(min_dist)
         data["safetyLabelThresholds"] = {"safe": SAFETY_LABEL_SAFE_M, "breach": SAFETY_LABEL_BREACH_M}
+    # Session 43: the VLM-teacher export is written unconditionally, including for trials that go on
+    # to fail a gate -- so downstream needs to be able to tell "passed" from "did not pass but the
+    # data is complete" without re-deriving it. Roll the gate verdicts up next to the export result,
+    # in the same file, rather than making a consumer re-check six separate booleans and guess what
+    # a missing one means. `gatesAllOk` is None if any gate did not report at all.
+    if vlm_eval is not None:
+        verdicts = {"content": gate_ok, "aspect": aspect_ok, "approach": approach_ok,
+                    "triggerSpeed": trigger_ok, "overlay": overlay_ok, "fileManifest": manifest_ok}
+        reported = [v for v in verdicts.values() if v is not None]
+        data["vlmEval"] = {
+            "exported": bool(vlm_eval.get("ok")),
+            "framesWritten": vlm_eval.get("framesWritten"),
+            "statesRows": vlm_eval.get("statesRows"),
+            "eventFrames": vlm_eval.get("eventFrames"),
+            "denseEncounter": vlm_eval.get("denseEncounter"),
+            "reason": vlm_eval.get("reason"),
+            "gateVerdicts": verdicts,
+            "gatesAllOk": all(reported) if len(reported) == len(verdicts) else None,
+        }
     if profile is not None:
         data["profile"] = profile
     if corridor_width is not None:
@@ -1663,6 +1713,11 @@ def main():
                         "window around t_min. Default 5.0 -> a ~10s delivered clip.")
     p.add_argument("--out", default=None, help="output directory (default: trial_outputs/<appearance>_<personality>_<timestamp>)")
     p.add_argument("--windowed", action="store_true", help="drop -batchmode (black-frame fallback)")
+    p.add_argument("--dense-encounter", action="store_true",
+                   help="Session 43: additionally infill the encounter span of vlm_eval/frames at "
+                        "5 Hz (frame_NNNN_dK.png). OFF by default -- the agreed 1 Hz sequence is "
+                        "never altered by this flag, the extra frames are only appended, so turning "
+                        "it on cannot invalidate an existing consumer")
     p.add_argument("--keep-full", action="store_true",
                    help="keep the raw per-frame JPG directory (pov/) and config.json after "
                         "assembly; NOT related to pov_full.mp4/pov_full_ov.mp4, which are always "
@@ -2161,7 +2216,8 @@ def main():
     augment_trial_meta(out_dir, bringup_mode, args.trial_position)
 
     result = post_process(out_dir, args.fps, args.near_dist, args.keep_full, near_clip_min_sec=args.near_clip_min_sec,
-                           clip_mode=args.clip_mode, encounter_half_window=args.encounter_half_window)
+                           clip_mode=args.clip_mode, encounter_half_window=args.encounter_half_window,
+                           dense_encounter=args.dense_encounter)
     if not result["ok"]:
         eprint("[run_trial] post-processing FAILED: {}".format(result["reason"]))
         sys.exit(1)
@@ -2228,6 +2284,16 @@ def main():
                                                        encounter_half_window=args.encounter_half_window)
         eprint("[run_trial] overlay: {} ({})".format("OK" if ov_ok else "FAILED", ov_detail))
 
+    # Session 43: re-link video/ now that the overlay exists. post_process's own call ran before
+    # overlay.py had written pov_full_ov.mp4, so without this second (idempotent) call video/ would
+    # permanently contain only the un-overlaid file.
+    try:
+        vlm_videos = vlm_eval_export.link_videos(out_dir)
+        if result.get("vlm_eval") is not None:
+            result["vlm_eval"]["video"] = vlm_videos
+    except Exception as e:
+        eprint("[run_trial] vlm_eval video/ link FAILED (non-fatal): {}: {}".format(type(e).__name__, e))
+
     # Session 17 (Step 1b, THE PERMANENT FILE MANIFEST GATE): enumerates the complete expected
     # per-trial deliverable set and fails loudly if anything is missing, closing the class where a
     # deliverable silently vanishes while every behavioral gate stays green.
@@ -2241,6 +2307,7 @@ def main():
     _, meta_min_dist = summarize(out_dir)
 
     augment_trial_meta_with_gate(out_dir, gate_ok, result["near_clips"],
+                                  gate_detail=gate_detail,
                                   aspect_ok=aspect_ok, aspect_detail=aspect_detail,
                                   approach_ok=approach_ok, approach_detail=approach_detail,
                                   trigger_ok=trigger_ok, trigger_detail=trigger_detail,
@@ -2249,7 +2316,8 @@ def main():
                                   spin_phases=spin_phases,
                                   full_contact_sheet=full_sheet_name if full_sheet_ok else None,
                                   min_dist=meta_min_dist, profile=args.profile,
-                                  corridor_width=args.corridor_width)
+                                  corridor_width=args.corridor_width,
+                                  vlm_eval=result.get("vlm_eval"))
 
     # Round 4 (Step 4, output format v3): pov_full.mp4/pov_full_ov.mp4 are now the PRIMARY
     # deliverable, not an internal scratch file -- the old cleanup_full_video() deletion is gone.
