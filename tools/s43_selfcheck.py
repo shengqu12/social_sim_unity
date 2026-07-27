@@ -79,6 +79,13 @@ def ffprobe_duration(path):
 
 
 def extract_frame(video, t, dst):
+    """Extract the video frame at timestamp t.
+
+    t MUST be a video timestamp, not a trial `time`. Those are different clocks: capture spacing is
+    non-uniform while the mp4 is constant-rate, and they drift (0.87s measured on a real 60s trial).
+    Seeking with a trial `time` lands on the wrong frame, and the resulting image difference then
+    looks exactly like a failed overlay check. states.csv carries `video_time` for this reason.
+    """
     r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "{:.3f}".format(t),
                         "-i", str(video), "-frames:v", "1", str(dst)],
                        capture_output=True, text=True)
@@ -132,6 +139,20 @@ def check_trial(trial_dir, sample_frames=3):
             len(regular), len(pngs) - len(regular),
             "{:.2f}s".format(dur) if dur else "unknown", gaps or "none"))
 
+    # states.csv is read below for checks 4-8, but check 3 needs its video_time column first.
+    prerows = []
+    if states.exists():
+        with open(states, newline="") as f:
+            prerows = list(csv.DictReader(f))
+    video_time_of = {}
+    for r in prerows:
+        vt = r.get("video_time")
+        if vt not in (None, ""):
+            try:
+                video_time_of[r["Image_name"]] = float(vt)
+            except ValueError:
+                pass
+
     # 3. pixel-level overlay check (see module docstring)
     if Image is None:
         add(3, "no overlay in exported frames", False, "Pillow unavailable")
@@ -143,7 +164,11 @@ def check_trial(trial_dir, sample_frames=3):
         results, ok3 = [], True
         with tempfile.TemporaryDirectory() as tmp:
             for p in picked:
-                sec = int(re.match(r"frame_(\d{4})\.png", p.name).group(1))
+                # Seek by video_time, NOT by the frame's index-as-seconds. Those differ by up to
+                # ~0.9s and seeking on the wrong clock produces a large image difference that is
+                # indistinguishable from a genuine overlay failure.
+                sec = video_time_of.get(
+                    p.name, float(re.match(r"frame_(\d{4})\.png", p.name).group(1)))
                 clean = Path(tmp) / "clean.png"
                 over = Path(tmp) / "over.png"
                 d_clean = mad(p, clean, OVERLAY_BOX) if extract_frame(video, sec, clean) else None

@@ -59,6 +59,14 @@ except ImportError:  # pragma: no cover - Pillow is already a dependency of tool
 SENIOR_COLUMNS = ["time", "Image_name", "robot_velocity", "robot_heading"]
 
 APPENDED_COLUMNS = [
+    # Exact correspondence back to the two other representations of this same instant. These exist
+    # because `time` alone CANNOT align a frame to the video: capture spacing is not uniform (dt
+    # ranges ~0.047-0.094s), but the mp4 is assembled at a single constant rate, so a frame's trial
+    # time and its position in the video are different clocks. Measured drift on a real 60s trial:
+    # 0.87s, which at this project's ~1.8 m/s closing speeds is ~1.6m of separation -- enough to
+    # change what the frame shows entirely. frame_idx indexes frames.csv and the mp4's frame
+    # sequence; video_time is where to seek in the mp4.
+    "frame_idx", "video_time",
     "robot_vel_x", "robot_vel_y", "robot_vel_z",
     "robot_speed_ground", "robot_ang_vel_y",
     "robot_yaw_ros_rad", "robot_ang_vel_ros",
@@ -313,6 +321,12 @@ def export(trial_dir, dense_encounter=False, quiet=False):
         lat.append(lateral_offset(x, z, unit, origin) if (x is not None and z is not None) else None)
     phases, min_idx, _t_min = classify_phases(rows)
 
+    # Constant rate the mp4 is assembled at -- mirrors run_trial.actual_achieved_fps exactly, so
+    # video_time below matches where run_trial's own ffmpeg put each frame.
+    t_first, t_last = _f(rows[0], "t"), _f(rows[-1], "t")
+    span = (t_last - t_first) if (t_first is not None and t_last is not None) else 0.0
+    real_fps = (len(rows) / span) if span > 0 else None
+
     # --- select, then export ---
     selection = select_frames(rows, phases, min_idx, dense_encounter=dense_encounter)
 
@@ -345,11 +359,16 @@ def export(trial_dir, dense_encounter=False, quiet=False):
             r = rows[i]
             ped_id, ped_x, ped_z, ped_d = nearest_pedestrian(r)
             ground = _f(r, "robot_speed_ground")
+            fidx = r.get("frame_idx", "")
+            vtime = ""
+            if real_fps and fidx not in ("", None):
+                vtime = "{:.3f}".format(int(fidx) / real_fps)
             w.writerow([
                 "{:.3f}".format(_f(r, "t") or 0.0),
                 name,
                 "" if ground is None else "{:.4f}".format(ground),
                 r.get("robot_yaw_deg", ""),
+                fidx, vtime,
                 r.get("robot_vel_x", ""), r.get("robot_vel_y", ""), r.get("robot_vel_z", ""),
                 r.get("robot_speed_ground", ""), r.get("robot_ang_vel_y", ""),
                 r.get("robot_yaw_ros_rad", ""), r.get("robot_ang_vel_ros", ""),
@@ -400,8 +419,26 @@ them; a reader that selects by column name is unaffected by their presence.
 `time` is **seconds since the trial's t=0**, which is not the moment Unity started. t=0 is the frame
 the robot-to-pedestrian ground distance first crossed the trigger threshold; the robot is already
 cruising by then. The preceding pre-roll (`preRollDurationSec` in `meta.json`, {preroll}) is not
-captured. Times are sim-clock seconds from `Time.time`, matching the video timeline: `pov_full.mp4`
-is assembled from the same frames at the achieved capture rate, so video time and `time` agree.
+captured. `time` is sim-clock seconds from `Time.time`.
+
+### `time` is NOT the video's timeline -- use `video_time` to seek the mp4
+
+Capture spacing is **not uniform**: per-frame dt ranges roughly 0.047-0.094 s, because a capture
+tick (two 1280x720 renders + readback + JPEG encode + write) sometimes overruns its budget. The mp4,
+however, is assembled at a single constant rate. So a frame's `time` and its position in the video
+are two different clocks, and they drift apart over a trial. Measured on a real 60 s trial here:
+**0.87 s of drift**, which at this project's ~1.8 m/s closing speeds is ~1.6 m of separation --
+easily enough to change what the frame shows.
+
+Two columns exist so nobody has to reconstruct this:
+
+- `frame_idx` -- the frame's index in `frames.csv` **and** in the mp4's frame sequence. This is the
+  exact, unambiguous correspondence; prefer it.
+- `video_time` -- `frame_idx / achieved_fps`, i.e. where to seek in `pov_full.mp4` to land on this
+  exact frame.
+
+Use `time` for physics and reasoning about the trial. Use `video_time` / `frame_idx` for anything
+that touches the video.
 
 The regular sequence is **one frame per second**, `frame_0001.png` at t=1s, `frame_0002.png` at
 t=2s, and so on -- the nearest captured frame to each whole second (capture runs at ~15 Hz, so the
