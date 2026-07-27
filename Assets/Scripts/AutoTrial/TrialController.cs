@@ -179,7 +179,7 @@ namespace SEAN.AutoTrial
             // frames.csv carried pedestrian_x and pedestrian_z but no y, so a displacement
             // measurement was evidence about gliding and no evidence at all about grounding.
             // Appended last, after every other column, so no existing schema position moves.
-            header += ",pedestrian_y";
+            header += ",pedestrian_y,pedestrian_ground_y";
             csv.WriteLine(header);
 
             ResolveRobotBody();
@@ -616,15 +616,42 @@ namespace SEAN.AutoTrial
             row.Add(haveBody ? F4(angVel.y) : "");
             row.Add(F4(yawRosUnwrappedRad));
             row.Add(haveBody ? F4(-angVel.y) : "");
-            // Session 44 (3.5): vertical position of the pedestrian, for the grounding check.
+            // Session 44 (3.5): the pedestrian's own height AND the ground height beneath it.
+            // Both are needed: grounding is a DEVIATION, and this scene's terrain is not
+            // flat -- a trial measured a clean 0.21m step-down at t=37.4s that then held,
+            // which is a character walking onto lower ground, not a character floating.
+            // Comparing pedestrian_y against a fixed 0.0 would call that a grounding
+            // failure and would equally miss a real float over raised terrain.
             row.Add(pedestrian != null
                 ? pedestrian.position.y.ToString("F3", CultureInfo.InvariantCulture) : "");
+            row.Add(pedestrian != null
+                ? GroundHeightUnder(pedestrian).ToString("F3", CultureInfo.InvariantCulture) : "");
 
             csv.WriteLine(string.Join(",", row));
 
             lastSampleTime = t;
             lastSamplePos = pos;
             frameIdx++;
+        }
+
+        /// <summary>
+        /// Session 44 (3.5): world Y of the ground directly beneath a transform. Raycasts down from
+        /// above it, skipping triggers and the character's own colliders, so the grounding check
+        /// measures a DEVIATION from the surface rather than from an assumed y=0. Returns the
+        /// transform's own y when nothing is hit, which makes the deviation read 0 rather than
+        /// inventing a spurious failure off the edge of the world.
+        /// </summary>
+        private static float GroundHeightUnder(Transform t)
+        {
+            Vector3 origin = t.position + Vector3.up * 1.0f;
+            float best = float.NegativeInfinity;
+            foreach (RaycastHit hit in Physics.RaycastAll(origin, Vector3.down, 6.0f))
+            {
+                if (hit.collider.isTrigger) { continue; }
+                if (hit.collider.transform == t || hit.collider.transform.IsChildOf(t)) { continue; }
+                if (hit.point.y > best) { best = hit.point.y; }
+            }
+            return float.IsNegativeInfinity(best) ? t.position.y : best;
         }
 
         private void RenderAndSave(Camera cam, RenderTexture rt, string path)

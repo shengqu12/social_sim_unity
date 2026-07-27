@@ -132,6 +132,7 @@ namespace SEAN.AutoTrial
         public bool driveIdlingParameter = true;
 
         private float belowThresholdSince = -1f;
+        private float aboveThresholdSince = -1f;
 
         private Animator animator;
         private Scenario.Agents.Base baseAgent;
@@ -140,6 +141,12 @@ namespace SEAN.AutoTrial
         // Smoothed so a single noisy frame (e.g. a footstep-driven root-motion micro-stutter)
         // doesn't jerk the playback rate -- exponential moving average, not a hard window buffer.
         private float smoothedSpeed = 0f;
+        /// <summary>Session 44: the EMA this component actually thresholds and divides by, exposed
+        /// read-only for the self-test probe. Checks 3.1/3.2 initially measured against the
+        /// per-Update instantaneous position delta instead, which is zero on ~86% of frames because
+        /// the transform advances in discrete animation steps -- so they selected the wrong frames
+        /// entirely and reported failures that were artefacts of the measurement, not the code.</summary>
+        public float SmoothedSpeedMps { get { return smoothedSpeed; } }
         private const float SmoothingTau = 0.25f;
 
         // Session 36 FIX 5, second finding: an early diagnostic run showed a huge (300+ m/s)
@@ -279,13 +286,23 @@ namespace SEAN.AutoTrial
 
             // Session 44 FIX A: treat "not travelling" as its own regime rather than as very slow
             // travel. See idleSpeedThresholdMps for the measurements this closes.
+            // Hysteresis on BOTH edges, not just entry. A single frame above the threshold used to
+            // reset the latch outright, and that is fatal here: the transform advances in discrete
+            // animation steps, so the instantaneous position delta spikes hard on step frames
+            // (readings up to 27 m/s observed) and drags the EMA briefly over the threshold even
+            // while the character is standing still. Measured effect of the one-sided version: only
+            // 25% of genuinely-stationary frames ever latched, the rest sat at a scaled rate --
+            // the very defect FIX A exists to remove. Leaving idle now requires the speed to stay
+            // above the threshold for the same dwell that entering it requires.
             if (smoothedSpeed < idleSpeedThresholdMps)
             {
                 if (belowThresholdSince < 0f) { belowThresholdSince = Time.time; }
+                aboveThresholdSince = -1f;
             }
             else
             {
-                belowThresholdSince = -1f;
+                if (aboveThresholdSince < 0f) { aboveThresholdSince = Time.time; }
+                if (Time.time - aboveThresholdSince >= idleDwellSec) { belowThresholdSince = -1f; }
             }
             bool stationary = belowThresholdSince >= 0f && (Time.time - belowThresholdSince) >= idleDwellSec;
 

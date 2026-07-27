@@ -121,7 +121,13 @@ namespace SEAN.AutoTrial
                         // of its recorded inputs reproduces (2.767 / 0.896 = 3.088), and the
                         // question has stayed open across three work orders because the four
                         // quantities were never captured together.
-                        + "state_length,state_speed");
+                        + "state_length,state_speed"
+                        // Session 44: the scaler's OWN smoothed speed and reference, read off
+                        // the live component rather than reconstructed. The probe's private
+                        // reconstruction cannot stay in step with per-clip referenceSpeedMps
+                        // or with changed clamp bounds, and a stale reconstruction silently
+                        // corrupts every derived check.
+                        + ",scaler_smoothed,scaler_reference");
                 }
             }
             catch (System.Exception e)
@@ -221,7 +227,13 @@ namespace SEAN.AutoTrial
             // animator.speed, in one frame is what makes the relationship checkable rather than
             // inferred: length should equal clip_length / (animator.speed * state.speed).
             sb.Append(info.length.ToString("F4", CultureInfo.InvariantCulture)).Append(',');
-            sb.Append(info.speed.ToString("F4", CultureInfo.InvariantCulture));
+            sb.Append(info.speed.ToString("F4", CultureInfo.InvariantCulture)).Append(',');
+            var liveScaler = GetComponent<S32AnimatorSpeedScaler>();
+            sb.Append(liveScaler != null
+                ? liveScaler.SmoothedSpeedMps.ToString("F4", CultureInfo.InvariantCulture) : "");
+            sb.Append(',');
+            sb.Append(liveScaler != null
+                ? liveScaler.referenceSpeedMps.ToString("F4", CultureInfo.InvariantCulture) : "");
             writer.WriteLine(sb.ToString());
         }
 

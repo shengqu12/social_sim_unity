@@ -2043,7 +2043,14 @@ def main():
         if args.profile == "scoring" and getattr(args, "mixamo_clip", None):
             _t = mixamo_target_speed(args.mixamo_clip)
             if _t is not None and _t > 0.05:
-                args.ped_distance = _t * SCORING_TIER_TARGET_DWELL_SEC
+                # max(), never a bare assignment: the constant-dwell formula is there to push FAST
+                # actors further out, and letting it also pull SLOW ones in breaks the trial. At
+                # 0.7 m/s it gave 4.34m, which put the frozen pedestrian inside the robot's own
+                # approach envelope -- measured robotSpeedAtTrigger=0.000 (gate needs >=0.3), i.e.
+                # the robot was already stopped for the obstacle when t=0 fired. The baseline is a
+                # floor on how close the encounter may start, independent of pedestrian pace.
+                args.ped_distance = max(args.ped_distance,
+                                        _t * SCORING_TIER_TARGET_DWELL_SEC)
 
     # Session 31 FIX 5(b): under --profile scoring, Scared/Surprised default to a raised action-
     # trigger radius (up from PedestrianModulator's own compiled-in 3.0/4.0) so the reaction starts
