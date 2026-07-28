@@ -24,11 +24,25 @@ applied at any point, but Unity must be closed or the importer will race it.
 
 ## `rocketbox_sticky_guard.patch` — 29 lines, `Assets/Editor/FixRocketboxMaxImport.cs`
 
-**Symptom without it**: a Rocketbox avatar set to Humanoid reverts to Generic on the next reimport,
-including simply entering Play mode. It looks like the Inspector change "didn't take".
+`FixRocketboxMaxImport` is an `AssetPostprocessor`, so it runs on **every model imported into the
+project**, not only on Rocketbox avatars. The patch contains **two independent fixes**. The name
+refers to the second; the first is the more severe of the two.
 
-`FixRocketboxMaxImport` is an `AssetPostprocessor`, so it runs on **every** model import and
-unconditionally assigned `animationType = Generic`. Two changes:
+### Fix 1 — null guard. Without it the importer throws on every non-Rocketbox model.
+
+```csharp
+// was: Transform pelvis = g.transform.Find("Bip01").Find("Bip01 Pelvis");
+Transform bip01 = g.transform.Find("Bip01");
+if (bip01 == null) return;
+Transform pelvis = bip01.Find("Bip01 Pelvis");
+```
+
+Only Rocketbox rigs have a `Bip01` root. Every other model dereferences null: **every Zone-B FBX
+(bike, dog, scooter, wheelchair) and every Mixamo clip in the project.** Since this is a
+project-wide postprocessor, that is an import-time exception on assets that have nothing to do with
+Rocketbox.
+
+### Fix 2 — sticky `animationType`. Without it Humanoid silently reverts to Generic.
 
 ```csharp
 // was: importer.animationType = ModelImporterAnimationType.Generic;
@@ -36,12 +50,12 @@ if (importer.animationType != ModelImporterAnimationType.Human)
     importer.animationType = ModelImporterAnimationType.Generic;
 ```
 
-plus a null guard on `g.transform.Find("Bip01")`, without which the postprocessor throws on any
-model that is not a Rocketbox rig — every Zone-B FBX (bike, dog, scooter) and every Mixamo clip.
+The assignment was unconditional, so an avatar set to Humanoid reverted on the next reimport —
+including simply entering Play mode. It reads as "the Inspector change didn't take".
 
 Humanoid is required by `AttachPropToHand`, which resolves hands via `GetBoneTransform`, and by
-`AvatarAnimatorUtility.GetLocomotionAnimator`, which prefers a Humanoid-avatar Animator so a
-prop's or an animal's Animator cannot take over locomotion.
+`AvatarAnimatorUtility.GetLocomotionAnimator`, which prefers a Humanoid-avatar Animator so a prop's
+or an animal's Animator cannot take over locomotion.
 
 > **Better long-term fix, not done here**: a project-owned `AssetPostprocessor` in the parent
 > repository with a `GetPostprocessOrder()` above Microsoft's, setting `animationType` back to
