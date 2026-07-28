@@ -1,16 +1,64 @@
 {
-  "_comment": "Session 44 FIX C. THE single source both consumers read: S41MixamoClipApplier sets S32AnimatorSpeedScaler.referenceSpeedMps from authoredSpeedMps, and tools/run_trial.py derives the SFM speed multiplier from targetSpeedMps. Two different quantities -- conflating them into one constant is what caused the slide.",
-  "_authored": "MEASURED from AnimationClip.averageSpeed (ground plane), never hand-edited. Regenerate with AutoTrial/Session 44/Refresh clip_speeds.json after any asset re-export; it preserves targetSpeedMps.",
-  "_refSource": "Session 45: averageSpeed is NET displacement over duration, so it only measures walking pace when the root travels monotonically. net/path ratio per clip decides; below 0.7 the root reverses and averageSpeed understates the pace. Pacing_And_Talking_On_A_Phone measured 0.144 -- it paces back and forth, outbound and return cancel -- so its reference is the median instantaneous speed over moving frames instead.",
-  "_target": "DESIGN CHOICE, hand-set. null means 'no override, use the pipeline default'. 0 means the character should not travel at all.",
-  "_inPlace": "true = the clip carries no root translation, so authoredSpeedMps could not be measured and animation scaling is meaningless for it.",
-  "clips": [
-    { "clip": "carry_and_walk", "asset": "carry_and_walk.fbx", "authoredSpeedMps": 0.8969, "inPlace": false, "targetSpeedMps": 1.0, "refSource": "averageSpeed (monotonic)" },
-    { "clip": "Drunk_Walk", "asset": "Drunk Walk.fbx", "authoredSpeedMps": 0.7160, "inPlace": false, "targetSpeedMps": 0.6, "refSource": "averageSpeed (monotonic)" },
-    { "clip": "Old_Man_Walk", "asset": "Old Man Walk.fbx", "authoredSpeedMps": 0.3915, "inPlace": false, "targetSpeedMps": 0.7, "refSource": "averageSpeed (monotonic)" },
-    { "clip": "Pacing_And_Talking_On_A_Phone", "asset": "Pacing And Talking On A Phone.fbx", "authoredSpeedMps": 0.5636, "inPlace": false, "targetSpeedMps": 0.8, "refSource": "median-moving (NON_MONOTONIC: net/path = 0.144, averageSpeed invalid)" },
-    { "clip": "Sitting", "asset": "Sitting.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 },
-    { "clip": "Standing_Arguing", "asset": "Standing Arguing.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 },
-    { "clip": "Stroke_Shaking_Head", "asset": "Stroke Shaking Head.fbx", "authoredSpeedMps": 0.0000, "inPlace": true, "targetSpeedMps": 0 }
-  ]
+ "_comment": "Session 44 FIX C. THE single source both consumers read: S41MixamoClipApplier sets S32AnimatorSpeedScaler.referenceSpeedMps from authoredSpeedMps, and tools/run_trial.py derives the SFM speed multiplier from targetSpeedMps. Two different quantities -- conflating them into one constant is what caused the slide.",
+ "_authored": "MEASURED from AnimationClip.averageSpeed (ground plane), never hand-edited. Regenerate with AutoTrial/Session 44/Refresh clip_speeds.json after any asset re-export; it preserves targetSpeedMps.",
+ "_refSource": "Session 45: averageSpeed is NET displacement over duration, so it only measures walking pace when the root travels monotonically. net/path ratio per clip decides; below 0.7 the root reverses and averageSpeed understates the pace. Pacing_And_Talking_On_A_Phone measured 0.144 -- it paces back and forth, outbound and return cancel -- so its reference is the median instantaneous speed over moving frames instead.",
+ "_target": "DESIGN CHOICE, hand-set. null means 'no override, use the pipeline default'. 0 means the character should not travel at all.",
+ "_inPlace": "true = the clip carries no root translation, so authoredSpeedMps could not be measured and animation scaling is meaningless for it.",
+ "clips": [
+  {
+   "clip": "carry_and_walk",
+   "asset": "carry_and_walk.fbx",
+   "authoredSpeedMps": 0.8969,
+   "inPlace": false,
+   "targetSpeedMps": 1.0,
+   "refSource": "averageSpeed (monotonic)"
+  },
+  {
+   "clip": "Drunk_Walk",
+   "asset": "Drunk Walk.fbx",
+   "authoredSpeedMps": 0.716,
+   "inPlace": false,
+   "targetSpeedMps": 0.6,
+   "refSource": "averageSpeed (monotonic)"
+  },
+  {
+   "clip": "Old_Man_Walk",
+   "asset": "Old Man Walk.fbx",
+   "authoredSpeedMps": 0.3915,
+   "inPlace": false,
+   "targetSpeedMps": 0.45,
+   "refSource": "averageSpeed (monotonic)",
+   "_targetNote": "Session 55: 0.7 -> 0.45 after the human review of s54_batch ('old_man walks a bit fast'). Before the Session 54 loop break this clip's gain was 1.00 (marginally stable), animator.speed stayed at its initial value and the body actually travelled at roughly the authored 0.392 -- i.e. 56% of the commanded 0.7. With the loop open the command is realised, so the same target suddenly looked fast. 0.45 keeps animator.speed at 1.15, within the +/-20% of authored that a characterful gait tolerates."
+  },
+  {
+   "clip": "Pacing_And_Talking_On_A_Phone",
+   "asset": "Pacing And Talking On A Phone.fbx",
+   "authoredSpeedMps": 0.5636,
+   "inPlace": false,
+   "targetSpeedMps": 0.8,
+   "refSource": "median-moving (NON_MONOTONIC: net/path = 0.144, averageSpeed invalid)"
+  },
+  {
+   "clip": "Sitting",
+   "asset": "Sitting.fbx",
+   "authoredSpeedMps": 0.0,
+   "inPlace": true,
+   "targetSpeedMps": 0
+  },
+  {
+   "clip": "Standing_Arguing",
+   "asset": "Standing Arguing.fbx",
+   "authoredSpeedMps": 0.0,
+   "inPlace": true,
+   "targetSpeedMps": 0
+  },
+  {
+   "clip": "Stroke_Shaking_Head",
+   "asset": "Stroke Shaking Head.fbx",
+   "authoredSpeedMps": 0.0,
+   "inPlace": true,
+   "targetSpeedMps": 0
+  }
+ ],
+ "_targetRule": "Session 55: for a clip with a CHARACTERFUL gait, targetSpeedMps should stay within +/-20% of authoredSpeedMps. Beyond that the clip is being stretched to a pace it was not animated for. Current ratios: carry_and_walk 1.11 OK, Drunk_Walk 0.84 OK, Old_Man_Walk 1.15 OK after this change, Pacing_And_Talking_On_A_Phone 1.42 OUT OF RANGE (rule-consistent target would be <= 0.68) -- left at 0.8 for the S55 batch so the eyeball pass decides."
 }

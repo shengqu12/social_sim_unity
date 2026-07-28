@@ -145,6 +145,12 @@ namespace SEAN.AutoTrial
 
             float before = scaler.referenceSpeedMps;
             scaler.referenceSpeedMps = authored;
+            // Session 55: mark it authoritative so S32AnimatorSpeedScaler divides by THIS rather than
+            // by a live AnimationClip.averageSpeed read. clip_speeds.json carries hand-derived values
+            // for the clips whose averageSpeed is invalid because the root does not travel
+            // monotonically -- Pacing_And_Talking_On_A_Phone paces back and forth, so its outbound
+            // and return cancel and averageSpeed reads 0.415 against a real 0.5636.
+            scaler.referenceSpeedMpsExplicit = true;
             Debug.Log("[S41Mixamo] '" + clipControllerName + "' referenceSpeedMps "
                 + before.ToString("F4") + " -> " + authored.ToString("F4") + " m/s (measured authored pace)");
         }

@@ -80,6 +80,11 @@ ROS_LOG_GLOB = "/home/sheng/.ros/autotrial/*/*.csv"
 ROS_LOG_MAX_MB = 500.0
 ROS_LOG_ARCHIVE_DIRNAME = "_ros_log_archive"
 
+# Session 55: `phone_user` remains a VALID appearance (assets on disk, still runnable) but is
+# EXCLUDED FROM THE DATASET ROSTER after the s54_batch human review -- a 3.7532x uniform scale
+# override on its prefab plus a ~70 deg heading-vs-velocity mismatch that makes it sidestep its
+# whole path at 17% of commanded speed. See trial_outputs/known_issues/phone_user.md. A2 is
+# therefore 7 special characters, not 8.
 ZONE_B_APPEARANCES = [
     "cyclist", "dog_walker", "female_child", "male_child",
     "phone_user", "scooter_user", "wheelchair_user", "white_cane_user",
@@ -215,15 +220,39 @@ def safety_label_for(min_dist):
 # Every change re-verified live post-retune (trial + speed recompute + min_dist + ENCOUNTER-spin +
 # collision safety rail) before being called landed -- see REPORT.md Session 31 FIX 4 for the full
 # before/after table, including the wheelchair cliff-discovery data.
-SCOOTER_SPEED_MULT = 3.7
-CYCLIST_SPEED_MULT = 4.8
+SCOOTER_SPEED_MULT = 4.5914  # Session 54: was 3.7; rescaled by 1.3/1.0476 so the absolute pace stays 4.81 m/s
+CYCLIST_SPEED_MULT = 5.9565  # Session 54: was 4.8; rescaled by 1.3/1.0476 so the absolute pace stays 6.24 m/s
+# Session 54: LEAVE AT EXACTLY 1.0. Mathf.Approximately(pedSpeedMultiplier, 1.0f) in
+# AutoTrialBootstrap.cs:798 means this appearance gets no PedestrianModulator at all, so it runs on
+# raw social-force velocity capped by Parameters.MAX_VEL (0.95, not the 0.6 that a stale comment in
+# AutoTrialBootstrap claims). That is the behaviour its eyeball pass approved. It is also why the
+# BASE_PED_SPEED_MPS change does not touch it: with no modulator, the base is never applied.
 WHEELCHAIR_SPEED_MULT = 1.0
 # Session 33 FIX 6: user wants white-cane reduced FURTHER, target ~0.4-0.5 m/s (S31's 2.9 measured
 # ~0.55-0.64 m/s -- clearly slower than human but not slow enough per this session's ask). Scaled
 # down proportionally (2.9 * 0.45/0.6 ~= 2.175, rounded to 2.2) and re-verified live against a real
 # trial rather than trusting the arithmetic (this project's own standing rule after S29's scooter
 # mistake) -- see REPORT.md Session 33 FIX 6 for the measured on-disk speed.
-WHITE_CANE_SPEED_MULT = 2.2
+# Session 54: 2.2 -> 0.4296, and deliberately NOT a like-for-like rescale like the two above.
+# Scooter and cyclist are directVelocityDrive==true, so their translation is velocity*dt and their
+# S31/S33 calibrations were measured through an intact chain -- preserving their absolute commanded
+# speed is correct. white_cane is directVelocityDrive==false, so every metre came from root motion,
+# through the animator.speed loop that Session 53 found and the Idling deadlock Session 54 found.
+# Its "2.2 gives ~0.4-0.5 m/s" calibration measured the attenuation of a broken chain, not the
+# multiplier. With the loop open, commanded speed IS realised ground speed, so 2.2 would now render
+# a white-cane user travelling at 2.86 m/s. Set from the documented INTENT above (~0.45 m/s)
+# instead: 0.45 / 1.0476 = 0.4296. This is an assumption, flagged for the eyeball pass.
+WHITE_CANE_SPEED_MULT = 0.4296
+
+# Session 54-C section 3: the four never-run Zone B characters had no entry here at all, so
+# args.ped_speed fell through to the 1.0 default -- and pedSpeedMultiplier == 1.0 makes
+# AutoTrialBootstrap skip attaching a PedestrianModulator entirely (Mathf.Approximately), which
+# means solution (e) never applies and |Base.velocity| is not pinned. Both values below are != 1.0,
+# which is a requirement, not a coincidence.
+DOG_WALKER_SPEED_MULT = 1.0500   # 1.10 m/s / 1.0476 -- ordinary walking pace
+PHONE_USER_SPEED_MULT = 0.9068   # 0.95 m/s / 1.0476 -- distracted pedestrians walk measurably slower
+# male_child / female_child get no multiplier on purpose: they have no walking animation, so they
+# run as --ped-motion standing (S54-C section 1) and are never commanded to travel.
 
 
 def resolve_head_on_geometry(ped_distance, goal_xyz, robot_start=ROBOT_START, overshoot=PED_OVERSHOOT_M):
@@ -1427,7 +1456,7 @@ def green_pixel_fraction(jpg_path, g_dominance=1.5, g_min=120):
 # across sessions at ~1.29-1.30 m/s (Session 30R, Session 41, and Session 44's own probe: sustained
 # walking 1.27-1.31 m/s). walkSpeedMultiplier scales the social-force velocity, so a desired target
 # speed becomes target / this.
-BASE_PED_SPEED_MPS = 1.3
+BASE_PED_SPEED_MPS = 1.0476
 
 # Session 46 (S46-D section 3): Zone-A pedestrian walk-speed diversity.
 #
@@ -1440,8 +1469,12 @@ BASE_PED_SPEED_MPS = 1.3
 # was already established to supply VISUAL diversity only -- all 24 share one skeleton and one
 # locomotion controller, and all travelled ~14.0 m identically.
 #
-# Calibration: measured speed is ~1.05x the multiplier, so a multiplier stdev of 0.17 yields
-# ~0.18 m/s of speed spread, and the existing 0.0387 emergent jitter adds in quadrature to ~0.184.
+# Calibration. NOTE (Session 54): the original note here read "measured speed is ~1.05x the
+# multiplier", which conflated the multiplier with a m/s target. The multiplier is applied to
+# BASE_PED_SPEED_MPS, so commanded speed = BASE_PED_SPEED_MPS * multiplier -- with the old base of
+# 1.3 the intended 1.10 mean was really 1.365 and the intended 0.18 stdev was really 0.221. The
+# base is now 1.0476, which makes the numbers below mean what they say: mean 1.0476*1.05 = 1.100,
+# stdev 1.0476*0.17 = 0.178.
 # Mean is held near 1.10 deliberately -- the robot caps at 0.6 m/s, so raising pedestrian speed
 # would compress the encounter window and change the encounter geometry itself.
 ZONE_A_SPEED_MULT_MEAN = 1.05
@@ -2292,6 +2325,8 @@ def main():
         "cyclist": CYCLIST_SPEED_MULT,
         "wheelchair_user": WHEELCHAIR_SPEED_MULT,
         "white_cane_user": WHITE_CANE_SPEED_MULT,
+        "dog_walker": DOG_WALKER_SPEED_MULT,
+        "phone_user": PHONE_USER_SPEED_MULT,
     }
     # Session 44 FIX C: a Mixamo clip's own target pace, read from the SAME clip_speeds.json that
     # S41MixamoClipApplier reads its authored pace from. Two quantities, one file -- separate files

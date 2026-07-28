@@ -48,14 +48,14 @@ namespace SEAN.AutoTrial
         // component would have computed this frame. Kept as literals rather than read off the
         // component: the point is to compare an independent reconstruction against the observed
         // final value, not to trust the component's own view of itself.
-        private const float ReferenceSpeedMps = 1.3f;
-        private const float MinSpeedScale = 0.3f;
-        private const float MaxSpeedScale = 1.5f;
+        // Session 54: updated to mirror the NEW law. The old mirror (smoothed/1.3 with an idle
+        // dwell latch) would now silently disagree with the component on every frame, and a stale
+        // reconstruction is worse than none -- it looks like a cross-check and is not.
+        private const float MinSpeedScale = 0.05f;
+        private const float MaxSpeedScale = 3.0f;
         private const float SmoothingTau = 0.25f;
-        private const float IdleSpeedThresholdMps = 0.15f;
-        private const float IdleDwellSec = 0.20f;
+        private const float MinAuthoredSpeedMps = 0.05f;
         private static readonly string[] ReactionStates = { "SurprisedReaction", "AssertiveGesture" };
-        private float belowSince = -1f;
 
         private Animator animator;
         private Scenario.Agents.Base baseAgent;
@@ -186,21 +186,24 @@ namespace SEAN.AutoTrial
             bool hold = ReactionActive();
             float baseVel = baseAgent != null ? baseAgent.velocity.magnitude : float.NaN;
 
-            // Mirrors S32AnimatorSpeedScaler including Session 44 FIX A's stationary rule. Kept in
-            // step deliberately: a reconstruction that lags the component it models silently turns
+            // Mirrors S32AnimatorSpeedScaler's Session 54 law: commanded speed over the authored
+            // ground speed of the clip actually playing, with non-locomotion clips held at 1.0.
+            // Kept in step deliberately -- a reconstruction that lags the component it models turns
             // every frame "ambiguous" and the winner-identification column stops meaning anything.
-            if (smoothed < IdleSpeedThresholdMps)
+            float authored = 0f, wsum = 0f;
+            var mixed = animator.GetCurrentAnimatorClipInfo(0);
+            for (int i = 0; i < mixed.Length; i++)
             {
-                if (belowSince < 0f) { belowSince = Time.time; }
+                if (mixed[i].clip == null) { continue; }
+                Vector3 av = mixed[i].clip.averageSpeed;
+                av.y = 0f;
+                authored += av.magnitude * mixed[i].weight;
+                wsum += mixed[i].weight;
             }
-            else
-            {
-                belowSince = -1f;
-            }
-            bool stationary = belowSince >= 0f && (Time.time - belowSince) >= IdleDwellSec;
-            float scalerWould = (hold || stationary)
+            authored = wsum > 1e-4f ? authored / wsum : 0f;
+            float scalerWould = (hold || authored < MinAuthoredSpeedMps)
                 ? 1.0f
-                : Mathf.Clamp(smoothed / ReferenceSpeedMps, MinSpeedScale, MaxSpeedScale);
+                : Mathf.Clamp(baseVel / authored, MinSpeedScale, MaxSpeedScale);
 
             var clips = animator.GetCurrentAnimatorClipInfo(0);
             string clipName = clips.Length > 0 && clips[0].clip != null ? clips[0].clip.name : "";
@@ -218,10 +221,13 @@ namespace SEAN.AutoTrial
             sb.Append(hold ? "1" : "0").Append(',');
             sb.Append(clipLen.ToString("F3", CultureInfo.InvariantCulture)).Append(',');
             sb.Append(clipName.Replace(',', ' ')).Append(',');
-            // What animator.speed WOULD have to be for the feet to match the ground, if the clip
-            // really is authored for ReferenceSpeedMps. Divergence between this and the final
-            // animator.speed is the slide, signed: above = feet outrun the ground.
-            sb.Append((ground / ReferenceSpeedMps).ToString("F4", CultureInfo.InvariantCulture)).Append(',');
+            // What animator.speed WOULD have to be for the feet to match the ground, using the
+            // authored speed of the clip actually playing (Session 54 -- previously a hard-coded
+            // 1.3, which is wrong for every clip whose real authored pace differs, i.e. all of
+            // them). Divergence between this and the final animator.speed is the slide, signed:
+            // above = feet outrun the ground.
+            sb.Append((authored > MinAuthoredSpeedMps ? ground / authored : float.NaN)
+                .ToString("F4", CultureInfo.InvariantCulture)).Append(',');
             // Session 44 §9. AnimatorStateInfo.length is the state's duration AFTER speed scaling;
             // clip_length above is the authored duration. Logging both, plus info.speed and
             // animator.speed, in one frame is what makes the relationship checkable rather than

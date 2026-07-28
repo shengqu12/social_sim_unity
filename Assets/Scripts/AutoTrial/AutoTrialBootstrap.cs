@@ -791,7 +791,11 @@ namespace SEAN.AutoTrial
                 // walkSpeedMultiplier scales AFTER SFAgent.UpdateVelocity()'s own Parameters.
                 // MAX_VEL clamp (Base.cs/SFAgent.cs off-limits, but this scaling happens outside
                 // them, in PedestrianModulator.Scale(), so it can push the effective speed above
-                // that shared 0.6 m/s cap without touching either file). Zone B otherwise ignores
+                // that shared cap without touching either file). Session 54: the cap is
+                // Parameters.MAX_VEL = 0.95 (Parameters.cs:32) -- this comment said 0.6 until now,
+                // a value Session 29 STEP 3 had already raised. An appearance with NO multiplier
+                // (or one that is exactly 1.0) gets no modulator at all and is therefore held to
+                // that 0.95. Zone B otherwise ignores
                 // personality/patrol (see the warning above) -- a modulator forced here purely
                 // for speed scaling doesn't reintroduce personality-driven reactive behavior,
                 // since PersonalityType.Indifferent's own Modulate() case is scale-only.
@@ -805,7 +809,17 @@ namespace SEAN.AutoTrial
                     speedModulator.walkSpeedMultiplier = config.pedSpeedMultiplier;
                 }
                 navAgentOut = navAgent;
-                releaseDest = config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos;
+                // Session 54: honour --ped-motion standing here too. Session 28 PART 3a added it
+                // to the Zone A branch only, so the flag was silently a no-op for every Zone B
+                // container -- measured on male_child/female_child, which have no walking animation
+                // and are meant to be static obstacles: both were released to the far goal and
+                // travelled the full 14.0 m. Same semantics as Zone A's zoneADest: the SLATE
+                // trigger still fires (TrialController.PollForTrigger is release-destination
+                // agnostic), the pedestrian simply never walks anywhere, and it remains a real
+                // costmap obstacle because its position is real.
+                releaseDest = config.pedMotion == "standing"
+                    ? spawnPos
+                    : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos);
                 return navAgent.transform;
             }
             else

@@ -24,32 +24,57 @@ namespace SEAN.AutoTrial
     /// FIX E's own verification target is white_cane_user and wheelchair_user specifically, where
     /// the reference speed is directly applicable.
     ///
-    /// Session 36 FIX 5 correction: originally read `Base.velocity.magnitude` (a pre-existing
-    /// public property). Diagnostic instrumentation this session proved this is WRONG for
-    /// white_cane_user specifically: `Base.velocity` reported a stable ~2.09 m/s the whole trial
-    /// while the pedestrian's actual on-screen displacement (computed independently from
-    /// frames.csv position deltas) was ~0.32-0.41 m/s -- `Base.velocity` reflects this
-    /// appearance's underlying nav/rigidbody-commanded speed, not the root-motion-driven visible
-    /// movement (see AutoTrialBootstrap.cs's own note that white_cane_user is "unlike every other
-    /// current Zone B container" in this exact respect -- the same root-motion divergence
-    /// Session 21 already characterized for its origin-reset bug). Feeding that inflated 2.09 into
-    /// `scale = currentSpeed / referenceSpeedMps` clamped the result to `maxSpeedScale=1.5` --
-    /// i.e. this component was SPEEDING UP white_cane's animator, the exact opposite of the
-    /// intended slowdown, which is why Session 35's "confirm this applies" check evidently didn't
-    /// catch the real complaint (the mechanism WAS running, just computing the wrong number).
-    /// Fixed by measuring speed directly from frame-to-frame world-position displacement
-    /// (`transform.position` delta / `Time.deltaTime`) instead of trusting `Base.velocity` --
-    /// this is by construction exactly "how fast the character visibly moved," correct regardless
-    /// of whatever internal representation any given appearance's movement path uses, and general
-    /// (not a white_cane-specific branch).
+    /// Session 36 FIX 5 (SUPERSEDED, Session 54 -- kept because the reasoning is the instructive
+    /// part): it replaced `Base.velocity.magnitude` with frame-to-frame `transform.position`
+    /// differencing, on the argument that displacement is "by construction exactly how fast the
+    /// character visibly moved." That argument is true and it is beside the point. For a
+    /// root-motion agent the displacement IS this component's own output fed back in -- Base.Move()
+    /// never translates the transform, PedestrianModulator.ApplyAnimatorRootMotion() does, and
+    /// `animator.deltaPosition` scales with `animator.speed`. Choosing the more accurate instrument
+    /// closed the loop; the previous, "wrong" one had not.
+    ///
+    /// Session 54 FIX. The law is now
+    ///
+    ///     animator.speed = |Base.velocity| / (authored ground speed of the playing clip)
+    ///
+    /// which makes realised ground speed track the SFM's commanded speed exactly, with no feedback
+    /// path. The standing rule this encodes, and the one to apply to any future version of this
+    /// component:
+    ///
+    ///     A control loop's feedback signal is not required to be ACCURATE.
+    ///     It is required not to be a function of the loop's own output.
+    ///
+    /// See trial_outputs/S53_ROOT_CAUSE.md for the measurement and trial_outputs/S54_REPORT.md for
+    /// the diagnostics that fixed the design (in particular: no stationary criterion is needed
+    /// here, because StopNavigation() -> StopAnimator() already zeroes Forward upstream).
     /// </summary>
     public class S32AnimatorSpeedScaler : MonoBehaviour
     {
-        // The shared Zone A/B walk-cycle reference pace this project has used since Session 30R
-        // (business_male_01's own measured ~1.29-1.30 m/s, walkSpeedMultiplier=1.0 case) -- the
-        // speed at which the underlying Locomotion clip's own root motion/authored cadence reads
-        // as natural.
+        // Session 54: SUPERSEDED as an input to the control law -- kept only because
+        // S41MixamoClipApplier writes it and S44SlideProbe reads it back for its own reconstruction.
+        // The law now divides by the CURRENTLY PLAYING clip's own authored ground speed, read live
+        // (see AuthoredClipSpeedMps). A static reference is what made the loop diverge: Zone A's
+        // 1.3 against a HumanoidWalk that actually travels 1.556 m/s at animator.speed=1.0 gave a
+        // loop gain of 1.20, and anything above 1.0 runs away until maxSpeedScale catches it.
         public float referenceSpeedMps = 1.3f;
+
+        // Session 55: set true by S41MixamoClipApplier when it supplies a per-clip authored speed
+        // from clip_speeds.json. When true, that value WINS over the live AnimationClip.averageSpeed
+        // read below.
+        //
+        // Why an override is needed at all: averageSpeed is NET root displacement over the clip's
+        // duration, so it only measures pace when the root travels monotonically.
+        // Pacing_And_Talking_On_A_Phone paces back and forth -- outbound and return cancel -- and its
+        // entry records `refSource: NON_MONOTONIC: net/path = 0.144, averageSpeed invalid`, with a
+        // hand-derived 0.5636 (median instantaneous speed over moving frames) in its place. Session
+        // 54's live read silently bypassed that correction and divided by the invalid 0.415, giving
+        // animator.speed 1.928 where FIX C intended 1.419 -- 36% fast.
+        //
+        // Measured, the other three Mixamo clips agree exactly between the two sources
+        // (Old_Man_Walk 0.3915, carry_and_walk 0.8969, Drunk_Walk 0.7160), so this changes nothing
+        // for them. The live read stays the DEFAULT because Zone A runs a blend tree, where authored
+        // speed is a per-frame mix and no single stored constant can be right.
+        [System.NonSerialized] public bool referenceSpeedMpsExplicit;
 
         // Session 44. A clamp here is a FUSE against bad data, not a constraint meant to bind in
         // normal operation -- if it engages on a healthy sample, it is set wrong.
@@ -116,28 +141,60 @@ namespace SEAN.AutoTrial
         // returned to its authored rate. NOT a hard freeze: 1.0 keeps an idle clip breathing at its
         // designed pace, where scaling toward 0 would produce the frozen-statue failure a human
         // reviewer has caught on this project before.
-        public float idleSpeedThresholdMps = 0.15f;
-        // Hysteresis, so a character hovering either side of the threshold doesn't flicker between
-        // scaled and authored playback -- must fall below for this long to count as stopped, and
-        // any sample above it resumes scaling immediately.
-        public float idleDwellSec = 0.20f;
+        // Session 54: below this authored ground speed, the playing clip is not locomotion and
+        // animator.speed is held at its authored rate. Replaces idleSpeedThresholdMps/idleDwellSec
+        // (both removed): those thresholded a position-differenced EMA, which is the very signal
+        // that closed the loop, and their hysteresis existed only to stop that EMA flickering.
+        private const float MinAuthoredSpeedMps = 0.05f;
 
-        // Session 44 FIX A, second half: Base.cs:351 computes `idle` as
-        // `animParams.magnitude < idleSpeed && !applyRootMotion`, and Base.cs:32 hardcodes
-        // applyRootMotion = true, so that expression is ALWAYS false and the Animator's "Idling"
-        // bool is never set true by the upstream code. Base.cs is off-limits, so the parameter is
-        // driven from here instead. Ordering makes this safe rather than a second race: this
-        // component now runs at execution order 100, after Base's default 0 (see
-        // Editor/S44ExecutionOrder.cs), so this write lands after Base's write every frame.
-        public bool driveIdlingParameter = true;
+        // Session 54-F: the control law's DOMAIN, which is a different question from the numerical
+        // division guard above.
+        //
+        //     realised ground speed = authored * animator.speed
+        //
+        // only holds for clips that TRANSLATE. A turn-in-place clip rotates without travelling, so
+        // `commanded / authored` is not a large number, it is a meaningless one. Session 54 measured
+        // exactly that: scared, backing away from the robot, spent 3.4 s in StandQuarterTurnRight
+        // (clip weight 1.000 on 59 of 62 frames -- settled, not a blend transition) with a commanded
+        // 1.425 m/s over an authored 0.0848, and sat on maxSpeedScale the whole time.
+        //
+        // The boundary is read off the GAP in the measured distribution, not chosen to make a check
+        // pass (dump it with AutoTrial/Session 54/Dump locomotion clip translation):
+        //
+        //   non-translating   Idle 0.0000 | StandTurnR90 0.0000 | StandTurns90 0.0392
+        //                     Sitting 0.0 | Standing_Arguing 0.0 | StandQuarterTurn 0.0848
+        //   ---------------------------------- 4.6x gap ----------------------------------
+        //   translating       Old_Man_Walk 0.3915 | Pacing_Phone 0.5636 | Drunk_Walk 0.716
+        //                     WalkBack 1.334 | StrafeLeft 1.442 | HumanoidWalk 1.558
+        //                     strafe_45 2.260 | HumanoidRun 5.662
+        //
+        // 0.20 is the geometric midpoint of that gap (sqrt(0.0848 * 0.3915) = 0.182), leaving a
+        // factor of ~2 of margin on both sides. Anything in 0.1-0.35 classifies identically today;
+        // the margin is what keeps that true after an asset re-export.
+        //
+        // This generalises Session 41's rule for reaction states -- hold authored rate whenever the
+        // clip is not locomotion -- from "named reaction states" to "any clip that does not travel".
+        private const float LocomotionAuthoredSpeedMps = 0.20f;
 
-        private float belowThresholdSince = -1f;
-        private float aboveThresholdSince = -1f;
+        // Session 54 REMOVED: driveIdlingParameter (Session 44 FIX A, second half).
+        //
+        // It wrote the Animator's "Idling" bool from the position-differenced stationary latch.
+        // Measured consequences:
+        //   Zone A       -- the shared controller has NO "Idling" parameter at all, so the write
+        //                   was a no-op. Clip selection there runs off Forward alone, correctly.
+        //   white_cane   -- its controller DOES have "Idling", gating Idle <-> Locomotion, so the
+        //                   write landed and self-latched:
+        //                     not moving -> smoothedSpeed ~ 0 -> stationary -> Idling = true
+        //                       -> held in Idle -> Idle clip has no root motion -> not moving
+        //                   Session 54 measured Forward at 4.767 (correctly computed, heading
+        //                   aligned to velocity within 0.00 deg) while the agent sat in Idle for
+        //                   98.7% of the trial and never moved. This is the same defect class as
+        //                   the animator.speed loop, one layer over: an output used as an input.
+        // Removing it is a loop removal, not a criterion change, and it is a no-op on every
+        // controller that lacks the parameter.
 
         private Animator animator;
         private Scenario.Agents.Base baseAgent;
-        private Vector3 lastPos;
-        private bool havePrevPos = false;
         // Smoothed so a single noisy frame (e.g. a footstep-driven root-motion micro-stutter)
         // doesn't jerk the playback rate -- exponential moving average, not a hard window buffer.
         private float smoothedSpeed = 0f;
@@ -217,25 +274,38 @@ namespace SEAN.AutoTrial
                 worstRequiredScale, minSpeedScale, maxSpeedScale));
         }
 
-        // Cached so the parameter list isn't walked every frame.
-        private bool idlingParamChecked;
-        private bool idlingParamExists;
-
-        private void SetBoolIfPresent(string name, bool value)
+        /// <summary>
+        /// Session 54. The ground speed the CURRENTLY PLAYING animation is authored to travel at,
+        /// blended by the weights the Animator is actually mixing this frame.
+        ///
+        /// Read live rather than from a serialized field, for two reasons. A static reference is
+        /// what set the old loop gain above 1.0 (Zone A's 1.3 against HumanoidWalk's real 1.556).
+        /// And these agents run a blend tree, not a single clip -- Forward moves the mix between an
+        /// idle clip and a walk clip, so the authored speed is a per-frame quantity, not a per-agent
+        /// one. Weighting by clip weight is what makes the quotient below the correct scale during
+        /// the blend rather than only at its endpoints.
+        ///
+        /// AnimationClip.averageSpeed is the clip's own baked root motion, a property of the asset.
+        /// Nothing this component writes can change it, which is why it is safe to divide by.
+        /// </summary>
+        private float AuthoredClipSpeedMps()
         {
-            if (!idlingParamChecked)
+            // An explicitly supplied per-clip value wins: it exists precisely for the clips whose
+            // averageSpeed is known to be wrong, which are exactly the clips where reading it live
+            // would be confidently incorrect.
+            if (referenceSpeedMpsExplicit) { return referenceSpeedMps; }
+            var clips = animator.GetCurrentAnimatorClipInfo(0);
+            float weighted = 0f;
+            float totalWeight = 0f;
+            for (int i = 0; i < clips.Length; i++)
             {
-                idlingParamChecked = true;
-                foreach (var p in animator.parameters)
-                {
-                    if (p.type == AnimatorControllerParameterType.Bool && p.name == name)
-                    {
-                        idlingParamExists = true;
-                        break;
-                    }
-                }
+                if (clips[i].clip == null) { continue; }
+                Vector3 a = clips[i].clip.averageSpeed;
+                a.y = 0f; // ground travel only -- a bob or a stair clip's rise is not walking speed
+                weighted += a.magnitude * clips[i].weight;
+                totalWeight += clips[i].weight;
             }
-            if (idlingParamExists) { animator.SetBool(name, value); }
+            return totalWeight > 1e-4f ? weighted / totalWeight : 0f;
         }
 
         private static string GetPath(Transform t)
@@ -249,30 +319,52 @@ namespace SEAN.AutoTrial
         {
             if (animator == null) { return; }
 
-            Vector3 pos = transform.position;
-            float instantaneousSpeed;
-            if (havePrevPos && Time.deltaTime > 1e-5f)
-            {
-                Vector3 delta = pos - lastPos;
-                delta.y = 0f; // ground-plane displacement only -- vertical bob isn't walking speed
-                instantaneousSpeed = delta.magnitude / Time.deltaTime;
-            }
-            else
-            {
-                instantaneousSpeed = 0f;
-            }
+            // Session 54: the input is Base.velocity -- the SFM's COMMANDED velocity -- and the
+            // reason is not accuracy. It is not a measurement at all. It is that Base.velocity is
+            // not a function of animator.speed, which is the necessary and sufficient condition
+            // for this component to stop being a closed loop.
+            //
+            // What was wrong before (Session 53, trial_outputs/S53_ROOT_CAUSE.md). For a
+            // root-motion agent, Base.Move() does NOT translate the transform; every metre comes
+            // from PedestrianModulator.ApplyAnimatorRootMotion()'s `transform.position +=
+            // animator.deltaPosition`, and deltaPosition scales with animator.speed. So
+            // differencing transform.position fed this component's own output straight back into
+            // its input:
+            //
+            //     animator.speed -> ground speed -> smoothedSpeed -> animator.speed
+            //
+            // Loop gain = (ground speed at animator.speed 1.0) / reference. Measured on corridor:
+            // k = 1.556 m/s for HumanoidWalk against reference 1.3, so gain 1.20 -- divergent. It
+            // ran away until maxSpeedScale=3.0 caught it, giving a predicted terminal ground speed
+            // of 3.0 x 1.556 = 4.67 m/s; windowed endpoint displacement, an independent source,
+            // measured 4.6-4.7. That is the user's "walks faster and faster / top speed is far too
+            // high", and it is why raising maxSpeedScale 1.5 -> 3.0 doubled the symptom.
+            //
+            // Session 36 removed Base.velocity because white_cane_user reported ~2.09 m/s against
+            // ~0.35 m/s of visible movement. That observation was real; the diagnosis was not. It
+            // was never a severed drive chain -- Session 54 measured white_cane sitting in its
+            // controller's Idle STATE with Forward at 4.767, held there by this component's own
+            // Idling write (see driveIdlingParameter's removal note below). A commanded velocity
+            // that nothing consumes is not an inaccurate velocity.
+            //
+            // Precondition, and it is load-bearing: Session 47's absolute-target modulation (e)
+            // pins |Base.velocity| to baseWalkSpeedMps * walkSpeedMultiplier. Without (e), Base.cs
+            // :122 writes the modulated result back into the field SFAgent.cs:71 integrates from,
+            // so Base.velocity would be a function of its own history and this would be a longer
+            // path around the same loop. Do not revert (e).
+            Vector3 v = baseAgent != null ? baseAgent.velocity : Vector3.zero;
+            v.y = 0f;
+            float instantaneousSpeed = v.magnitude;
             bool plausible = instantaneousSpeed <= MaxPlausibleSpeedMps;
-            lastPos = pos;
-            havePrevPos = true;
 
             if (plausible)
             {
                 float alpha = 1f - Mathf.Exp(-Time.deltaTime / SmoothingTau);
                 smoothedSpeed = Mathf.Lerp(smoothedSpeed, instantaneousSpeed, alpha);
             }
-            // else: teleport/correction frame -- lastPos is resynced above so the NEXT frame's
-            // delta is measured from the corrected position, but this frame's implausible reading
-            // is discarded rather than folded into the average.
+            // else: an implausible command. Discarded rather than folded into the average. With
+            // (e) pinning the magnitude this should never fire; if it does, the fuse is telling
+            // you the commanded speed is wrong, which is a different bug from this component's.
 
             // Keep the EMA above running through the reaction (so locomotion resumes at the right
             // rate afterwards) but don't let it drive animator.speed while a reaction clip owns
@@ -280,49 +372,43 @@ namespace SEAN.AutoTrial
             if (IsReactionActive())
             {
                 animator.speed = 1.0f;
-                belowThresholdSince = -1f;
                 return;
             }
 
-            // Session 44 FIX A: treat "not travelling" as its own regime rather than as very slow
-            // travel. See idleSpeedThresholdMps for the measurements this closes.
-            // Hysteresis on BOTH edges, not just entry. A single frame above the threshold used to
-            // reset the latch outright, and that is fatal here: the transform advances in discrete
-            // animation steps, so the instantaneous position delta spikes hard on step frames
-            // (readings up to 27 m/s observed) and drags the EMA briefly over the threshold even
-            // while the character is standing still. Measured effect of the one-sided version: only
-            // 25% of genuinely-stationary frames ever latched, the rest sat at a scaled rate --
-            // the very defect FIX A exists to remove. Leaving idle now requires the speed to stay
-            // above the threshold for the same dwell that entering it requires.
-            if (smoothedSpeed < idleSpeedThresholdMps)
+            // Session 54 FIX A, restated on the clip instead of on measured motion.
+            //
+            // "Not travelling" is still its own regime -- a character with no ground travel has no
+            // cadence to match -- but it is now decided by WHICH CLIP IS PLAYING, not by how fast
+            // the body was observed to move. An idle clip has no authored root motion; that is a
+            // property of the animation asset, so it cannot be influenced by animator.speed and
+            // closes no loop. It also removes the need for the threshold/dwell hysteresis entirely:
+            // that machinery existed to stop a position-differenced EMA from flickering, and there
+            // is no longer a position-differenced EMA.
+            //
+            // Both stationary regimes are covered by this one test, because upstream already drives
+            // them: StopNavigation() (Base.cs:195) calls StopAnimator() (Base.cs:214), which sets
+            // Forward and Strafe to 0, and the blend tree follows Forward to its idle clip. That
+            // happens at the SLATE frozen spawn (InitDest(spawnPos) -> already there -> arrive) and
+            // again on real arrival. Session 54 measured Forward going to exactly 0.000 at t=16.44
+            // on corridor, with the clip returning to HumanoidIdle, entirely without this
+            // component's help.
+            // Domain test first (is this clip locomotion at all?), which subsumes the numerical
+            // division guard since LocomotionAuthoredSpeedMps > MinAuthoredSpeedMps. Both are kept:
+            // the guard states what is numerically unsafe, the domain states what is semantically
+            // meaningless, and they would come apart if either constant were ever retuned.
+            float authoredSpeed = AuthoredClipSpeedMps();
+            if (authoredSpeed < LocomotionAuthoredSpeedMps || authoredSpeed < MinAuthoredSpeedMps)
             {
-                if (belowThresholdSince < 0f) { belowThresholdSince = Time.time; }
-                aboveThresholdSince = -1f;
-            }
-            else
-            {
-                if (aboveThresholdSince < 0f) { aboveThresholdSince = Time.time; }
-                if (Time.time - aboveThresholdSince >= idleDwellSec) { belowThresholdSince = -1f; }
-            }
-            bool stationary = belowThresholdSince >= 0f && (Time.time - belowThresholdSince) >= idleDwellSec;
-
-            if (driveIdlingParameter)
-            {
-                // Best-effort: controllers without an "Idling" bool (the generated single-state
-                // Mixamo ones) simply have no such parameter, and Unity logs a warning per call
-                // rather than throwing -- so check before setting rather than swallowing exceptions.
-                SetBoolIfPresent("Idling", stationary);
-            }
-
-            if (stationary)
-            {
-                // Authored rate, not zero: an idle clip should play at its designed pace. Scaling
-                // it toward zero is the frozen-statue failure mode.
+                // Authored rate, not zero: an idle clip should breathe at its designed pace.
+                // Scaling it toward zero is the frozen-statue failure mode.
                 animator.speed = 1.0f;
                 return;
             }
 
-            float required = referenceSpeedMps > 0.01f ? smoothedSpeed / referenceSpeedMps : 1.0f;
+            // The law. Ground speed for a root-motion agent is authoredSpeed * animator.speed, so
+            // setting animator.speed to commanded/authored makes realised ground speed track the
+            // SFM command exactly. Open loop: the numerator does not depend on the output.
+            float required = smoothedSpeed / authoredSpeed;
             float scale = Mathf.Clamp(required, minSpeedScale, maxSpeedScale);
 
             // Session 44 (1.3): count clamp engagements so they are visible rather than silent.
@@ -336,7 +422,8 @@ namespace SEAN.AutoTrial
             {
                 float legacySpeed = baseAgent != null ? baseAgent.velocity.magnitude : -1f;
                 Debug.Log("[S36AnimScalerDiag] host=" + gameObject.name
-                    + " positionDeltaSpeed=" + smoothedSpeed + " legacyBaseVelocity=" + legacySpeed
+                    + " commandedSpeed=" + smoothedSpeed + " baseVelocity=" + legacySpeed
+                    + " authoredClipSpeed=" + AuthoredClipSpeedMps()
                     + " appliedAnimatorSpeed=" + animator.speed);
             }
         }

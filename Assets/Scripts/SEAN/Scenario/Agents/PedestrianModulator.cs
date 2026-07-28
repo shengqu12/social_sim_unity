@@ -133,9 +133,20 @@ namespace SEAN.Scenario.Agents
 
         // Session 47 (defect A, solution (e)): the absolute pace an unmodulated pedestrian walks at.
         // walkSpeedMultiplier is now a multiplier ON THIS, not on the incoming velocity -- see
-        // Scale(). 1.3 m/s is this project's repeatedly measured Rocketbox walking pace (Session
-        // 30R, 41, 44).
-        public float baseWalkSpeedMps = 1.3f;
+        // Scale().
+        //
+        // Session 54: 1.3 -> 1.0476. The old value came from "Rocketbox walks at ~1.3 m/s", a
+        // figure derived from the retracted 3.2 slide invariant and never valid. Its effect was
+        // that Zone A's jitter, designed as N(1.05, 0.17) to land near 1.10 m/s, was multiplied by
+        // 1.3 and actually commanded mean 1.365 / stdev 0.221. With the loop now open, commanded
+        // speed IS realised ground speed, so this constant sets the dataset's walking pace
+        // directly: 1.0476 * 1.05 = 1.100 m/s mean, 1.0476 * 0.17 = 0.178 stdev, which is the
+        // S46-D target (1.05-1.15 mean, ~0.18 stdev).
+        //
+        // MUST stay in step with tools/run_trial.py's BASE_PED_SPEED_MPS -- that file divides a
+        // target m/s by it to produce walkSpeedMultiplier, and this file multiplies it back. A
+        // mismatch silently rescales every Mixamo and Zone B pace.
+        public float baseWalkSpeedMps = 1.0476f;
 
         // Below this, the incoming velocity carries no usable direction. See SetSpeed().
         private const float MinDirectionSqrMagnitude = 1e-8f;
