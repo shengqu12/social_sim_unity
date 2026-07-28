@@ -424,8 +424,55 @@ namespace SEAN.Scenario.Agents
             return Scale(socialForceVelocity);
         }
 
+        // Session 48 (1.1): read the robot's physics body, not its position delta.
+        //
+        // This one matters more than the identically-shaped bug in the trigger-speed gate, because
+        // it is not instrumentation -- Curious/Follow feeds this straight into the pedestrian's
+        // TARGET SPEED. transform.position advances as a discrete event unrelated to the frame
+        // rate, so the old expression read ~0 on frames the robot's transform had not moved and
+        // spiked when it jumped; combined with the Mathf.Max(..., 0.05f) floor at the call site, a
+        // Curious follower would alternate between crawling and lurching. That is consistent with
+        // `curious` appearing on the "speeds up / erratic" list.
+        //
+        // Resolved the same way TrialController.ResolveRobotBody() does, and cached: the robot's
+        // body does not change during a trial. Falls back to the old estimate only if neither body
+        // exists, and says so once rather than silently returning a bad number.
+        private Rigidbody robotRb;
+        private ArticulationBody robotArt;
+        private bool robotBodyResolved;
+        private bool robotBodyWarned;
+
+        private void ResolveRobotBody(Scenario.Robot robot)
+        {
+            robotBodyResolved = true;
+            GameObject baseLink = robot != null ? robot.base_link : null;
+            if (baseLink == null) { return; }
+            foreach (ArticulationBody b in baseLink.GetComponentsInChildren<ArticulationBody>())
+            {
+                if (b.isRoot) { robotArt = b; return; }
+            }
+            robotRb = baseLink.GetComponent<Rigidbody>();
+        }
+
         private float EstimateRobotSpeed(Scenario.Robot robot)
         {
+            if (!robotBodyResolved) { ResolveRobotBody(robot); }
+
+            if (robotArt != null)
+            {
+                Vector3 v = robotArt.velocity; v.y = 0f; return v.magnitude;
+            }
+            if (robotRb != null)
+            {
+                Vector3 v = robotRb.velocity; v.y = 0f; return v.magnitude;
+            }
+
+            if (!robotBodyWarned)
+            {
+                robotBodyWarned = true;
+                Debug.LogWarning("[PedestrianModulator] no robot physics body resolved -- Curious "
+                    + "follow speed falls back to position differencing, which is NOT a speed.");
+            }
             if (!hasLastRobotPos)
             {
                 lastRobotPos = robot.position;
