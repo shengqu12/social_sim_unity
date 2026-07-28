@@ -245,7 +245,12 @@ def select_frames(rows, phases, min_idx, dense_encounter=False):
             if i is not None and i not in picked:
                 sec = int(math.floor(ts[i] or 0.0))
                 k = int(round(((ts[i] or 0.0) - sec) / step))
-                picked[i] = ("frame_{:04d}_d{}.png".format(sec, max(k, 1)), "")
+                # Session 47 (defect D): labelled, not left blank. The encounter is the only
+                # stretch of a trial carrying social content -- yield or not, cut in or not, when
+                # the reaction begins -- and at 1 Hz it is 10 frames. A consumer must be able to
+                # tell an infill sample from a regular one. Anything reading by Image_name is
+                # unaffected either way, so the agreed four columns keep their meaning.
+                picked[i] = ("frame_{:04d}_d{}.png".format(sec, max(k, 1)), "dense")
             t += step
 
     return sorted(((i, n, e) for i, (n, e) in picked.items()), key=lambda p: ts[p[0]] or 0.0)

@@ -80,6 +80,8 @@ namespace SEAN.AutoTrial
         // resampled before the trigger actually fired -- see PollForTrigger's own comment for why
         // this recurred even after Session 14's capture-cadence fix.
         private bool triggerSpeedResampled;
+        // Session 47 (defect C): true once the position-differencing fallback has been reported.
+        private bool fallbackSpeedWarned;
 
         // Session 14 (SLATE v2) Initialize() inputs, stashed for PollForTrigger to use once its
         // own coroutine starts (not passed as coroutine params -- IEnumerator methods can't take
@@ -243,7 +245,42 @@ namespace SEAN.AutoTrial
                     ? Util.Geometry.GroundPlaneDist(robot.position, pedestrian.position)
                     : float.PositiveInfinity;
                 float pollDt = Mathf.Max(Time.time - lastPollTime, 0.0001f);
-                float speedNow = Vector3.Distance(robot.position, lastPollPos) / pollDt;
+                // Session 47 (defect C): read the robot's own physics body instead of differencing
+                // its position.
+                //
+                // transform.position advances as a DISCRETE event whose rate has no fixed relation
+                // to the polling rate, so a position difference divided by poll time is not a
+                // speed -- it is displacement-per-poll, which reads near zero on a frame the
+                // transform did not move and spikes on one where it jumped. That is what produced
+                // every triggerSpeed failure this project has recorded (dyad, cyclist, mx_sitting,
+                // Pacing_Phone, Running, ped_count_3, wheelchair_user), including robotSpeedAtTrigger
+                // = 0.000 on a robot that was demonstrably driving.
+                //
+                // ResolveRobotBody() runs above (line ~185), before this coroutine starts, so the
+                // body is already available here. Falls back to the old measure only when neither a
+                // Rigidbody nor an ArticulationBody could be resolved, in which case a
+                // displacement-based figure is the only thing left -- and the fallback is logged so
+                // it can never be mistaken for a real reading.
+                float speedNow;
+                if (robotArt != null)
+                {
+                    Vector3 v = robotArt.velocity; v.y = 0f; speedNow = v.magnitude;
+                }
+                else if (robotRb != null)
+                {
+                    Vector3 v = robotRb.velocity; v.y = 0f; speedNow = v.magnitude;
+                }
+                else
+                {
+                    speedNow = Vector3.Distance(robot.position, lastPollPos) / pollDt;
+                    if (!fallbackSpeedWarned)
+                    {
+                        fallbackSpeedWarned = true;
+                        Debug.LogWarning("[AutoTrial] no robot physics body resolved -- trigger speed "
+                            + "falls back to position differencing, which is NOT a speed. Treat any "
+                            + "triggerSpeed verdict from this trial as unreliable.");
+                    }
+                }
 
                 bool distTriggered = dist <= triggerDistanceMeters;
                 bool timedOut = Time.time - pollStart >= TriggerTimeoutSec;

@@ -131,6 +131,15 @@ namespace SEAN.Scenario.Agents
         // PEDESTRIAN_SPAWNER_DESIGN.md §2.4. Simple appearance uses 1.0 (no change).
         public float walkSpeedMultiplier = 1.0f;
 
+        // Session 47 (defect A, solution (e)): the absolute pace an unmodulated pedestrian walks at.
+        // walkSpeedMultiplier is now a multiplier ON THIS, not on the incoming velocity -- see
+        // Scale(). 1.3 m/s is this project's repeatedly measured Rocketbox walking pace (Session
+        // 30R, 41, 44).
+        public float baseWalkSpeedMps = 1.3f;
+
+        // Below this, the incoming velocity carries no usable direction. See SetSpeed().
+        private const float MinDirectionSqrMagnitude = 1e-8f;
+
         /// <summary>
         /// True while patrolling, or while Curious is in Approach or Follow and is actively
         /// driving destPos via InitDest() -- lets PedestrianSpawner.Update() skip its
@@ -313,10 +322,11 @@ namespace SEAN.Scenario.Agents
                 Vector3 fleeDir = distanceToRobot > Mathf.Epsilon ? toSelf.normalized : Vector3.zero;
                 float closeness = 1f - Mathf.Clamp01(distanceToRobot / scaredRadius);
                 result += fleeDir * scaredStrength * closeness;
-                if (result.magnitude > scaredMaxSpeed)
-                {
-                    result = result.normalized * scaredMaxSpeed;
-                }
+                // Session 47 (e): flee has its own ABSOLUTE target, applied here rather than by a
+                // second multiplication in Scale(). The direction is what the flee force shapes;
+                // the magnitude is pinned, so the escape heading is preserved while the speed
+                // cannot compound.
+                return SetSpeed(result, scaredMaxSpeed * walkSpeedMultiplier);
             }
 
             return Scale(result);
@@ -383,7 +393,8 @@ namespace SEAN.Scenario.Agents
                         {
                             result = result.normalized * approachMaxSpeed;
                         }
-                        return Scale(result);
+                        // Session 47 (e): absolute target, not a further multiplication.
+                        return SetSpeed(result, approachMaxSpeed * walkSpeedMultiplier);
                     }
 
                 case CuriousState.Follow:
@@ -404,8 +415,9 @@ namespace SEAN.Scenario.Agents
                             ? socialForceVelocity.normalized
                             : self.transform.forward;
                         float robotSpeed = EstimateRobotSpeed(robot);
-                        Vector3 result = dir * Mathf.Max(robotSpeed * followSpeedMatchGain, 0.05f);
-                        return Scale(result);
+                        // Session 47 (e): matching the robot's pace is already an absolute target.
+                        return SetSpeed(dir, Mathf.Max(robotSpeed * followSpeedMatchGain, 0.05f)
+                                              * walkSpeedMultiplier);
                     }
             }
 
@@ -476,9 +488,53 @@ namespace SEAN.Scenario.Agents
             return Scale(socialForceVelocity);
         }
 
+        /// <summary>
+        /// Session 47, defect A, solution (e): return an ABSOLUTE target speed, never a multiple of
+        /// the input.
+        ///
+        /// The old body was `v * walkSpeedMultiplier`, and that compounds. Base.cs:122 writes this
+        /// method's result back into `Base.velocity`, and SFAgent.cs:71 integrates the next frame
+        /// FROM that field (`velocity + accel * dt`). So a multiplicative modulation is re-applied
+        /// to its own previous output every frame: v_n = (v_{n-1} + a*dt) * k, i.e. geometric in k.
+        /// k &gt; 1 runs away until Parameters.MAX_VEL clamps it; k &lt; 1 collapses (0.96^60 ~ 0.09),
+        /// which is the "stands still, then darts" behaviour reported for white_cane and
+        /// zoneA_seed2.
+        ///
+        /// Both halves of that loop are in red-line files (Base.cs, SFAgent.cs), so the fix has to
+        /// live here. Returning an absolute magnitude makes this function IDEMPOTENT: f(f(v)) =
+        /// f(v), because the output's magnitude no longer depends on the input's. However polluted
+        /// the base it integrated from, the result is the target speed.
+        ///
+        /// Direction still comes from `v`, so steering, avoidance and flee headings are untouched --
+        /// only the magnitude is pinned. This also directly implements the requested behaviour:
+        /// constant-speed pedestrians with no acceleration ramp, which removes a confound from the
+        /// encounter geometry.
+        ///
+        /// NOTE this is a workaround for an upstream defect, not a repair of it. Any other
+        /// IVelocityModulator in this project or elsewhere is still exposed. Remove once
+        /// SFAgent/Base integrate from an unmodulated base.
+        /// </summary>
         private Vector3 Scale(Vector3 v)
         {
-            return v * walkSpeedMultiplier;
+            return SetSpeed(v, baseWalkSpeedMps * walkSpeedMultiplier);
+        }
+
+        /// <summary>
+        /// Pin |v| to targetSpeed, preserving direction.
+        ///
+        /// The near-zero guard is load-bearing rather than defensive: Modulate() is called every
+        /// frame including while the agent is frozen at spawn and after it reaches its goal, so
+        /// v ~ 0 is the common case, not an edge case, and Vector3.normalized on it is undefined.
+        /// Returning zero there keeps a stopped agent stopped instead of launching it in whatever
+        /// direction floating-point noise happened to point.
+        /// </summary>
+        private Vector3 SetSpeed(Vector3 v, float targetSpeed)
+        {
+            if (targetSpeed <= 0f || v.sqrMagnitude < MinDirectionSqrMagnitude)
+            {
+                return Vector3.zero;
+            }
+            return v.normalized * targetSpeed;
         }
     }
 }
