@@ -52,6 +52,7 @@ import glob
 import json
 import math
 import os
+import random
 import re
 import shutil
 import signal
@@ -1428,6 +1429,43 @@ def green_pixel_fraction(jpg_path, g_dominance=1.5, g_min=120):
 # speed becomes target / this.
 BASE_PED_SPEED_MPS = 1.3
 
+# Session 46 (S46-D section 3): Zone-A pedestrian walk-speed diversity.
+#
+# Measured across the 24-appearance screen, every Zone-A actor walked at 1.0522 m/s with a stdev of
+# just 0.0387 -- about ONE FIFTH the spread of real adult walking speed (~0.2 m/s). And that narrow
+# spread was not even designed: --ped-speed is 1.0 for every Zone-A appearance, and the residual
+# came from SFAgent's always-on random RobotRepulsion perturbing trajectories.
+#
+# That matters because "pedestrian diversity" is a headline contribution, and the appearance axis
+# was already established to supply VISUAL diversity only -- all 24 share one skeleton and one
+# locomotion controller, and all travelled ~14.0 m identically.
+#
+# Calibration: measured speed is ~1.05x the multiplier, so a multiplier stdev of 0.17 yields
+# ~0.18 m/s of speed spread, and the existing 0.0387 emergent jitter adds in quadrature to ~0.184.
+# Mean is held near 1.10 deliberately -- the robot caps at 0.6 m/s, so raising pedestrian speed
+# would compress the encounter window and change the encounter geometry itself.
+ZONE_A_SPEED_MULT_MEAN = 1.05
+ZONE_A_SPEED_MULT_STDEV = 0.17
+# ~+/-2.35 sigma. Truncation barely moves the stdev but keeps animator.speed far from both clamps
+# (0.05 / 3.0): this range maps to roughly 0.61-1.17.
+ZONE_A_SPEED_MULT_MIN = 0.65
+ZONE_A_SPEED_MULT_MAX = 1.45
+
+
+def zone_a_speed_multiplier(seed):
+    """Deterministic per-trial walk-speed multiplier for a Zone-A pedestrian.
+
+    Seeded rather than free-running so a trial is reproducible from its manifest alone -- the
+    multiplier drawn is recorded there, and re-running with the same seed reproduces it.
+
+    Deliberately NOT applied to Mixamo clips or Zone-B specials: those carry their own designed
+    paces (Old_Man_Walk 0.7 m/s, Drunk_Walk 0.6, wheelchair/scooter/cyclist their own), and
+    randomising on top would make an "old man" occasionally stride at 1.5 m/s.
+    """
+    rng = random.Random(seed)
+    m = rng.gauss(ZONE_A_SPEED_MULT_MEAN, ZONE_A_SPEED_MULT_STDEV)
+    return max(ZONE_A_SPEED_MULT_MIN, min(ZONE_A_SPEED_MULT_MAX, m))
+
 CLIP_SPEEDS_PATH = Path(__file__).resolve().parent.parent / "Assets/PedestrianAssets/Mixamo/clip_speeds.json"
 
 
@@ -1610,7 +1648,8 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, gate_detail=None,
                                   manifest_ok=None, manifest_detail=None,
                                   spin_phases=None, full_contact_sheet=None,
                                   min_dist=None, profile=None, corridor_width=None,
-                                  vlm_eval=None):
+                                  vlm_eval=None, ped_motion=None, seed=None, zone_a_mult=None,
+                                  sample_role=None):
     """Records every permanent gate's verdict (Round 3's content gate, Round 4's aspect + approach-
     geometry gates) and every near clip's final (post-growth/merge) window + contact sheet into
     meta.json, so a trial's pass/fail is inspectable without re-running anything."""
@@ -1670,6 +1709,20 @@ def augment_trial_meta_with_gate(out_dir, gate_ok, near_clips, gate_detail=None,
             "gateVerdicts": verdicts,
             "gatesAllOk": all(reported) if len(reported) == len(verdicts) else None,
         }
+    # Session 46 (S46-D 1). `scenario` names the GEOMETRY (robot approaching the pedestrian
+    # head-on), which is a separate fact from whether that pedestrian walks or holds station.
+    # Without this field, filtering on scenario == "headon" silently mixes stationary actors into a
+    # set a consumer expects to be walking -- a data-quality problem that leaves no trace.
+    if ped_motion is not None:
+        data["pedestrian_motion"] = "stationary" if ped_motion == "standing" else "walking"
+    # Session 46 (S46-D 3): the sampled Zone-A walk-speed multiplier, plus the seed that produced
+    # it, so the trial reproduces from its own manifest. None for Mixamo clips and Zone-B specials,
+    # which keep their designed paces and are never randomised.
+    if seed is not None:
+        data["seed"] = seed
+    data["zoneASpeedMultiplier"] = zone_a_mult
+    if sample_role is not None:
+        data["sample_role"] = sample_role
     if profile is not None:
         data["profile"] = profile
     if corridor_width is not None:
@@ -1773,6 +1826,16 @@ def main():
     p.add_argument("--near-post", type=float, default=5.0,
                    help="seconds retained after the closest-approach frame (--clip-mode approach "
                         "only). Default 5.0s.")
+    p.add_argument("--sample-role", choices=["normal", "negative_generator"], default="normal",
+                   help="Session 46: negative_generator marks a configuration DESIGNED to produce "
+                        "close passes and safety-line crossings. Such a trial's min_dist is not a "
+                        "safety result and the 0.5m operational bar does not apply to it. Recorded "
+                        "in meta.json, INDEX.md and DATASHEET.md -- v5 shipped a 0.279m dyad breach "
+                        "that circulated as safety data precisely because no such marker existed.")
+    p.add_argument("--seed", type=int, default=None, metavar="N",
+                   help="Session 46: seed for per-trial Zone-A walk-speed sampling. Recorded in "
+                        "meta.json so the trial reproduces from its own manifest. Omitted means no "
+                        "speed randomisation (the pre-Session-46 constant 1.0).")
     p.add_argument("--dense-encounter", action="store_true",
                    help="Session 43: additionally infill the encounter span of vlm_eval/frames at "
                         "5 Hz (frame_NNNN_dK.png). OFF by default -- the agreed 1 Hz sequence is "
@@ -2246,6 +2309,20 @@ def main():
             eprint("[run_trial] --mixamo-clip {}: target {:.2f} m/s -> --ped-speed {:.3f} "
                    "(base {:.2f} m/s, from clip_speeds.json)".format(
                        args.mixamo_clip, target, args.ped_speed, BASE_PED_SPEED_MPS))
+    # Session 46 (S46-D 3): Zone-A only, and only when nothing more specific already set a speed.
+    # The ordering matters -- an explicit --ped-speed, a Mixamo target, and a Zone-B per-appearance
+    # multiplier all take precedence, so randomisation can never override a designed pace.
+    zone_a_mult = None
+    if (args.ped_speed is None and args.seed is not None
+            and not getattr(args, "mixamo_clip", None)
+            and args.appearance not in ZONE_B_APPEARANCES
+            and args.appearance not in APPEARANCE_SPEED_MULT):
+        zone_a_mult = zone_a_speed_multiplier(args.seed)
+        args.ped_speed = zone_a_mult
+        eprint("[run_trial] Zone-A walk-speed jitter: seed={} -> --ped-speed {:.4f}".format(
+            args.seed, zone_a_mult))
+    args.zone_a_speed_multiplier = zone_a_mult
+
     if args.ped_speed is None and args.appearance in APPEARANCE_SPEED_MULT:
         args.ped_speed = APPEARANCE_SPEED_MULT[args.appearance]
     if args.ped_speed is None:
@@ -2430,7 +2507,10 @@ def main():
                                   full_contact_sheet=full_sheet_name if full_sheet_ok else None,
                                   min_dist=meta_min_dist, profile=args.profile,
                                   corridor_width=args.corridor_width,
-                                  vlm_eval=result.get("vlm_eval"))
+                                  vlm_eval=result.get("vlm_eval"),
+                                  ped_motion=args.ped_motion, seed=args.seed,
+                                  zone_a_mult=getattr(args, "zone_a_speed_multiplier", None),
+                                  sample_role=args.sample_role)
 
     # Round 4 (Step 4, output format v3): pov_full.mp4/pov_full_ov.mp4 are now the PRIMARY
     # deliverable, not an internal scratch file -- the old cleanup_full_video() deletion is gone.
