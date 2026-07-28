@@ -222,11 +222,30 @@ def safety_label_for(min_dist):
 # before/after table, including the wheelchair cliff-discovery data.
 SCOOTER_SPEED_MULT = 4.5914  # Session 54: was 3.7; rescaled by 1.3/1.0476 so the absolute pace stays 4.81 m/s
 CYCLIST_SPEED_MULT = 5.9565  # Session 54: was 4.8; rescaled by 1.3/1.0476 so the absolute pace stays 6.24 m/s
-# Session 54: LEAVE AT EXACTLY 1.0. Mathf.Approximately(pedSpeedMultiplier, 1.0f) in
-# AutoTrialBootstrap.cs:798 means this appearance gets no PedestrianModulator at all, so it runs on
-# raw social-force velocity capped by Parameters.MAX_VEL (0.95, not the 0.6 that a stale comment in
-# AutoTrialBootstrap claims). That is the behaviour its eyeball pass approved. It is also why the
-# BASE_PED_SPEED_MPS change does not touch it: with no modulator, the base is never applied.
+# ############################################################################################
+# LEAVE AT EXACTLY 1.0. Changing it changes BEHAVIOUR, not just speed, and does so SILENTLY.
+# ############################################################################################
+#
+# AutoTrialBootstrap.cs:798 gates modulator attachment on
+# `!Mathf.Approximately(config.pedSpeedMultiplier, 1.0f)`. At exactly 1.0 this appearance gets
+# NO PedestrianModulator at all, so:
+#   - it runs on raw social-force velocity, capped by Parameters.MAX_VEL = 0.95 m/s (not the 0.6
+#     that a stale comment in AutoTrialBootstrap claimed until Session 54)
+#   - Session 47's absolute-target modulation (e) never applies to it
+#   - BASE_PED_SPEED_MPS never applies either, which is why Session 54's 1.3 -> 1.0476
+#     recalibration deliberately left this entry alone
+#
+# **That no-modulator behaviour is what passed human review.** Set this to 1.001 and the agent
+# gains a modulator, its speed law changes, and NOTHING reports it -- no error, no warning, no
+# gate. The only symptom is a trial that quietly behaves differently from the one that was
+# approved.
+#
+# Known design coupling, recorded rather than fixed (Session 59-A): "multiplier == 1.0" and
+# "attach no PedestrianModulator" are decided by one test, i.e. "do not rescale speed" and "do not
+# apply personality modulation" are conflated. This is the same coupling behind the Session 46-E
+# Indifferent defect, where supplying any multiplier attached a modulator to an agent that was
+# specified to have none. The correct fix is to decouple them with an explicit "no modulator" flag
+# instead of a magic value; it is behavioural, so it waits until after dataset generation.
 WHEELCHAIR_SPEED_MULT = 1.0
 # Session 33 FIX 6: user wants white-cane reduced FURTHER, target ~0.4-0.5 m/s (S31's 2.9 measured
 # ~0.55-0.64 m/s -- clearly slower than human but not slow enough per this session's ask). Scaled

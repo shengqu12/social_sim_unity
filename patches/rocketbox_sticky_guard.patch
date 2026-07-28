@@ -1,0 +1,29 @@
+diff --git a/Assets/Editor/FixRocketboxMaxImport.cs b/Assets/Editor/FixRocketboxMaxImport.cs
+index bddb2e3..75dcc21 100644
+--- a/Assets/Editor/FixRocketboxMaxImport.cs
++++ b/Assets/Editor/FixRocketboxMaxImport.cs
+@@ -41,7 +41,9 @@ public class FixRocketboxMaxImport : AssetPostprocessor
+     {
+         if (g.transform.Find("Bip02") != null) RenameBip(g);
+ 
+-        Transform pelvis = g.transform.Find("Bip01").Find("Bip01 Pelvis");
++        Transform bip01 = g.transform.Find("Bip01");
++        if (bip01 == null) return;
++        Transform pelvis = bip01.Find("Bip01 Pelvis");
+         if (pelvis == null) return;
+         Transform spine2 = pelvis.Find("Bip01 Spine").Find("Bip01 Spine1").Find("Bip01 Spine2");
+         Transform RClavicle = spine2.Find("Bip01 Neck").Find("Bip01 R Clavicle");
+@@ -61,8 +63,11 @@ public class FixRocketboxMaxImport : AssetPostprocessor
+ 
+ 
+         var importer = (ModelImporter)assetImporter;
+-        //If you need a humanoid avatar, change it here
+-        importer.animationType = ModelImporterAnimationType.Generic;
++        // Default new/untouched Rocketbox rigs to Generic, but don't fight a rig that's
++        // been deliberately switched to Humanoid (e.g. avatars used with AttachPropToHand's
++        // GetBoneTransform) -- every reimport (including entering Play) otherwise reverts it.
++        if (importer.animationType != ModelImporterAnimationType.Human)
++            importer.animationType = ModelImporterAnimationType.Generic;
+     }
+     private void RenameBip(GameObject currentBone)
+     {
