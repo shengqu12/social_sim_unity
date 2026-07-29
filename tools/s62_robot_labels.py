@@ -8,7 +8,9 @@ asked to score is the robot's social behaviour.
 
   R1  reached the goal, plus terminationReason
   R2  mean robot speed, whole trial and encounter segment
-  R3  longest continuous stall (< 0.05 m/s) and when it ran
+  R3a fraction of frames below 0.05 m/s -- catches DENSE SHORT stalls
+  R3b longest continuous stall and its bounds -- catches a SINGLE LONG stall
+  R3c when that stall began relative to the closest approach -- separates yielding from failure
   R4  path length / straight-line distance (detour ratio)
   R5  behaviour tier 1-5 -- HUMAN-FILLED, never inferred here (same rule as `eyeball`)
 
@@ -17,7 +19,13 @@ sample this dataset wants. Nothing here rejects a trial; it makes the robot's be
 consumer can decide. The one thing these numbers cannot do on their own is separate "stopped to
 yield" from "stalled": `scooter_user` does both in one trial, yielding at t=4.2 s and then stalling
 permanently from t=12.6 s with the pedestrian 40 m away. R3's bounds against the encounter time are
-what distinguishes them, which is why R3 reports when the stall happened and not just how long.
+what distinguishes them, which is why R3c exists.
+
+R3 is three columns rather than one because each alone has a blind spot, and the split is not
+theoretical: scooter_user's R3b is 0.66 s against a healthy cyclist's 0.33 s -- indistinguishable --
+while its R3a is 0.60 against 0.01. R3a misses a single long stall, R3b misses dense short ones, and
+R3c has nothing to qualify without the other two. The statistic has to match the shape of the
+failure mode you are trying to catch, not the shape that first comes to mind.
 
 All speeds come from `robot_speed_ground` (the physics body). Never position differencing.
 """
@@ -113,27 +121,25 @@ def robot_labels(trial_dir):
     return out
 
 
-HEADER = ("| config | R1 goal / termination | R2 mean (enc) | R3 stall: longest / frac | "
-          "R4 detour | R5 |")
-SEP = "|---|---|---|---|---|---|"
+HEADER = ("| config | R1 goal / termination | R2 mean (enc) | R3a stall frac | "
+          "R3b longest stall | R3c vs t_min | R4 detour | R5 |")
+SEP = "|---|---|---|---|---|---|---|---|"
 
 
 def md_row(d):
     if d.get("error"):
-        return "| `%s` | %s | | | | PENDING |" % (d.get("config", "?"), d["error"])
+        return "| `%s` | %s | | | | | | PENDING |" % (d.get("config", "?"), d["error"])
     r1 = "%s / %s" % ({True: "yes", False: "no", None: "?"}[d["R1_reached_goal"]], d["R1_termination"])
     r2 = "%.3f (%s)" % (d["R2_mean_mps"],
                         "%.3f" % d["R2_mean_encounter_mps"] if d["R2_mean_encounter_mps"] is not None else "-")
-    # The fraction is reported alongside the longest run, and it is not decoration: scooter_user's
-    # longest continuous stall is 0.66 s, which reads as unremarkable, while 60% of its frames sit
-    # below the threshold. Its failure mode is dense short stalls, so "longest continuous" alone
-    # would have missed the one configuration this whole criterion was created for.
-    r3 = "%.2f s / %.0f%% frames" % (d["R3_longest_stall_s"], 100 * d["R3_frac_below_stall"])
-    if d["R3_longest_stall_s"] > 0 and d.get("R3_starts_after_encounter_s") is not None:
-        r3 += " @%.1f-%.1f (%+.1f s vs closest)" % (
-            d["R3_stall_from_s"], d["R3_stall_to_s"], d["R3_starts_after_encounter_s"])
+    r3a = "%.0f%%" % (100 * d["R3_frac_below_stall"])
+    r3b = ("%.2f s @%.1f-%.1f" % (d["R3_longest_stall_s"], d["R3_stall_from_s"], d["R3_stall_to_s"])
+           if d["R3_stall_from_s"] is not None else "%.2f s" % d["R3_longest_stall_s"])
+    r3c = ("%+.1f s" % d["R3_starts_after_encounter_s"]
+           if d.get("R3_starts_after_encounter_s") is not None else "-")
     r4 = "%s" % (d["R4_detour_ratio"] if d["R4_detour_ratio"] is not None else "-")
-    return "| `%s` | %s | %s | %s | %s | %s |" % (d["config"], r1, r2, r3, r4, d["R5_behaviour_tier"])
+    return "| `%s` | %s | %s | %s | %s | %s | %s | %s |" % (
+        d["config"], r1, r2, r3a, r3b, r3c, r4, d["R5_behaviour_tier"])
 
 
 if __name__ == "__main__":
