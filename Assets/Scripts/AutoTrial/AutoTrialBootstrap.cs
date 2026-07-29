@@ -751,11 +751,11 @@ namespace SEAN.AutoTrial
                 // Session 13: freeze at spawn (InitDest(spawnPos) unconditionally); the real
                 // destination is only released at the slate moment, via releaseDest below.
                 navAgent.InitDest(spawnPos);
-                // Session 59: pinning destPos freezes Base.Move(), but Base.Move() is not what
-                // translates a root-motion agent -- PedestrianModulator.ApplyAnimatorRootMotion()
-                // is, and it ran through the whole freeze. Complete the freeze there too. Cleared
-                // by TrialController at the SLATE release, paired with InitDest(releaseDest).
-                FreezeRootMotionTranslation(navAgent, true);
+                // Session 61: the freeze call cannot go here -- in this Zone B branch the
+                // PedestrianModulator is not attached until the pedSpeedMultiplier block below, so
+                // GetComponent returned null and the freeze was silently skipped. No trial ever
+                // logged FROZEN. Applied after that block instead; the Zone A branch attaches its
+                // modulator first, which is why only Zone A was ever actually frozen.
                 // Session 21 STEP 3: white_cane_user origin-reset fix. Root cause characterized
                 // (not patched, both source files off-limits) via S21TransformWatcher -- destPos
                 // transiently zeroes as a by-design side effect of the SLATE freeze's own
@@ -878,6 +878,9 @@ namespace SEAN.AutoTrial
                     }
                     speedModulator.walkSpeedMultiplier = config.pedSpeedMultiplier;
                 }
+                // Session 59/61: the other half of the SLATE freeze. Must run AFTER the modulator
+                // exists -- see the note at InitDest(spawnPos) above.
+                FreezeRootMotionTranslation(navAgent, true);
                 navAgentOut = navAgent;
                 // Session 54: honour --ped-motion standing here too. Session 28 PART 3a added it
                 // to the Zone A branch only, so the flag was silently a no-op for every Zone B
