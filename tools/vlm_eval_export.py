@@ -479,6 +479,28 @@ vertical axis and is exactly the kind of pun that has cost this project time bef
 | `robot_vel_x/y/z` | m/s | Unity world axes, signed; y is vertical |
 | `robot_x`, `robot_z` | m | Unity world ground plane |
 
+#### Two heading columns, opposite sign, and only one of them wraps
+
+Verified across 2706 frames (three trials, 902 frames each):
+
+- `robot_heading` stayed inside **[0, 360)** on every frame, including the two frames where it
+  wrapped (358.90 -> 1.38 and 0.91 -> 357.80).
+- `robot_heading` and `robot_yaw_ros_rad` agreed as mirror images on **2706 of 2706** frames, with a
+  worst residual of **0.008 deg** -- floating point and sampling noise, nothing structural.
+
+Two consequences, and both have a way of biting quietly:
+
+**`robot_yaw_ros_rad` is UNWRAPPED and can leave the +/-2*pi range.** It is accumulated across
+frames on purpose so that a consumer differentiating or plotting it never sees a 2*pi spike at the
+wrap point. If you want an absolute heading from it, take `mod 2*pi` yourself. Otherwise you will
+read values like -361 deg, and nothing will report an error.
+
+**Comparing the two columns requires `mod 360`.** One wraps and the other does not, so adding them
+and expecting zero fails exactly at the wrap frames -- measured, a direct sum reads -2.48 there.
+Under `mod 360` the relationship holds everywhere. A single sampled row cannot show this: any row
+away from a wrap satisfies both the naive and the correct check, which is why this was verified over
+whole trials and specifically over the wrapping frames rather than from one value.
+
 **`robot_heading` and `cmd_vel_angular` turn in opposite directions.** This is not a bug and it is
 not new -- it is inherent to the two coordinate conventions and is already present in every
 `frames.csv` this project has ever produced. `robot_yaw_ros_rad` and `robot_ang_vel_ros` are
