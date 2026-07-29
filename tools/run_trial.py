@@ -261,14 +261,22 @@ WHEELCHAIR_SPEED_MULT = 1.0
 # multiplier. With the loop open, commanded speed IS realised ground speed, so 2.2 would now render
 # a white-cane user travelling at 2.86 m/s. Set from the documented INTENT above (~0.45 m/s)
 # instead: 0.45 / 1.0476 = 0.4296. This is an assumption, flagged for the eyeball pass.
-WHITE_CANE_SPEED_MULT = 0.4296
+# Session 60: 0.4296 -> 0.0468. NOT a behaviour change -- 0.0468 * 1.0476 = 0.049 m/s is what
+# this agent has actually been travelling at all along. The old 0.45 was the commanded value,
+# and ~90% of it was lost to humanoid retargeting on this nested-Animator avatar, so the
+# manifest recorded a speed an order of magnitude away from what happened. Paired with the
+# referenceSpeedMps=0.150 calibration in AutoTrialBootstrap: commanded / calibrated k gives
+# animator.speed 0.327, the value it already ran at, so nothing on screen moves differently.
+WHITE_CANE_SPEED_MULT = 0.0468
 
 # Session 54-C section 3: the four never-run Zone B characters had no entry here at all, so
 # args.ped_speed fell through to the 1.0 default -- and pedSpeedMultiplier == 1.0 makes
 # AutoTrialBootstrap skip attaching a PedestrianModulator entirely (Mathf.Approximately), which
 # means solution (e) never applies and |Base.velocity| is not pinned. Both values below are != 1.0,
 # which is a requirement, not a coincidence.
-DOG_WALKER_SPEED_MULT = 1.0500   # 1.10 m/s / 1.0476 -- ordinary walking pace
+# Session 60: 1.0500 -> 0.6271, same reasoning as white_cane above. 0.6271 * 1.0476 = 0.657 m/s
+# is the measured speed; the 1.10 it was commanded lost ~40% to retargeting.
+DOG_WALKER_SPEED_MULT = 0.6271
 PHONE_USER_SPEED_MULT = 0.9068   # 0.95 m/s / 1.0476 -- distracted pedestrians walk measurably slower
 # male_child / female_child get no multiplier on purpose: they have no walking animation, so they
 # run as --ped-motion standing (S54-C section 1) and are never commanded to travel.

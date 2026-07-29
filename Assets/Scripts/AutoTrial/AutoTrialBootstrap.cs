@@ -48,6 +48,19 @@ namespace SEAN.AutoTrial
             { "white_cane_user", "Prefabs/WhiteCaneUserContainer" },
         };
 
+
+        /// <summary>
+        /// Session 60. Measured effective k per Zone B appearance -- see the use site. Empty entry
+        /// means "no compensation", which is the correct answer for every appearance whose Animator
+        /// sits on the root.
+        /// </summary>
+        private static readonly Dictionary<string, float> ZoneBRetargetCalibration =
+            new Dictionary<string, float>
+        {
+            { "white_cane_user", 0.150f },
+            { "dog_walker", 1.003f },
+        };
+
         private const float SeanWaitTimeoutSec = 30f;
         private const float TaskWaitTimeoutSec = 10f;
         private const float TaskRunningWaitTimeoutSec = 10f;
@@ -755,6 +768,36 @@ namespace SEAN.AutoTrial
                 // speed -- general fix, every Zone B appearance (see S32AnimatorSpeedScaler's own
                 // class doc for why this wasn't already happening).
                 navAgent.transform.gameObject.AddComponent<S32AnimatorSpeedScaler>();
+                // Session 60: hand-calibrated retargeting compensation, Zone B only.
+                //
+                // AnimationClip.averageSpeed is a property of the clip on its SOURCE rig, not of the
+                // (clip, avatar) pair. Measured offered/expected: business_male_01 (Animator on the
+                // root) 1.016, dog_walker (nested) 0.710, white_cane_user (nested) 0.418. Scale is
+                // exactly 1.0 at every level on all three, humanScale spans 1.010-1.043, and
+                // applied/offered is ~1.0 -- so neither scale, nor body proportion, nor the
+                // application path explains it. The ratio is constant within a trial, so it is a
+                // per-(clip, avatar) constant and an offline calibration is the right model.
+                //
+                // These are the measured effective k (realised speed / mean animator.speed). They
+                // make the COMMANDED speed in the manifest equal the speed that actually happens;
+                // they do not change what is on screen. The loss itself is not fixed, only
+                // compensated. THEY BECOME INVALID IF THE ASSET CHANGES.
+                // MUST run AFTER the AddComponent above. An earlier version sat before it, and the
+                // subsequent AddComponent attached a SECOND scaler carrying the defaults; both wrote
+                // animator.speed and the uncalibrated one won, so the calibration read as ignored.
+                float zoneBRef;
+                if (ZoneBRetargetCalibration.TryGetValue(config.appearance, out zoneBRef))
+                {
+                    var calScaler = navAgent.transform.gameObject.GetComponent<S32AnimatorSpeedScaler>();
+                    calScaler.referenceSpeedMps = zoneBRef;
+                    // Same guard S55 added for Pacing_Phone: without it the live
+                    // AnimationClip.averageSpeed read silently overwrites the hand value. That has
+                    // already happened once -- Pacing_Phone ran at animator.speed 1.928 where its
+                    // calibration intended 1.419, 36% fast, and nothing reported it.
+                    calScaler.referenceSpeedMpsExplicit = true;
+                    Debug.Log("[S60Calib] " + config.appearance + " referenceSpeedMps="
+                        + zoneBRef.ToString("F4") + " (explicit, retargeting compensation)");
+                }
                 // Session 37 STEP 2: attach the (now TTC-based) reaction gate unconditionally to
                 // every Zone B appearance too -- the N=5 safety census this session found
                 // white_cane_user's own worst-case min_dist (0.321m) BELOW the 0.36m physical

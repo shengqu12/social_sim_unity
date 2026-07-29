@@ -396,8 +396,18 @@ namespace SEAN.AutoTrial
             // division guard since LocomotionAuthoredSpeedMps > MinAuthoredSpeedMps. Both are kept:
             // the guard states what is numerically unsafe, the domain states what is semantically
             // meaningless, and they would come apart if either constant were ever retuned.
+            // Session 60: the DOMAIN test applies to a live reading only. LocomotionAuthoredSpeedMps
+            // was derived from the gap in the distribution of AUTHORED clip speeds -- it answers
+            // "is this clip locomotion at all". An explicit value is a different quantity: a
+            // calibration of how much of that clip's travel survives retargeting onto this avatar.
+            // white_cane's is 0.150, below the 0.20 boundary, yet its Walk clip plainly translates;
+            // classifying it as non-locomotion would pin animator.speed at 1.0 and render it at
+            // 0.150 m/s instead of the 0.049 it was calibrated to. Whoever supplied the value has
+            // already answered the domain question. The NUMERICAL guard still applies to both.
             float authoredSpeed = AuthoredClipSpeedMps();
-            if (authoredSpeed < LocomotionAuthoredSpeedMps || authoredSpeed < MinAuthoredSpeedMps)
+            bool calibrated = referenceSpeedMpsExplicit;
+            if (authoredSpeed < MinAuthoredSpeedMps
+                || (!calibrated && authoredSpeed < LocomotionAuthoredSpeedMps))
             {
                 // Authored rate, not zero: an idle clip should breathe at its designed pace.
                 // Scaling it toward zero is the frozen-statue failure mode.
