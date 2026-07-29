@@ -89,6 +89,18 @@ namespace SEAN.Scenario.Agents
         // the sibling SFAgent once, not re-applied every Modulate() call.
         private bool assertiveInitialized = false;
 
+        /// <summary>
+        /// Session 59. While true, ApplyAnimatorRootMotion() discards the clip's translation and
+        /// keeps its rotation, so the character animates in place. Set by AutoTrialBootstrap at the
+        /// SLATE frozen spawn and cleared by TrialController at the release instant, mirroring the
+        /// InitDest(spawnPos) / InitDest(releaseDest) pair it exists to complete.
+        ///
+        /// Defaults to FALSE on purpose. Defaulting to frozen would silently immobilise any
+        /// modulator-bearing agent that nobody releases -- ambient pedestrians spawned by
+        /// PedestrianSpawner never go through TrialController's release path.
+        /// </summary>
+        [System.NonSerialized] public bool rootMotionTranslationFrozen = false;
+
         // Patrol: ping-pongs destPos between two fixed points. Orthogonal to personality --
         // not a PersonalityType case, so e.g. Surprised can react AND patrol (see
         // EnablePatrol() and the arrival check at the top of Modulate()).
@@ -272,6 +284,40 @@ namespace SEAN.Scenario.Agents
         public void ApplyAnimatorRootMotion()
         {
             if (animator == null) { return; }
+
+            // Session 59: the SLATE frozen spawn holds the pedestrian in place by pinning its
+            // destination (InitDest(spawnPos)), which gates Base.Move() -- and Base.Move() is not
+            // what translates a root-motion agent. This method is. So a Mixamo pedestrian, whose
+            // generated single-state controller has no Forward/Idling to fall to zero, simply kept
+            // walking through the freeze. Measured drift before capture even starts: Old_Man_Walk
+            // 2.87 m, Drunk_Walk 3.12 m, carry_and_walk 4.79 m, Pacing_Phone 7.73 m. dist0 -- the
+            // controlled variable of the whole encounter geometry -- consequently ranged 3.98 to
+            // 8.0 m across configurations, so two configurations were not comparable.
+            //
+            // Translation is discarded, the clip keeps playing: a frozen character should still
+            // look alive, and holding animator.speed at 0 would freeze it into a single pose.
+            //
+            // NOT implemented by toggling animator.applyRootMotion, which was the obvious route and
+            // is unsafe: S44ClipProps (Session 46) deliberately holds applyRootMotion false for
+            // in-place clips and re-asserts it for five frames, S44ClipProps again for the
+            // Standing_Arguing partner, and S39DirectVelocityDriveAnimatorSync for
+            // directVelocityDrive agents. Restoring it to true on release would revert Session 46's
+            // verified fix, and capturing-then-restoring races that five-frame re-assert. Gating
+            // the application instead touches none of them.
+            if (rootMotionTranslationFrozen)
+            {
+                // Apply NEITHER position nor rotation. An earlier version of this branch applied
+                // rotation only, reasoning that a frozen agent might still need to turn toward its
+                // release heading. That was speculation and it was wrong: Standing_Arguing drifted
+                // 7.419 m after release, against 0.000 m on the same configuration before this
+                // change, and the drift was entirely post-release. Session 46 had already recorded
+                // the mechanism -- its 7.779 m drift "appeared only once a component started
+                // forcing transform.rotation every LateUpdate, which conflicts with Unity's
+                // root-motion auto-apply writing position and rotation in the same frame". Applying
+                // one without the other is exactly that pathological pair, and the animator's root
+                // state does not recover when translation resumes.
+                return;
+            }
 
             // Same extended condition as IsRotationSuppressed() -- see that method's comment.
             bool frozenSurprised = personality == PersonalityType.Surprised && (Time.time < frozenUntil || SurpriseAnimationActive());

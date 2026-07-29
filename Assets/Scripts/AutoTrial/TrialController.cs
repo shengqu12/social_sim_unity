@@ -224,6 +224,33 @@ namespace SEAN.AutoTrial
         /// further: MaxPlausibleTriggerSpeedMps is comfortably above every normal cruise reading
         /// observed (&le;~0.9 m/s) and comfortably below both observed anomalies (2.67/3.6 m/s).
         /// </summary>
+
+        /// <summary>
+        /// Session 59. Clears PedestrianModulator.rootMotionTranslationFrozen, the second half of
+        /// the SLATE freeze set by AutoTrialBootstrap. No-op on agents without a modulator.
+        /// </summary>
+        private static void ReleaseRootMotionTranslation(IVI.INavigable navAgent)
+        {
+            if (navAgent == null) { return; }
+            var mod = navAgent.transform.GetComponent<Scenario.Agents.PedestrianModulator>();
+            // Logged per agent, deliberately. For a walking configuration a failure to clear is
+            // obvious -- dist0 collapses. For a STATIONARY one (Sitting, Standing_Arguing, the
+            // children) the symptom of failing to clear is that the pedestrian does not move, which
+            // is exactly what it is supposed to do anyway. Without this line there is no way to
+            // tell "cleared, and correctly still" from "never cleared".
+            if (mod != null)
+            {
+                mod.rootMotionTranslationFrozen = false;
+                Debug.Log("[S59Freeze] root-motion translation RELEASED on '"
+                    + navAgent.transform.name + "'");
+            }
+            else
+            {
+                Debug.Log("[S59Freeze] no PedestrianModulator on '" + navAgent.transform.name
+                    + "' -- nothing to release (expected for pedSpeedMultiplier == 1.0 agents)");
+            }
+        }
+
         private IEnumerator PollForTrigger()
         {
             // Speed is measured over a window matching the capture cadence (~1/fps), refreshed
@@ -325,6 +352,11 @@ namespace SEAN.AutoTrial
                     }
 
                     pedestrianNavAgent?.InitDest(pedestrianReleaseDest);
+                    // Session 59: the freeze had two halves and only one was released here.
+                    // AutoTrialBootstrap pins destPos AND stops root-motion translation, because
+                    // pinning destPos alone gates Base.Move(), which is not what moves a
+                    // root-motion agent. Release both at the same instant.
+                    ReleaseRootMotionTranslation(pedestrianNavAgent);
                     // Session 35 BLOCK 4: release every extra pedestrian at the exact same SLATE
                     // instant as the primary one -- otherwise they'd stay frozen at spawn for the
                     // rest of the trial (InitDest(spawnPos) in SpawnExtraPedestrian never gets a
@@ -332,6 +364,7 @@ namespace SEAN.AutoTrial
                     for (int i = 0; i < extraPedestrianNavAgents.Count; i++)
                     {
                         extraPedestrianNavAgents[i]?.InitDest(extraPedestrianReleaseDests[i]);
+                        ReleaseRootMotionTranslation(extraPedestrianNavAgents[i]);
                     }
 
                     // Session 32 FIX B: if this pedestrian carries the Assertive straight-line

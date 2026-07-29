@@ -679,6 +679,24 @@ namespace SEAN.AutoTrial
             return t;
         }
 
+
+        /// <summary>
+        /// Session 59. Freezes or releases a pedestrian's root-motion TRANSLATION, the other half of
+        /// the SLATE freeze. Safe on agents with no modulator: those are the pedSpeedMultiplier==1.0
+        /// case, which is directVelocityDrive and therefore takes no translation from root motion.
+        /// </summary>
+        private static void FreezeRootMotionTranslation(IVI.INavigable navAgent, bool frozen)
+        {
+            if (navAgent == null) { return; }
+            var mod = navAgent.transform.GetComponent<Scenario.Agents.PedestrianModulator>();
+            if (mod != null)
+            {
+                mod.rootMotionTranslationFrozen = frozen;
+                Debug.Log("[S59Freeze] root-motion translation " + (frozen ? "FROZEN" : "released")
+                    + " on '" + navAgent.transform.name + "'");
+            }
+        }
+
         private Transform SpawnPedestrian(AutoTrialConfig config, string zone, GameObject prefab, Scenario.Agents.PedestrianModulator.PersonalityType personalityType,
             out IVI.INavigable navAgentOut, out Vector3 releaseDest)
         {
@@ -716,6 +734,11 @@ namespace SEAN.AutoTrial
                 // Session 13: freeze at spawn (InitDest(spawnPos) unconditionally); the real
                 // destination is only released at the slate moment, via releaseDest below.
                 navAgent.InitDest(spawnPos);
+                // Session 59: pinning destPos freezes Base.Move(), but Base.Move() is not what
+                // translates a root-motion agent -- PedestrianModulator.ApplyAnimatorRootMotion()
+                // is, and it ran through the whole freeze. Complete the freeze there too. Cleared
+                // by TrialController at the SLATE release, paired with InitDest(releaseDest).
+                FreezeRootMotionTranslation(navAgent, true);
                 // Session 21 STEP 3: white_cane_user origin-reset fix. Root cause characterized
                 // (not patched, both source files off-limits) via S21TransformWatcher -- destPos
                 // transiently zeroes as a by-design side effect of the SLATE freeze's own
@@ -1100,6 +1123,11 @@ namespace SEAN.AutoTrial
                         ? config.patrolWaypoints[0].ToVector3()
                         : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos));
                 navAgent.InitDest(spawnPos);
+                // Session 59: pinning destPos freezes Base.Move(), but Base.Move() is not what
+                // translates a root-motion agent -- PedestrianModulator.ApplyAnimatorRootMotion()
+                // is, and it ran through the whole freeze. Complete the freeze there too. Cleared
+                // by TrialController at the SLATE release, paired with InitDest(releaseDest).
+                FreezeRootMotionTranslation(navAgent, true);
                 navAgentOut = navAgent;
                 releaseDest = zoneADest;
                 return navAgent.transform;
