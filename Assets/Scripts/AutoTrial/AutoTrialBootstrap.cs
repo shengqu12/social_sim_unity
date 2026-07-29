@@ -57,7 +57,11 @@ namespace SEAN.AutoTrial
         private static readonly Dictionary<string, float> ZoneBRetargetCalibration =
             new Dictionary<string, float>
         {
-            { "white_cane_user", 0.150f },
+            // Session 60: white_cane_user's 0.150 is REVERTED pending diagnosis. With it, animator
+            // .speed hit its target exactly (0.327) but realised travel came out 0.0059 m/s against
+            // a target of 0.049 -- 8x low -- and dist0 fell to 3.716. dog_walker, calibrated the
+            // same way on the same nested-Animator path, verified end to end (0.6434 vs 0.657), so
+            // the mechanism is not the calibration as such. Reverting isolates it.
             { "dog_walker", 1.003f },
         };
 

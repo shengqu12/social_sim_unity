@@ -267,7 +267,10 @@ WHEELCHAIR_SPEED_MULT = 1.0
 # manifest recorded a speed an order of magnitude away from what happened. Paired with the
 # referenceSpeedMps=0.150 calibration in AutoTrialBootstrap: commanded / calibrated k gives
 # animator.speed 0.327, the value it already ran at, so nothing on screen moves differently.
-WHITE_CANE_SPEED_MULT = 0.0468
+# Session 60: REVERTED to 0.4296 (commanded 0.45 m/s) pending diagnosis -- see the calibration
+# table in AutoTrialBootstrap. This restores exactly the state human review approved: realised
+# ~0.049 m/s on screen, with the known and documented ~9x gap between commanded and realised.
+WHITE_CANE_SPEED_MULT = 0.4296
 
 # Session 54-C section 3: the four never-run Zone B characters had no entry here at all, so
 # args.ped_speed fell through to the 1.0 default -- and pedSpeedMultiplier == 1.0 makes
