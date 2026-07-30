@@ -7,7 +7,7 @@ Writes <dataset_dir>/CHECKS.md and prints it.
 
   1. what fraction of trials have min_dist < 0.5 m           criterion >= 10%
   2. is there a "never moves at all" configuration           on R2/R3a/R3b/R3c/R4, never on R1
-  3. how many times maxSpeedScale engaged                    expected 0
+  3. how many times maxSpeedScale engaged                    must belong to a reaction (S64 (b))
 
 Two rules this file obeys and does not quietly relax:
 
@@ -23,7 +23,8 @@ import collections, csv, math, os, re, statistics, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from s62_robot_labels import robot_labels  # noqa: E402
-from s62_make_index import clamp_hits  # noqa: E402
+from s62_make_index import (clamp_hits, clamp_ceiling, clamp_episodes, personality,  # noqa: E402
+                            REACTIVE_PERSONALITIES)
 
 CLOSE_M = 0.5
 CLOSE_CRITERION = 0.10
@@ -147,24 +148,43 @@ def main():
              "robot that stopped and stayed stopped after the encounter was over.\n")
 
     # ---- 3. maxSpeedScale ------------------------------------------------------------------
-    hits = {}
+    hits, bad = {}, []
     for r in rows:
-        d = os.path.join(batch, r["config"])
-        if os.path.isdir(d):
-            h = clamp_hits(d)
-            if h:
-                hits[r["config"]] = h
+        cfg = r["config"]
+        d = os.path.join(batch, cfg)
+        if not os.path.isdir(d):
+            continue
+        h = clamp_hits(d)
+        if not h:
+            continue
+        hits[cfg] = h
+        at, n_eps, longest, resets = clamp_episodes(batch, cfg, clamp_ceiling(d))
+        pers = (personality(d) or "?").lower()
+        if at is None or pers not in REACTIVE_PERSONALITIES or not resets:
+            bad.append((cfg, h, pers, resets))
     total = sum(hits.values())
     L.append("\n## 3. `maxSpeedScale` engagements\n")
-    L.append("**%d across all %d trials — %s** (expected 0).\n"
-             % (total, len(rows), "PASS" if total == 0 else "FAIL"))
-    if total:
-        L.append("A non-zero count means the speed feedback loop is not cleanly broken. Per trial:\n")
+    L.append("Session 64 ruling (b): the criterion is no longer \"zero\". Clamping must belong to a "
+             "reaction — it may only occur on a reactive personality (`curious`, `scared`), and "
+             "every episode must reset, because a compounding speed loop cannot reset. Neither "
+             "`maxSpeedScale` (3.0) nor the reset requirement was relaxed to fit the data.\n")
+    L.append("**%d engagements across %d of %d trials, %d of them outside the criterion — %s.**\n"
+             % (total, len(hits), len(rows), len(bad), "PASS" if not bad else "FAIL"))
+    if bad:
+        for c, h, pers, resets in bad:
+            L.append("- `%s` — %d engagements, personality `%s`, episodes reset: %s" %
+                     (c, h, pers, resets))
+    if hits:
+        L.append("\n| trial | engagements | personality | episodes | longest | all reset |")
+        L.append("|---|---|---|---|---|---|")
         for c, h in sorted(hits.items(), key=lambda kv: -kv[1]):
-            L.append("- `%s` — %d" % (c, h))
-    else:
-        L.append("Counted with `s62_make_index.clamp_hits` over every trial's `unity.log`, the same "
-                 "function the INDEX generator uses, so the two cannot disagree.\n")
+            at, n_eps, longest, resets = clamp_episodes(batch, c, clamp_ceiling(os.path.join(batch, c)))
+            L.append("| `%s` | %d | %s | %s | %.2f s | %s |" % (
+                c, h, (personality(os.path.join(batch, c)) or "?").lower(),
+                n_eps, longest or 0.0, resets))
+        L.append("\nThe `animator_speed` column the episode shape is read from is the clamp's own "
+                 "OUTPUT, so it agrees with the `[S44Clamp]` summary by construction — that "
+                 "agreement is a consistency check, not independent corroboration.\n")
 
     out = os.path.join(batch, "CHECKS.md")
     open(out, "w").write("\n".join(L) + "\n")

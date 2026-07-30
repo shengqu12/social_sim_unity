@@ -16,7 +16,7 @@ separates them, so an unpaired count is a hard stop, not a warning.
 Nothing in this file rejects a trial. A robot that stops to let someone pass is behaving correctly
 and is a sample the dataset wants -- the labels make behaviour visible, they do not filter it.
 """
-import csv, math, os, re, subprocess, sys
+import csv, json, math, os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from s62_robot_labels import robot_labels, md_row, HEADER, SEP  # noqa: E402
@@ -34,11 +34,44 @@ def _grep_count(path, pattern):
     return n
 
 
+def ped_speed_multiplier(trial_dir):
+    """The trial's configured pedSpeedMultiplier, read from meta.json -- a different source from the
+    unity.log line that reports the freeze, so the N/A verdict is not the log agreeing with itself."""
+    meta = os.path.join(trial_dir, "meta.json")
+    if not os.path.exists(meta):
+        return None
+    try:
+        cfg = (json.load(open(meta)) or {}).get("config") or {}
+    except ValueError:
+        return None
+    v = cfg.get("pedSpeedMultiplier")
+    return float(v) if v is not None else None
+
+
 def freeze_pairing(trial_dir):
+    """Returns (FROZEN, RELEASED, state) with state in {"paired", "na", "bad"}.
+
+    Session 64 added "na". At pedSpeedMultiplier == 1.0 no PedestrianModulator is attached, so
+    FreezeRootMotionTranslation is a documented no-op (AutoTrialBootstrap.cs) and the release path
+    logs "no PedestrianModulator ... expected for pedSpeedMultiplier == 1.0 agents" -- those agents
+    are directVelocityDrive and take no translation from root motion, so there is nothing to freeze.
+    All of wheelchair_user, male_child and female_child are in this class.
+
+    "na" is NOT "0 is fine". It requires the configured multiplier to be exactly 1.0, and the caller
+    must additionally record the probe-measured pre-capture drift on the row -- 0/0 with a multiplier
+    that is not 1.0 remains the Session 61 hard stop, because that is the case where the freeze was
+    supposed to happen and silently did not."""
     log = os.path.join(trial_dir, "unity.log")
     f = _grep_count(log, r"S59Freeze.*FROZEN")
     r = _grep_count(log, r"S59Freeze.*RELEASED")
-    return f, r, (f is not None and f == r and f >= 1)
+    if f is None or r is None or f != r:
+        return f, r, "bad"
+    if f >= 1:
+        return f, r, "paired"
+    mult = ped_speed_multiplier(trial_dir)
+    if mult is not None and mult == 1.0:
+        return f, r, "na"
+    return f, r, "bad"
 
 
 def clamp_hits(trial_dir):
@@ -52,6 +85,84 @@ def clamp_hits(trial_dir):
             if m:
                 hi += int(m.group(1))
     return hi
+
+
+def clamp_ceiling(trial_dir):
+    """The clamp's own configured ceiling, parsed from its summary line (`range=[0.05,3.00]`), so
+    this file never hard-codes a limit that lives somewhere else."""
+    log = os.path.join(trial_dir, "unity.log")
+    if not os.path.exists(log):
+        return None
+    for line in open(log, errors="replace"):
+        if "[S44Clamp]" in line:
+            m = re.search(r"range=\[[0-9.]+,\s*([0-9.]+)\]", line)
+            if m:
+                return float(m.group(1))
+    return None
+
+
+REACTIVE_PERSONALITIES = {"curious", "scared"}
+
+
+def personality(trial_dir):
+    meta = os.path.join(trial_dir, "meta.json")
+    if not os.path.exists(meta):
+        return None
+    try:
+        return ((json.load(open(meta)) or {}).get("config") or {}).get("personality")
+    except ValueError:
+        return None
+
+
+def clamp_episodes(batch, name, ceiling):
+    """Session 64 ruling (b): the criterion is not "no clamping", it is that clamping must belong to
+    a reaction. A reactive personality asking for more speed than the ceiling allows is a legitimate
+    demand hitting a design limit; a speed loop feeding itself is not.
+
+    The ruling names a "reaction window", and this pipeline does not record one. `close_enough_*` is
+    INavigable's ARRIVAL check (S54AnimParamProbe samples `baseAgent.CloseEnough()`), not a
+    robot-proximity reaction gate, and the reaction gate that does exist -- S46ScaredTriggerGate --
+    logs "FIRED at 3.49 m" with no timestamp, so it cannot be placed on the probe's clock. Using
+    arrival as a proxy for reaction is what this file must not do quietly.
+
+    So the criterion is applied where it IS measurable, in two parts:
+
+      * clamping may only occur on a reactive personality (`curious`, `scared`) -- a clamp on
+        `indifferent`, `surprised` or `assertive` has no reaction to belong to
+      * every clamp episode must RESET (fall back below `reset_to`) -- a compounding loop cannot
+        reset, which is the signature the ruling relies on
+
+    Both are read from the probe's own `animator_speed` in the probe's own clock, and from
+    meta.json's configured personality -- never from frames.csv.
+
+    Returns (n_ceiling_samples, n_episodes, longest_episode_s, all_episodes_reset) or all-None.
+    """
+    probe = os.path.join(batch, name + "_params.csv")
+    if not os.path.exists(probe) or ceiling is None:
+        return None, None, None, None
+    t, a = [], []
+    for row in csv.DictReader(open(probe)):
+        try:
+            t.append(float(row["t"]))
+            a.append(float(row["animator_speed"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not a:
+        return None, None, None, None
+    reset_to = ceiling * (2.0 / 3.0)
+    eps, start = [], None
+    for i, v in enumerate(a):
+        if v >= ceiling - 1e-3:
+            if start is None:
+                start = i
+        elif start is not None:
+            eps.append((start, i))
+            start = None
+    if start is not None:
+        eps.append((start, len(a) - 1))
+    longest = max((t[b] - t[s] for s, b in eps), default=0.0)
+    resets = all(any(a[j] < reset_to for j in range(b, min(len(a), b + 200))) for s, b in eps)
+    return sum(1 for v in a if v >= ceiling - 1e-3), len(eps), longest, resets
 
 
 def freeze_drift_and_speed(batch, name):
@@ -113,21 +224,52 @@ def main():
     L.append("All windowed statistics use 1 s endpoint displacement over the probe's own "
              "coordinates. `eyeball` and `R5` are filled by a human or stay PENDING.\n")
 
+    # Drift is computed once here and used in both tables: an N/A freeze row has to carry the
+    # measured drift beside it, or "not applicable" is an assertion rather than a reading.
+    drifts = {r["config"]: freeze_drift_and_speed(batch, r["config"]) for r in rows}
+
     L.append("\n## Trials\n")
     L.append("| config | exit | dist0 | min_dist | freeze FROZEN/RELEASED | clampHi | eyeball |")
     L.append("|---|---|---|---|---|---|---|")
     problems = []
+    n_na = 0
     for r in rows:
-        d = os.path.join(batch, r["config"])
-        f, rel, ok = freeze_pairing(d)
+        cfg = r["config"]
+        d = os.path.join(batch, cfg)
+        f, rel, state = freeze_pairing(d)
         ch = clamp_hits(d)
-        if not ok:
-            problems.append("freeze log not paired on `%s` (FROZEN=%s RELEASED=%s)" % (r["config"], f, rel))
+        drift = drifts[cfg][0]
+        if state == "bad":
+            problems.append("freeze log not paired on `%s` (FROZEN=%s RELEASED=%s, "
+                            "pedSpeedMultiplier=%s)" % (cfg, f, rel, ped_speed_multiplier(d)))
+            freeze_cell = "%s/%s **UNPAIRED**" % (f, rel)
+        elif state == "na":
+            n_na += 1
+            if drift is None:
+                problems.append("`%s` is freeze-N/A but has no probe drift to record" % cfg)
+                freeze_cell = "N/A (**no drift recorded**)"
+            else:
+                freeze_cell = "N/A, mult 1.0 (drift %.4f m)" % drift
+        else:
+            freeze_cell = "%s/%s" % (f, rel)
         if ch:
-            problems.append("maxSpeedScale engaged %d times on `%s`" % (ch, r["config"]))
-        L.append("| `%s` | %s | %s | %s | %s/%s%s | %s | PENDING |" % (
-            r["config"], r.get("exit", "?"), r.get("dist0", "?"), r.get("min_dist", "?"),
-            f, rel, "" if ok else " **UNPAIRED**", ch if ch is not None else "?"))
+            at, n_eps, longest, resets = clamp_episodes(batch, cfg, clamp_ceiling(d))
+            pers = (personality(d) or "?").lower()
+            if at is None:
+                problems.append("maxSpeedScale engaged %d times on `%s` and there is no probe to "
+                                "characterise the episodes" % (ch, cfg))
+            else:
+                if pers not in REACTIVE_PERSONALITIES:
+                    problems.append("maxSpeedScale engaged %d times on `%s`, whose personality is "
+                                    "`%s` -- not reactive, so the clamping belongs to no reaction"
+                                    % (ch, cfg, pers))
+                if not resets:
+                    problems.append("maxSpeedScale episode does not reset on `%s` (%d episode(s), "
+                                    "longest %.2f s) -- the compounding signature"
+                                    % (cfg, n_eps, longest))
+        L.append("| `%s` | %s | %s | %s | %s | %s | PENDING |" % (
+            cfg, r.get("exit", "?"), r.get("dist0", "?"), r.get("min_dist", "?"),
+            freeze_cell, ch if ch is not None else "?"))
 
     L.append("\n## Robot-side labels\n")
     L.append("**Labels, not filters.** A robot that stops to let someone pass is behaving correctly. "
@@ -146,7 +288,7 @@ def main():
     L.append("| config | pre-capture drift | net displacement | walk-window 1 s windows |")
     L.append("|---|---|---|---|")
     for r in rows:
-        drift, net, win = freeze_drift_and_speed(batch, r["config"])
+        drift, net, win = drifts[r["config"]]
         if drift is None:
             L.append("| `%s` | (no probe) | | |" % r["config"])
             continue
@@ -165,8 +307,11 @@ def main():
         L.append("\nAn unpaired freeze log is a hard stop: `dist0` cannot distinguish "
                  "\"never frozen\" from \"frozen correctly\" on a slow agent.")
     else:
-        L.append("**PASS** — freeze logs paired on every trial, no `maxSpeedScale` engagements, "
-                 "pre-capture drift 0.000 m throughout, static configurations below 0.2 m.")
+        L.append("**PASS** — freeze accounted for on every trial (%d paired, %d N/A at "
+                 "pedSpeedMultiplier == 1.0, each with its measured drift recorded), every "
+                 "`maxSpeedScale` engagement on a reactive personality and every episode resetting, "
+                 "pre-capture drift 0.000 m throughout, static configurations below 0.2 m."
+                 % (len(rows) - n_na, n_na))
 
     out = os.path.join(batch, "INDEX.md")
     open(out, "w").write("\n".join(L) + "\n")
