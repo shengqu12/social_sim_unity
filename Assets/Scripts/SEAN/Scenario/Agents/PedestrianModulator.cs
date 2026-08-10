@@ -168,8 +168,21 @@ namespace SEAN.Scenario.Agents
         /// driving destPos via InitDest() -- lets PedestrianSpawner.Update() skip its
         /// random-walk retarget for this agent (V2 §2.6) so the two don't fight over destPos.
         /// </summary>
+        /// <summary>
+        /// Session 68. Optional external driver for this agent's velocity, installed at runtime by
+        /// an AutoTrial component (S68CuriousCrouch). Null on every agent that does not have one,
+        /// which is all of them by default.
+        ///
+        /// It is consulted at the top of ModulateCurious() and may decline, in which case the
+        /// personality's own code below runs unchanged. That is the point of the hook: the existing
+        /// Curious Wander/Approach/Follow machine is not modified or removed, only bypassed while
+        /// something else is driving (S68 §4).
+        /// </summary>
+        [System.NonSerialized] public AutoTrial.IPedestrianVelocityOverride velocityOverride;
+
         public bool IsControllingDestination =>
             patrolEnabled ||
+            (velocityOverride != null && velocityOverride.IsControllingDestination) ||
             (personality == PersonalityType.Curious &&
             (curiousState == CuriousState.Approach || curiousState == CuriousState.Follow));
 
@@ -194,8 +207,9 @@ namespace SEAN.Scenario.Agents
             // for Scared -- its flee force perturbs the path but the patrol dest re-anchors it).
             // Skipped while Curious is actively driving destPos itself (Approach/Follow) so the
             // two never fight over InitDest() in the same frame.
-            bool curiousControllingDest = personality == PersonalityType.Curious &&
-                (curiousState == CuriousState.Approach || curiousState == CuriousState.Follow);
+            bool curiousControllingDest = (velocityOverride != null && velocityOverride.IsControllingDestination)
+                || (personality == PersonalityType.Curious &&
+                (curiousState == CuriousState.Approach || curiousState == CuriousState.Follow));
             if (patrolEnabled && !curiousControllingDest && self.CloseEnough())
             {
                 patrolTarget = 1 - patrolTarget;
@@ -391,6 +405,18 @@ namespace SEAN.Scenario.Agents
 
         private Vector3 ModulateCurious(Vector3 socialForceVelocity, Base self, Scenario.Robot robot)
         {
+            // Session 68. An installed override answers first. Everything below is left exactly as
+            // it was and is still reachable -- the override declines whenever it is not driving, and
+            // there is no override at all unless an AutoTrial component installed one.
+            if (velocityOverride != null)
+            {
+                Vector3 overridden;
+                if (velocityOverride.TryModulate(socialForceVelocity, self, robot, out overridden))
+                {
+                    return overridden;
+                }
+            }
+
             float distanceToRobot = DistanceToRobot(self, robot, out _);
 
             CuriousState previousState = curiousState;

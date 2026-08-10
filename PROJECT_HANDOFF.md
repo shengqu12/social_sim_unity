@@ -63,3 +63,50 @@ With n=18 the correct phrasing is **"no evidence for"**, not "absent".
 
 Practical rule, applied since Session 44: a single trial's `min_dist` is never evidence that a fix
 worked. Acceptance is by the objective self-tests (`tools/s44_selftest.py`) or by eye.
+
+## Hidden guardian components silently revert spatial and state intent
+
+Established Session 68 (four instances, all found the same way — by measuring a value that had
+already been set correctly and finding it changed back).
+
+This codebase carries a layer of per-frame guardian components that exist to correct earlier
+defects. Each one asserts something every frame, and each will therefore quietly undo a *new*
+intent that happens to occupy the same variable. Four confirmed cases:
+
+| component | what it re-asserts | what it broke |
+|---|---|---|
+| `S44ClipProps` | `applyRootMotion`, re-asserted for 5 frames | any capture-then-restore of that flag races it |
+| `INavigable` / `Parameters.CLOSE_ENOUGH_MIN_DIST` | destinations nearer than **1.0 m** count as already reached | a 0.94 m sidestep target → `StopNavigation()` → zero velocity → the agent never moved, for the full 8 s timeout |
+| `S32AnimatorSpeedScaler` (pre-S54) | wrote the Animator's `Idling` bool from its own latch | self-latching deadlock: held in Idle → no root motion → still "idle" |
+| `S35HeadingAlignmentGuardian` | snaps position back onto the spawn→goal straight line | erased the S68 lateral sidestep — a single-frame 0.4884 m teleport with `base_vel=0.000` and yaw forced to the spawn heading |
+
+The `S35` case is the sharpest: the offset was created correctly, measured correctly, and then
+removed by a component nobody was thinking about, ~10 s later, in one frame.
+
+**Rule.** Before implementing any new spatial or state intent (a position, a heading, a
+destination, an animator flag), grep for what else writes that variable every frame. If something
+does, it will win. Disable the narrowest part of it — `S35HeadingAlignmentGuardian.hasLine` was
+cleared while its facing-alignment mechanism, the reason it exists, was left running.
+
+**Symptom to recognise:** a single-frame jump with the commanded velocity at exactly zero. Zero
+velocity means neither the SFM nor the animation produced it, so something wrote the transform
+directly.
+
+## An attribution must be verified at the layer it claims
+
+Established Session 68 (S68-B → S68-C).
+
+Run7's `CROUCH_HOLD` self-check reported a 0.4884 m displacement. It was reported to the user as a
+measurement-window artifact — a window straddling the `CrouchHold → CrouchExit` transition. That
+attribution was **wrong**, and it was wrong because it was never checked at the frame level: the
+jump is a single frame at t=41.504, a full second *before* the 42.51 transition, and its real cause
+was `S35HeadingAlignmentGuardian` (above).
+
+The claim was plausible, arithmetically compatible with the numbers on hand, and accepted without
+the one check that could have refuted it — printing the per-frame deltas inside the window.
+
+**Rule.** A causal claim is a claim about a layer (timing, geometry, physics, asset). Verify it at
+that layer before reporting it. "It is a windowing artifact" is a claim about *when* the samples
+were taken, so it is only supported by looking at the samples' timestamps — not by noting that a
+transition happens nearby. Fixing the guessed cause (the window guard was added, and it changed
+nothing) is not evidence either.

@@ -1172,6 +1172,46 @@ namespace SEAN.AutoTrial
                     : (patrolValid
                         ? config.patrolWaypoints[0].ToVector3()
                         : (config.hasPedGoalPose ? config.pedGoalPose.Position : spawnPos));
+                // Session 68: the crouch-to-watch redesign of Curious. Attached HERE, not up in the
+                // modulator block, for two reasons that are both ordering constraints:
+                //   - it resolves PedestrianModulator in Awake(), so it must be added after that
+                //     component exists (the S61 freeze-gate lesson -- a GetComponent dependency
+                //     added first silently resolves null and the gate never engages);
+                //   - it needs zoneADest, which is the destination the pedestrian will be released
+                //     toward and is not computed until just above.
+                // Env-gated: dataset_planD shipped with the old Curious and a re-run of it must
+                // produce the same thing.
+                if (personalityType == Scenario.Agents.PedestrianModulator.PersonalityType.Curious
+                    && S68CuriousCrouch.Enabled)
+                {
+                    var crouch = navAgent.gameObject.AddComponent<S68CuriousCrouch>();
+                    crouch.leaveDestination = zoneADest;
+                    crouch.hasLeaveDestination = true;
+
+                    // S68-C: switch off S35HeadingAlignmentGuardian's LINE correction for this
+                    // pedestrian. Its second mechanism snaps the agent back onto the straight
+                    // spawn->goal line, zeroing any lateral offset -- which is precisely the offset
+                    // S68-B §3 exists to create, so the two are in direct conflict.
+                    //
+                    // Measured, not inferred: in run7 the pedestrian teleported 0.4884 m in a single
+                    // frame at t=41.504, mid-CROUCH_HOLD, with base_vel 0.0000 and its yaw forced to
+                    // 90.63 -- the spawn heading. The same signature (0.186 m, same yaw) appears in
+                    // the S68 run1 hold. Neither is a robot push; the robot was ~4 m away and
+                    // receding both times.
+                    //
+                    // Only hasLine is cleared. The facing-alignment mechanism, which is what the
+                    // guardian was actually added for (Session 35 FIX 1/2), is left running.
+                    var hg = navAgent.gameObject.GetComponent<S35HeadingAlignmentGuardian>();
+                    if (hg != null && hg.hasLine)
+                    {
+                        hg.hasLine = false;
+                        Debug.Log("[S68Curious] S35HeadingAlignmentGuardian line correction DISABLED "
+                            + "for this agent -- it would pull the sidestep back onto the spawn->goal line.");
+                    }
+                    Debug.Log("[S68Curious] attached to '" + navAgent.name + "' leaveDest="
+                        + zoneADest.ToString("F2"));
+                }
+
                 navAgent.InitDest(spawnPos);
                 // Session 59: pinning destPos freezes Base.Move(), but Base.Move() is not what
                 // translates a root-motion agent -- PedestrianModulator.ApplyAnimatorRootMotion()
