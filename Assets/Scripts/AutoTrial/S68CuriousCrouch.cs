@@ -3,8 +3,12 @@ using UnityEngine;
 namespace SEAN.AutoTrial
 {
     /// <summary>
-    /// Session 68. Curious, redesigned: approach the robot, stop, crouch down to watch it, wait for
-    /// it to pass, stand up, leave.
+    /// Session 68. Curious, redesigned: approach the robot, step out of its way, kneel to watch it
+    /// from a distance, then stand up and leave as it bears down.
+    ///
+    /// S68-D changed what the hold waits FOR. It used to wait for the robot to go past; it now waits
+    /// for the robot to get close, and gets out of the way. "Robot has passed" survives only as a
+    /// fallback for a robot that detours so widely it never comes within standUpDistance.
     ///
     ///   APPROACH      walk at the robot (absolute destination, the existing Curious mechanism)
     ///                 -> dist &lt;= stopDistance
@@ -12,8 +16,9 @@ namespace SEAN.AutoTrial
     ///                 -> lateral clearance &gt;= lateralClearance (or sidestepTimeout)
     ///   STOP          velocity target 0, standing, for pauseBeforeCrouch seconds
     ///   CROUCH_ENTER  crouch clip seeked 1 -> 0 (stand -> kneel); velocity 0; -> clip length elapsed
-    ///   CROUCH_HOLD   pinned on clip time 0, the kneel; velocity 0
-    ///                 -> the robot has passed (see RobotHasPassed) or holdTimeout expires
+    ///   CROUCH_HOLD   pinned on the kneel pose; velocity 0
+    ///                 -> the robot is closing and within standUpDistance (primary, S68-D),
+    ///                    or it has passed (fallback), or holdTimeout expires
     ///   CROUCH_EXIT   crouch clip seeked 0 -> 1 (kneel -> stand); velocity 0; -> clip length elapsed
     ///   LEAVE         walk to the original release destination, normal SFM pace
     ///
@@ -49,17 +54,29 @@ namespace SEAN.AutoTrial
         // ---- tunables, all defaulted to the ticket's numbers ----
 
         /// <summary>
-        /// S68-A: 3.0 -> 5.0 m. Derived from the S68 run rather than picked: closing speed measured
-        /// ~0.43 m/s, and pauseBeforeCrouch (1.0 s) plus the crouch-in (~3.3 s) is ~4.3 s, so the
-        /// robot advances ~1.9 m between "stop" and "kneeling". At 3.0 the pedestrian finished its
-        /// crouch with the robot 1.16 m away, which is the "crouches too late" note.
+        /// Distance at which the pedestrian stops approaching and prepares to crouch.
         ///
-        /// Overridable at runtime via AUTOTRIAL_S68_STOP_DIST so the next eyeball pass can retune it
-        /// without a recompile. Nothing else moves: pauseBeforeCrouch, passDistance and the timeouts
-        /// are untouched, so this run changes exactly one trigger parameter.
+        /// History, because the number is empirical: 3.0 left the pedestrian finishing its crouch
+        /// with the robot 1.16 m away ("crouches too late", S68-A); 5.0 fixed that; S68-D doubles it
+        /// again to 10.0 so the watching starts from a distance.
+        ///
+        /// Overridable at runtime via AUTOTRIAL_S68_STOP_DIST for eyeball retuning without a
+        /// recompile.
         /// </summary>
-        public float stopDistance = 5.0f;
+        public float stopDistance = 10.0f;
         public const string StopDistanceEnv = "AUTOTRIAL_S68_STOP_DIST";
+
+        /// <summary>
+        /// S68-D. The robot is "about to arrive" at or inside this range, and the pedestrian stands
+        /// up and leaves rather than waiting for it to go by.
+        ///
+        /// This is the knob that sets how long the watch lasts, together with stopDistance. At the
+        /// ~0.71 m/s closing rate measured in run7/run8 the pair (10.0, 4.0) yields a hold of only
+        /// about 4 s -- an emergent consequence of the two distances, not a target. Raise
+        /// stopDistance or lower this to watch for longer.
+        /// </summary>
+        public float standUpDistance = 4.0f;
+        public const string StandUpDistanceEnv = "AUTOTRIAL_S68_STANDUP_DIST";
 
         /// <summary>
         /// S68-B §3. Required perpendicular distance from the robot's path line before the
@@ -140,6 +157,24 @@ namespace SEAN.AutoTrial
         // Continuous-recession accumulator for RobotHasPassed.
         private float recedingSince = -1f;
 
+        /// <summary>Read a float override from the environment, or keep the default. Logged either
+        /// way when it fires, so a run's actual parameters are recoverable from its own log.</summary>
+        private static float EnvOverride(string envName, float current, string label)
+        {
+            string raw = System.Environment.GetEnvironmentVariable(envName);
+            float parsed;
+            if (!string.IsNullOrEmpty(raw)
+                && float.TryParse(raw, System.Globalization.NumberStyles.Float,
+                                  System.Globalization.CultureInfo.InvariantCulture, out parsed)
+                && parsed > 0f)
+            {
+                Debug.Log("[S68Curious] " + label + " " + current.ToString("F2") + " -> "
+                    + parsed.ToString("F2") + " m (" + envName + ")");
+                return parsed;
+            }
+            return current;
+        }
+
         public static bool Enabled
         {
             get { return !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("AUTOTRIAL_S68_CROUCH")); }
@@ -164,24 +199,16 @@ namespace SEAN.AutoTrial
                 enabled = false;
                 return;
             }
-            string sd = System.Environment.GetEnvironmentVariable(StopDistanceEnv);
-            float parsed;
-            if (!string.IsNullOrEmpty(sd)
-                && float.TryParse(sd, System.Globalization.NumberStyles.Float,
-                                  System.Globalization.CultureInfo.InvariantCulture, out parsed)
-                && parsed > 0f)
-            {
-                Debug.Log("[S68Curious] stopDistance " + stopDistance.ToString("F2") + " -> "
-                    + parsed.ToString("F2") + " m (" + StopDistanceEnv + ")");
-                stopDistance = parsed;
-            }
+            stopDistance = EnvOverride(StopDistanceEnv, stopDistance, "stopDistance");
+            standUpDistance = EnvOverride(StandUpDistanceEnv, standUpDistance, "standUpDistance");
 
             modulator.velocityOverride = this;
             stateEnteredAt = Time.time;
             Debug.Log(string.Format("[S68Curious] params stopDistance={0:F2} pauseBeforeCrouch={1:F2} "
-                + "passDistance={2:F2} holdTimeout={3:F1} lateralClearance={4:F2} controller={5}",
-                stopDistance, pauseBeforeCrouch, passDistance, holdTimeout, lateralClearance,
-                crouchController.name));
+                + "standUpDistance={2:F2} passDistance={3:F2} holdTimeout={4:F1} "
+                + "lateralClearance={5:F2} controller={6}",
+                stopDistance, pauseBeforeCrouch, standUpDistance, passDistance, holdTimeout,
+                lateralClearance, crouchController.name));
         }
 
         /// <summary>
@@ -323,7 +350,17 @@ namespace SEAN.AutoTrial
                 case State.CrouchHold:
                     // Re-pinned every frame rather than set once: nothing else may drift it.
                     SeekCrouch(UKneel);
-                    if (RobotHasPassed(self, robot, dist))
+                    // S68-D: the PRIMARY exit is now the robot getting close, not the robot having
+                    // gone. The behaviour it expresses changed with it -- watch from a distance,
+                    // then get up and clear out as the thing bears down -- so "robot passed" drops
+                    // to a fallback for the case where the robot detours so widely it never comes
+                    // within standUpDistance at all.
+                    if (RobotIsApproaching(self, robot, dist))
+                    {
+                        Transition(State.CrouchExit, dist, string.Format(
+                            "robot approaching (<= {0:F1} m and closing)", standUpDistance));
+                    }
+                    else if (RobotHasPassed(self, robot, dist))
                     {
                         Transition(State.CrouchExit, dist, "robot passed");
                     }
@@ -469,6 +506,40 @@ namespace SEAN.AutoTrial
         /// frames and spikes on the rest -- which for a "has it been receding for a whole second"
         /// test would chatter the timer back to zero constantly.
         /// </summary>
+        /// <summary>
+        /// S68-D. True once the robot is within standUpDistance AND still closing.
+        ///
+        /// Both halves are required. Distance alone would also fire on a robot that has already
+        /// swept past and is sitting just inside the threshold on its way out, which is the opposite
+        /// situation and would have the pedestrian stand up for nothing.
+        ///
+        /// "Closing" is the robot's physics velocity projected onto the pedestrian->robot direction,
+        /// negative meaning the gap is shrinking -- the same construction RobotHasPassed uses with
+        /// the opposite sign, and for the same reason: the robot's transform advances in discrete
+        /// steps, so differencing positions across frames reads zero on most frames and spikes on
+        /// the rest (PedestrianModulator.EstimateRobotSpeed, Session 48).
+        ///
+        /// No hysteresis here, deliberately, where RobotHasPassed needs a full second of it. That
+        /// test has to distinguish a real departure from noise on a stationary robot; this one is
+        /// guarded by a distance threshold that noise cannot satisfy, and reacting late is the
+        /// failure mode that matters -- the whole point is to be up and moving before the robot
+        /// arrives.
+        /// </summary>
+        private bool RobotIsApproaching(Scenario.Agents.Base self, Scenario.Robot robot, float dist)
+        {
+            if (dist > standUpDistance) { return false; }
+
+            Vector3 toRobot = RobotPosition(robot) - self.transform.position;
+            toRobot.y = 0f;
+            if (toRobot.sqrMagnitude < 1e-6f) { return true; }   // on top of us; get up
+
+            Vector3 v = RobotVelocity(robot);
+            v.y = 0f;
+            float radial = Vector3.Dot(v, toRobot.normalized);
+            // Negative radial component = the gap is closing.
+            return radial < -0.05f;
+        }
+
         private bool RobotHasPassed(Scenario.Agents.Base self, Scenario.Robot robot, float dist)
         {
             if (dist <= passDistance)

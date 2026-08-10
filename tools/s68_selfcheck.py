@@ -213,6 +213,30 @@ def main():
     if not ordered:
         failures.append("transition order does not contain the expected sequence")
 
+    # ---- S68-D: how close was the robot when the pedestrian finished standing up? ----
+    # The redesigned hold gets up as the robot bears down, so the stand-up is now a race. This
+    # reports the margin it finished with. Flagged, never auto-tuned -- the knob is standUpDistance
+    # and that is the user's call.
+    print("\n[1b] STAND-UP MARGIN  (robot distance at CROUCH_EXIT -> LEAVE)")
+    standup = [r for r in trans if r["from"] == "CrouchExit" and r["to"] == "Leave"]
+    hold_exit = [r for r in trans if r["from"] == "CrouchHold"]
+    if hold_exit:
+        print("  CROUCH_HOLD exit reason: {}  (dist {:.2f} m)".format(
+            hold_exit[0]["why"], hold_exit[0]["dist"]))
+        if "TIMEOUT" in hold_exit[0]["why"]:
+            failures.append("CROUCH_HOLD exited on TIMEOUT, not on the robot approaching")
+    if not standup:
+        print("  never completed a stand-up")
+        failures.append("no CROUCH_EXIT -> LEAVE transition")
+    else:
+        m = standup[0]["dist"]
+        print("  robot was {:.2f} m away when the pedestrian regained its feet".format(m))
+        if m < 1.5:
+            print("  NOTE: < 1.5 m -- recommend RAISING standUpDistance next round "
+                  "(flagged only; not adjusted here)")
+        else:
+            print("  >= 1.5 m -- adequate margin")
+
     spans = phase_windows(trans)
 
     # ---- clock alignment, before any window is used ----
