@@ -110,3 +110,58 @@ that layer before reporting it. "It is a windowing artifact" is a claim about *w
 were taken, so it is only supported by looking at the samples' timestamps — not by noting that a
 transition happens nearby. Fixing the guessed cause (the window guard was added, and it changed
 nothing) is not evidence either.
+
+## The S68 sidestep closes on the robot, and it is what bounds the crouch hold
+
+Observed Session 68-D (run9, run10). Recorded, not fixed.
+
+`S68CuriousCrouch`'s SIDESTEP walks to a point offset laterally from the robot's latched route. The
+path it actually takes is mostly *forward*, so the pedestrian closes on the robot while getting out
+of its way. Decomposed from run9's frames.csv:
+
+| phase | duration | closing rate | robot ground speed | pedestrian displacement |
+|---|---|---|---|---|
+| SIDESTEP | 3.77 s | **1.35 m/s** | 0.36 m/s | **3.99 m** (1.07 m/s) |
+| STOP (pause) | 1.00 s | 0.52 m/s | 0.57 m/s | 0.00 m |
+| CROUCH_ENTER | 2.77 s | 0.49 m/s | 0.56 m/s | 0.00 m |
+
+During the two stationary phases the closing rate is just the robot's own speed, as expected. During
+the sidestep it is nearly four times that, and the pedestrian supplies ~0.99 m/s of it: **3.99 m
+walked to gain 0.61 m of lateral clearance** (0.59 -> 1.20 m).
+
+The consequence is not merely inefficiency. How much approach runway the sidestep eats is **not a
+constant**, and it is what bounds the crouch hold:
+
+| run | `stopDistance` | start lateral | sidestep | pre-hold runway consumed | kneel completed at | hold |
+|---|---|---|---|---|---|---|
+| run9  | 10.0 m | 0.59 m | 3.77 s, reached 1.20 m | **6.97 m** | 2.94 m | 0.02 s |
+| run10 | 16.5 m | 0.16 m | 8.00 s, **timed out** at 0.91 m | **12.71 m** | 3.78 m | 0.02 s |
+
+The driver is the lateral offset the pedestrian happens to start with — it varies run to run with
+spawn jitter and the latched route direction, not with `stopDistance`. Less initial offset means
+more lateral gain needed; at the sidestep's ~0.16 m/s of *useful* lateral progress it cannot get
+there, runs to its 8 s timeout, and burns ~10.7 m of runway instead of ~5.1 m.
+
+**This is why raising `stopDistance` from 10.0 to 16.5 did not lengthen the hold.** Both runs
+finished the kneel inside `standUpDistance` (2.94 m and 3.78 m against 4.0 m) and both held 0.02 s.
+The extra 6.5 m of runway was absorbed entirely by the longer sidestep.
+
+An estimate for a T-second hold is
+
+    stopDistance ~= standUpDistance + C + 0.55*T        with C measured at 6.97-12.71 m
+
+but C's 2x spread makes hold duration unpredictable rather than tunable. Making the sidestep travel
+laterally rather than diagonally would shrink C *and* stabilise it, which is the change that would
+make hold duration an actual function of the two distances. Until then, treat any `stopDistance`
+picked from that formula as a lower bound that will sometimes still yield no hold at all.
+
+## Never edit a tracked file while a trial is running
+
+`run_trial.py`'s `guarded_unity_run` snapshots modified tracked files before launching Unity and
+reverts anything *newly* dirtied once Unity exits (`git show HEAD`) — the guard that stops Unity
+silently modifying prefabs and scenes.
+
+It cannot tell your edit from Unity's. An append to `PROJECT_HANDOFF.md` made while run10 was still
+capturing was silently reverted when that run finished; the file was back to its committed contents
+with no error anywhere. Edit tracked files before starting a trial or after it exits, and re-check
+`git status` afterwards either way.
