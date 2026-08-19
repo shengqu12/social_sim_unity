@@ -6,6 +6,30 @@
  "_inPlace": "true = the clip carries no root translation, so authoredSpeedMps could not be measured and animation scaling is meaningless for it.",
  "clips": [
   {
+   "clip": "kimodo_relaxed_walk",
+   "asset": "kimodo_relaxed_walk.fbx",
+   "authoredSpeedMps": 0.9715,
+   "inPlace": false,
+   "targetSpeedMps": 0.9715,
+   "refSource": "S73 Kimodo-SOMA-RP-v1.1 seed 42, post-processing ON, env kimodo313. authoredSpeedMps = net Hips displacement / duration measured Blender-headless from the exported FBX and cross-checked against the source npz (agree to 4 dp); net/path 0.9891 so net displacement is a valid pace measure. targetSpeedMps set equal to authored (ratio 1.00) per _targetRule. CONFIRMED indirectly 2026-08-19: same rig/export chain and scale as kimodo_elderly_shuffle, which passed in-engine (ratio 1.067, clampHi=0). Not itself trial-validated."
+  },
+  {
+   "clip": "kimodo_elderly_shuffle",
+   "asset": "kimodo_elderly_shuffle.fbx",
+   "authoredSpeedMps": 0.4786,
+   "inPlace": false,
+   "targetSpeedMps": 0.4786,
+   "refSource": "S73 Kimodo-SOMA-RP-v1.1 seed 42, post-processing ON, env kimodo313. authoredSpeedMps = net Hips displacement / duration measured Blender-headless from the exported FBX and cross-checked against the source npz (agree to 4 dp); net/path 0.9549 so net displacement is a valid pace measure. targetSpeedMps set equal to authored (ratio 1.00) per _targetRule. CONFIRMED in-engine 2026-08-19 (S73 Phase 4, all gates PASS, exit 0): measured median moving ground speed 0.5106 m/s vs this 0.4786 reference (ratio 1.067), clampHi=0."
+  },
+  {
+   "clip": "kimodo_relaxed_walk_24s",
+   "asset": "kimodo_relaxed_walk_24s.fbx",
+   "authoredSpeedMps": 1.0182,
+   "inPlace": false,
+   "targetSpeedMps": 1.0182,
+   "refSource": "S73 Kimodo-SOMA-RP-v1.1 seed 42, post-processing ON, env kimodo313. authoredSpeedMps = net Hips displacement / duration measured Blender-headless from the exported FBX and cross-checked against the source npz (agree to 4 dp); net/path 0.9919 so net displacement is a valid pace measure. targetSpeedMps set equal to authored (ratio 1.00) per _targetRule. CONFIRMED indirectly 2026-08-19: same rig/export chain and scale as kimodo_elderly_shuffle, which passed in-engine (ratio 1.067, clampHi=0). Not itself trial-validated."
+  },
+  {
    "clip": "carry_and_walk",
    "asset": "carry_and_walk.fbx",
    "authoredSpeedMps": 0.8969,
