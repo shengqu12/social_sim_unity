@@ -22,6 +22,15 @@ namespace SEAN.AutoTrial
         public string clipControllerName = "";
         public bool attachCarriedBox = false;
 
+        // Session 79: candidate names for the forward-locomotion clip to override in the
+        // pedestrian's own controller, tried in order. Defaults cover both controllers in the
+        // project -- "HumanoidWalk" (SocialForcesAnimatorController, what trial pedestrians
+        // actually load) and "Walk" (BaseSFControllerNormalized). Exposed as a field so a
+        // re-authored controller can be pointed at a different node without a code edit;
+        // S79GaitOverrideBuilder falls back to a root-motion test if no name matches, and fails
+        // loudly rather than guessing if that is ambiguous.
+        public string[] forwardClipNames = S79GaitOverrideBuilder.DefaultForwardClipNames;
+
         // TASK 4's dimensions, straight from the ticket.
         public Vector3 boxSize = new Vector3(0.45f, 0.35f, 0.35f);
         // Cardboard brown #8B6F47.
@@ -63,15 +72,16 @@ namespace SEAN.AutoTrial
                     Debug.LogError("[S41Mixamo] Resources.Load failed for controller '" + clipControllerName
                         + "' -- is it under a Resources folder? Leaving the original controller in place.");
                 }
-                else
-                {
-                    Debug.Log("[S41Mixamo] '" + name + "' controller "
-                        + (animator.runtimeAnimatorController != null ? animator.runtimeAnimatorController.name : "NULL")
-                        + " -> " + rac.name + " (avatar isHuman="
-                        + (animator.avatar != null && animator.avatar.isHuman) + ")");
-                    animator.runtimeAnimatorController = rac;
-                }
+                // Session 79: MOVED AHEAD of the install below. It resolves inPlaceClip from
+                // clip_speeds.json, and inPlaceClip is what decides which install path is correct
+                // (see InstallGait). It only reads the json and writes S32AnimatorSpeedScaler's
+                // referenceSpeedMps, so it has no dependency on which controller is installed --
+                // running it first changes nothing about what it does.
                 ApplyAuthoredSpeed();
+                if (rac != null)
+                {
+                    InstallGait(animator, rac);
+                }
                 // Session 44 TASK 5.2/5.3: per-clip staging (Sitting's stool, Standing_Arguing's
                 // second person). Additive and self-selecting on the clip name, so every other clip
                 // is untouched.
@@ -88,6 +98,80 @@ namespace SEAN.AutoTrial
                 yield return null;
                 AttachBox(animator);
             }
+        }
+
+        /// <summary>
+        /// Session 79. Install the gait, by ONE of two paths.
+        ///
+        /// OVERRIDE (default, travelling gaits). Build an AnimatorOverrideController on the
+        /// pedestrian's existing controller and remap only its forward-locomotion clip. Every
+        /// state, parameter and transition survives, so the reaction states (SurprisedReaction,
+        /// AssertiveGesture) and the Idle node still exist. This is the S78 fix: the wholesale
+        /// replacement below is what made `[S41Latency] T_SIGNAL=-1 T_STATE=-1` and
+        /// "Parameter 'Surprised' does not exist." the normal case for every Kimodo trial.
+        ///
+        /// LEGACY WHOLESALE SWAP, kept reachable two ways:
+        ///   * AUTOTRIAL_S79_LEGACY_SWAP=1 -- forces it for everything, so the S73 regression arm
+        ///     can be captured on the old path for a like-for-like comparison.
+        ///   * in-place clips ALWAYS take it, and that is a correctness requirement, not a
+        ///     fallback. Sitting / Standing_Arguing / Stroke_Shaking_Head are not walk cycles;
+        ///     they are meant to own the character continuously, and S44ClipProps stages real
+        ///     props against them (the stool, the argument partner). Putting one on the blend
+        ///     tree's forward node would play it only while walking and blend it with strafes --
+        ///     the character would sit down only when moving. Their authored speed is ~0, so they
+        ///     also carry no root motion for the locomotion node to use.
+        /// </summary>
+        private void InstallGait(Animator animator, RuntimeAnimatorController rac)
+        {
+            string before = animator.runtimeAnimatorController != null
+                ? animator.runtimeAnimatorController.name : "NULL";
+            bool forced = S79GaitOverrideBuilder.LegacySwapRequested;
+            bool legacy = forced || inPlaceClip;
+
+            if (legacy)
+            {
+                Debug.Log("[S41Mixamo] '" + name + "' controller " + before + " -> " + rac.name
+                    + " (LEGACY wholesale swap; reason="
+                    + (forced ? S79GaitOverrideBuilder.LegacySwapEnv + " set" : "in-place clip")
+                    + "; avatar isHuman=" + (animator.avatar != null && animator.avatar.isHuman) + ")");
+                animator.runtimeAnimatorController = rac;
+                return;
+            }
+
+            AnimationClip gait = S79GaitOverrideBuilder.ExtractGaitClip(rac);
+            string detail;
+            var aoc = S79GaitOverrideBuilder.Build(
+                animator.runtimeAnimatorController, gait, forwardClipNames, out detail);
+            if (aoc == null)
+            {
+                // Deliberately NOT falling back to the wholesale swap. That path is exactly the
+                // defect this session removed, and taking it silently on a bad lookup would
+                // reintroduce the dead reaction states under a different cause. Loud, and the
+                // pedestrian keeps a correct (if un-gaited) controller.
+                Debug.LogError("[S41Mixamo] '" + name + "' gait override FAILED (" + detail
+                    + ") -- leaving '" + before + "' installed. The pedestrian will walk with its "
+                    + "stock gait; reactions still work. Not falling back to the legacy swap.");
+                return;
+            }
+
+            animator.runtimeAnimatorController = aoc;
+            Debug.Log("[S41Mixamo] '" + name + "' controller " + before + " -> override " + detail
+                + " (avatar isHuman=" + (animator.avatar != null && animator.avatar.isHuman) + ")");
+            S79GaitOverrideBuilder.LogVerification(
+                animator, gait != null ? gait.name : "(null)", OverriddenClipName(detail));
+        }
+
+        /// <summary>Pull the clip name the builder reported overriding, so GATE 1's readback
+        /// checks the clip that was ACTUALLY replaced rather than re-guessing from the candidate
+        /// list (which would silently pass if the fallback had picked a different clip).</summary>
+        private static string OverriddenClipName(string detail)
+        {
+            const string k = "forward='";
+            int i = detail.IndexOf(k);
+            if (i < 0) { return ""; }
+            i += k.Length;
+            int j = detail.IndexOf('\'', i);
+            return j > i ? detail.Substring(i, j - i) : "";
         }
 
         /// <summary>
