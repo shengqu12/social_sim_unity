@@ -157,6 +157,14 @@ namespace SEAN.AutoTrial
             animator.runtimeAnimatorController = aoc;
             Debug.Log("[S41Mixamo] '" + name + "' controller " + before + " -> override " + detail
                 + " (avatar isHuman=" + (animator.avatar != null && animator.avatar.isHuman) + ")");
+            // Session 79 GATE 3. Only meaningful once the override has restored the Forward
+            // parameter and the idle node -- on the legacy path there is nothing to drive. It
+            // self-disables unless this agent's body is externally position-owned (see its class
+            // doc for why that scoping is what makes it deadlock-free).
+            if (gameObject.GetComponent<S79StalledGaitIdler>() == null)
+            {
+                gameObject.AddComponent<S79StalledGaitIdler>();
+            }
             S79GaitOverrideBuilder.LogVerification(
                 animator, gait != null ? gait.name : "(null)", OverriddenClipName(detail));
         }
