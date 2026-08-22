@@ -91,6 +91,174 @@ namespace SEAN.AutoTrial
             get { return !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(LegacySwapEnv)); }
         }
 
+        // ------------------------------------------------------------------------------------
+        // Session 83: the surprise-reaction rebind (b2).
+        // ------------------------------------------------------------------------------------
+
+        /// <summary>Arms the b2 surprise rebind. Opt-IN: unset means the stock pointing gesture,
+        /// so nothing outside a run that explicitly asks for it can change behaviour.</summary>
+        public const string B2Env = "AUTOTRIAL_S83_B2";
+
+        /// <summary>Resources path of the imported Kimodo b2 reaction (see
+        /// S83KimodoReactionImport). Under a Resources/ folder so it is loadable at runtime
+        /// without an asset reference or a generated controller.</summary>
+        public const string B2ResourcePath = "kimodo_b2_surprised";
+
+        /// <summary>
+        /// Identity of the clip bound to SurprisedReaction, as a (name, length) pair.
+        ///
+        /// WHY NOT NAME ALONE. Both reaction states bind a clip literally named "mixamo.com" --
+        /// the default take name every Mixamo FBX ships with. Measured in-project (S83):
+        ///
+        ///   state 'SurprisedReaction' motion='mixamo.com' length=2.7667 asset=Pointing_towards.fbx
+        ///   state 'AssertiveGesture'  motion='mixamo.com' length=3.6000 asset=point_backwards.fbx
+        ///
+        /// They are DIFFERENT assets (guid 17119d7c vs 6f88966a, and 17119d7c occurs exactly once
+        /// in the controller) so there is no shared-clip leak -- but a name-only lookup would match
+        /// both and could rebind the assertive gesture into a surprise flinch. Runtime has no guid
+        /// access, so the discriminator is the length, which is unique across all 20 clips the
+        /// controller references (verified by dumping every name|length key: 20 distinct keys for
+        /// 20 clips). Ambiguity is a hard failure, never a guess.
+        /// </summary>
+        public const string SurprisedClipName = "mixamo.com";
+        public const float SurprisedClipLength = 2.7667f;
+        public const float ClipLengthTolerance = 0.01f;
+
+        public static bool B2Requested
+        {
+            get { return !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(B2Env)); }
+        }
+
+        /// <summary>Load the b2 reaction clip. The FBX exposes its take as a sub-asset, so this
+        /// takes the first non-preview AnimationClip under the Resources path.</summary>
+        public static AnimationClip LoadB2Clip()
+        {
+            var all = Resources.LoadAll<AnimationClip>(B2ResourcePath);
+            if (all == null || all.Length == 0)
+            {
+                Debug.LogError("[S83] no AnimationClip under Resources/" + B2ResourcePath
+                    + " -- was S83KimodoReactionImport.Apply run?");
+                return null;
+            }
+            foreach (var c in all)
+            {
+                if (c != null && !c.name.StartsWith("__preview")) { return c; }
+            }
+            return all[0];
+        }
+
+        /// <summary>
+        /// Find a clip in an override table by exact name AND length. Must match exactly once;
+        /// zero or several is a hard failure so a mis-key can never silently rebind the wrong
+        /// state.
+        /// </summary>
+        public static AnimationClip FindClipByNameAndLength(
+            List<KeyValuePair<AnimationClip, AnimationClip>> overrides,
+            string wantName, float wantLength, out string how)
+        {
+            how = "none";
+            var hits = new List<AnimationClip>();
+            foreach (var kv in overrides)
+            {
+                if (kv.Key == null) { continue; }
+                if (kv.Key.name != wantName) { continue; }
+                if (Mathf.Abs(kv.Key.length - wantLength) > ClipLengthTolerance) { continue; }
+                hits.Add(kv.Key);
+            }
+            if (hits.Count == 1)
+            {
+                how = "name '" + wantName + "' + length " + wantLength.ToString("F4");
+                return hits[0];
+            }
+            Debug.LogError("[S83] " + hits.Count + " clips match name='" + wantName + "' length="
+                + wantLength.ToString("F4") + " (+/-" + ClipLengthTolerance + ") among "
+                + overrides.Count + " -- expected exactly 1. Not rebinding.");
+            return null;
+        }
+
+        /// <summary>
+        /// Compose the surprise rebind onto whatever controller is already installed.
+        ///
+        /// COMPOSITION, not replacement. If an AnimatorOverrideController is already installed
+        /// (the kimodo gait path), this MUTATES that same instance -- one controller carrying both
+        /// remaps -- rather than wrapping it, which would nest override on override and make the
+        /// effective clip table impossible to reason about. If a plain controller is installed
+        /// (stock pedestrian, or a legacy wholesale swap), a fresh override is built on it.
+        ///
+        /// Returns the controller to install, or null if nothing could be rebound (which is the
+        /// normal, logged outcome on a legacy-swapped single-state controller: it carries no
+        /// SurprisedReaction clip to override, because the swap deleted the whole state machine).
+        /// </summary>
+        public static RuntimeAnimatorController ApplySurpriseOverride(
+            RuntimeAnimatorController installed, AnimationClip b2, out string detail)
+        {
+            detail = "";
+            if (installed == null) { detail = "no controller installed"; return null; }
+            if (b2 == null) { detail = "b2 clip not loaded"; return null; }
+
+            var aoc = installed as AnimatorOverrideController;
+            bool mutatingExisting = aoc != null;
+            if (aoc == null) { aoc = new AnimatorOverrideController(installed); }
+
+            var pairs = new List<KeyValuePair<AnimationClip, AnimationClip>>(aoc.overridesCount);
+            aoc.GetOverrides(pairs);
+
+            string how;
+            AnimationClip surprised = FindClipByNameAndLength(
+                pairs, SurprisedClipName, SurprisedClipLength, out how);
+            if (surprised == null) { detail = "surprised clip unresolved"; return null; }
+
+            aoc[surprised] = b2;
+            if (!mutatingExisting) { aoc.name = installed.name + "+S83b2"; }
+            detail = (mutatingExisting ? "composed onto existing override '" : "new override on '")
+                + aoc.name + "' surprised clip (" + how + ") -> '" + b2.name + "' len "
+                + b2.length.ToString("F3") + "s; " + pairs.Count + " clips in table";
+            return aoc;
+        }
+
+        /// <summary>GATE II evidence, printed from the live Animator.</summary>
+        public static void LogSurpriseVerification(Animator animator, AnimationClip b2)
+        {
+            var aoc = animator != null
+                ? animator.runtimeAnimatorController as AnimatorOverrideController : null;
+            if (aoc == null) { Debug.LogError("[S83Gate2] no override controller installed"); return; }
+
+            var pairs = new List<KeyValuePair<AnimationClip, AnimationClip>>(aoc.overridesCount);
+            aoc.GetOverrides(pairs);
+            int overridden = 0;
+            string surprisedTo = "(not overridden)", forwardTo = "(not overridden)";
+            foreach (var kv in pairs)
+            {
+                if (kv.Value != null && kv.Value != kv.Key) { overridden++; }
+                if (kv.Key == null) { continue; }
+                if (kv.Key.name == SurprisedClipName
+                    && Mathf.Abs(kv.Key.length - SurprisedClipLength) <= ClipLengthTolerance)
+                {
+                    surprisedTo = kv.Value != null ? kv.Value.name + " len "
+                        + kv.Value.length.ToString("F3") : "(null)";
+                }
+                if (kv.Key.name == "HumanoidWalk")
+                {
+                    forwardTo = kv.Value != null ? kv.Value.name : "(null)";
+                }
+            }
+            Debug.Log("[S83Gate2] controller='" + aoc.name + "' overridden=" + overridden
+                + " of " + pairs.Count);
+            Debug.Log("[S83Gate2] SurprisedReaction clip -> '" + surprisedTo + "' (expected '"
+                + b2.name + " len " + b2.length.ToString("F3") + "') match="
+                + surprisedTo.StartsWith(b2.name));
+            Debug.Log("[S83Gate2] gait clip HumanoidWalk -> '" + forwardTo
+                + "' (composition check: both remaps live in one controller)");
+
+            bool hasSurprisedParam = false;
+            foreach (var pm in animator.parameters)
+            {
+                if (pm.name == "Surprised") { hasSurprisedParam = true; }
+            }
+            Debug.Log("[S83Gate2] param Surprised=" + hasSurprisedParam
+                + " (total " + animator.parameters.Length + ")");
+        }
+
         /// <summary>
         /// The single AnimationClip carried by a generated single-state gait controller.
         ///

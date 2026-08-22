@@ -44,6 +44,14 @@ namespace SEAN.AutoTrial
 
         private bool applied;
 
+        /// <summary>
+        /// Session 83. True once the gait install has finished (or been skipped because no clip
+        /// was named). S83SurpriseRebind waits on this before wrapping the controller, so the two
+        /// overrides compose into ONE AnimatorOverrideController instead of racing -- the applier
+        /// defers a frame for the Animator rebind, so "the component exists" is not "it has run".
+        /// </summary>
+        public bool GaitInstalled { get; private set; }
+
         void Start()
         {
             if (applied) { return; }
@@ -90,6 +98,8 @@ namespace SEAN.AutoTrial
                 // Session 46 (2): in-place clips are exactly the ones that must not travel.
                 props.suppressRootMotion = inPlaceClip;
             }
+
+            GaitInstalled = true;
 
             if (attachCarriedBox)
             {
