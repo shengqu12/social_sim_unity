@@ -110,7 +110,7 @@ namespace SEAN.AutoTrial
         /// replacement below is what made `[S41Latency] T_SIGNAL=-1 T_STATE=-1` and
         /// "Parameter 'Surprised' does not exist." the normal case for every Kimodo trial.
         ///
-        /// LEGACY WHOLESALE SWAP, kept reachable two ways:
+        /// LEGACY WHOLESALE SWAP, kept reachable three ways:
         ///   * AUTOTRIAL_S79_LEGACY_SWAP=1 -- forces it for everything, so the S73 regression arm
         ///     can be captured on the old path for a like-for-like comparison.
         ///   * in-place clips ALWAYS take it, and that is a correctness requirement, not a
@@ -120,19 +120,31 @@ namespace SEAN.AutoTrial
         ///     tree's forward node would play it only while walking and blend it with strafes --
         ///     the character would sit down only when moving. Their authored speed is ~0, so they
         ///     also carry no root motion for the locomotion node to use.
+        ///   * SESSION 80: every clip that is not a kimodo_* gait takes it BY DEFAULT.
+        ///     S79 shipped the override for all travelling gaits and measured a real, explainable
+        ///     delta on the Mixamo arm: the gait becomes a member of the FreeformCartesian2D blend
+        ///     tree, so at Forward=0.759 roughly 25% HumanoidIdle blends in and 11 of 391 moving
+        ///     frames read Idle-dominant. Nothing about that is a bug -- it is what putting a clip
+        ///     on a blend node means -- but the Mixamo clips are what planD's frozen pipeline
+        ///     generation consumes, and a nonzero regression-arm delta there costs more than the
+        ///     architectural uniformity of one install path. Sheng's S80 call: zero delta wins.
+        ///     The reaction dead-end this override exists to fix is a Kimodo-only symptom, so the
+        ///     scoping loses nothing the fix was for.
         /// </summary>
         private void InstallGait(Animator animator, RuntimeAnimatorController rac)
         {
             string before = animator.runtimeAnimatorController != null
                 ? animator.runtimeAnimatorController.name : "NULL";
             bool forced = S79GaitOverrideBuilder.LegacySwapRequested;
-            bool legacy = forced || inPlaceClip;
+            bool outOfScope = !IsKimodoGait(clipControllerName);          // Session 80
+            bool legacy = forced || inPlaceClip || outOfScope;
 
             if (legacy)
             {
                 Debug.Log("[S41Mixamo] '" + name + "' controller " + before + " -> " + rac.name
                     + " (LEGACY wholesale swap; reason="
-                    + (forced ? S79GaitOverrideBuilder.LegacySwapEnv + " set" : "in-place clip")
+                    + (forced ? S79GaitOverrideBuilder.LegacySwapEnv + " set"
+                        : inPlaceClip ? "in-place clip" : "not a kimodo_* gait (S80 scoping)")
                     + "; avatar isHuman=" + (animator.avatar != null && animator.avatar.isHuman) + ")");
                 animator.runtimeAnimatorController = rac;
                 return;
@@ -167,6 +179,28 @@ namespace SEAN.AutoTrial
             }
             S79GaitOverrideBuilder.LogVerification(
                 animator, gait != null ? gait.name : "(null)", OverriddenClipName(detail));
+        }
+
+        /// <summary>
+        /// Session 80. Is this clip in scope for the AnimatorOverrideController install?
+        ///
+        /// Prefix match on the controller name, which is the same string S73 gave the three
+        /// generated Kimodo controllers (kimodo_relaxed_walk, kimodo_relaxed_walk_24s,
+        /// kimodo_elderly_shuffle) and the same key they carry in clip_speeds.json -- one name,
+        /// checked one way, so a future kimodo_* clip is in scope with no code edit. Every Mixamo
+        /// controller name is a bare clip name (Old_Man_Walk, Drunk_Walk, carry_and_walk, ...), so
+        /// none of them can collide with the prefix.
+        ///
+        /// Deliberately NOT an env var or an inverted opt-out. The scoping is the decision of
+        /// record, not a tuning knob: an opt-out flag would let a Mixamo trial take the override
+        /// path by accident, which is exactly the regression-arm delta S80 exists to remove.
+        /// AUTOTRIAL_S79_LEGACY_SWAP still forces legacy for everything, including kimodo_*, which
+        /// keeps the pre-S79 behaviour reachable in one step for comparison.
+        /// </summary>
+        private static bool IsKimodoGait(string controllerName)
+        {
+            return !string.IsNullOrEmpty(controllerName)
+                && controllerName.StartsWith("kimodo_", System.StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>Pull the clip name the builder reported overriding, so GATE 1's readback

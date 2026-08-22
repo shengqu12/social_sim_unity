@@ -8,6 +8,10 @@ namespace SEAN.AutoTrial
     /// forward-locomotion clip of the pedestrian's existing controller for a generated gait clip
     /// (Kimodo or Mixamo), leaving every state, parameter and transition in place.
     ///
+    /// This class is scope-agnostic -- it builds an override for whatever it is handed. WHICH
+    /// clips get one is the caller's decision, and since S80 that is kimodo_* only; see
+    /// S41MixamoClipApplier.InstallGait for the rationale.
+    ///
     /// WHY THIS EXISTS (S78 root cause). S41MixamoClipApplier used to do
     ///
     ///     animator.runtimeAnimatorController = rac;
@@ -76,7 +80,10 @@ namespace SEAN.AutoTrial
         public static readonly string[] DefaultForwardClipNames = { "HumanoidWalk", "Walk" };
 
         /// <summary>Env var that forces the pre-S79 wholesale controller replacement, so the S73
-        /// regression arm can still be captured for comparison. Unset => the override path.</summary>
+        /// regression arm can still be captured for comparison -- including for kimodo_* clips,
+        /// which is the only way to reach the pre-S79 behaviour for those. Unset => the caller
+        /// decides; since S80 that means kimodo_* gaits take the override path and everything
+        /// else takes the wholesale swap (S41MixamoClipApplier.IsKimodoGait).</summary>
         public const string LegacySwapEnv = "AUTOTRIAL_S79_LEGACY_SWAP";
 
         public static bool LegacySwapRequested
