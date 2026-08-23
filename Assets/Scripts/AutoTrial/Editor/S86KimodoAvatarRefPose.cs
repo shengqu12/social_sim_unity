@@ -103,6 +103,14 @@ namespace SEAN.AutoTrial
             { "LeftToes", "LeftToeBase" }, { "RightToes", "RightToeBase" },
         };
 
+        /// Configure and gate ONE asset. Exposed so other sessions can drive the same importer over
+        /// scratch variants without going through the environment-variable target list.
+        public static void ApplyTo(string fbx)
+        {
+            Configure(fbx);
+            Gate(fbx);
+        }
+
         public static void Apply()
         {
             foreach (var t in TargetList()) Configure(t);
