@@ -373,7 +373,7 @@ ModelImporter:
     - name: LeftForeArm
       parentName: 
       position: {x: -0.00000667572, y: 28.739305, z: -0.00000047683716}
-      rotation: {x: 0.29598615, y: -0.00047120723, z: -0.0060585244, w: 0.95517296}
+      rotation: {x: 0.29339245, y: -0.039101124, z: 0.1186684, w: 0.9477921}
       scale: {x: 1, y: 1, z: 1}
     - name: LeftHand
       parentName: 
@@ -548,7 +548,7 @@ ModelImporter:
     - name: RightForeArm
       parentName: 
       position: {x: -0.00000667572, y: 28.736633, z: 0.0000014305115}
-      rotation: {x: 0.17148022, y: -0.00018457156, z: -0.0010120465, w: 0.98518705}
+      rotation: {x: 0.17003728, y: 0.02219967, z: -0.12959611, w: 0.9766266}
       scale: {x: 0.99999994, y: 1, z: 1}
     - name: RightHand
       parentName: 
