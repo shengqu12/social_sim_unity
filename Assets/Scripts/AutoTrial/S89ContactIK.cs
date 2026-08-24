@@ -122,18 +122,110 @@ namespace SEAN.AutoTrial
         /// 2.6 lifts it to -0.7 mm and upper-arm-vs-torso from +23.3 to +35.7 mm.
         public static float PoleForwardWeight = 2.6f;
 
-        /// S91 FIX 2. Roll of the hand about the palm normal, degrees, so the hand centres on the
-        /// MOUTH rather than riding up over the nose and upper lip. 0 = the hand's long axis points
-        /// along the face-plane "up", which is the fist-over-the-nose pose S90 shipped. 100 deg lays
-        /// the hand across the lower face; it also lifts forearm-vs-head clearance from +3.3 mm to
-        /// +43.5 mm, because the forearm no longer has to stand vertically against the chin.
-        public static float HandRollDeg = 100f;
+        /// S92. Roll of the hand about the palm normal, degrees: the direction the hand's long axis
+        /// takes in the face plane. S91 shipped 100, which laid the palm flat across the lower face
+        /// and read as a proper mouth-cover -- but it did so by twisting the WRIST 27 deg past a
+        /// joint that has no axial freedom at all, which is the symptom this ticket exists to fix.
+        ///
+        /// With the wrist held inside range the roll target can no longer be met: the clamp gives
+        /// back 20-120 deg of it on every frame, and the more roll is asked for the more the hand is
+        /// levered off the face -- deepest penetration runs 2.6 mm at roll 20, 7.5 at 40, 18.9 at
+        /// 70, 23.4 at 100 against a 5 mm cap. 20 is the largest roll that passes every gate.
+        ///
+        /// THE COST, and it is visible: at roll 20 the hand sits vertically in front of the nose
+        /// rather than lying across the mouth. It is better CENTRED than S91's (hand centroid 13.8
+        /// mm above the lip landmark against S91's 23.3) but it presents its ulnar edge instead of
+        /// its palm, and reads as a fist held to the face rather than a hand over the mouth. The
+        /// ticket ranks the joint limit above the hand orientation -- "prefer relaxing the ROLL
+        /// target before ever exceeding ROM" -- so this is what ships, but see WATCH_ME_FIRST: the
+        /// untried lever is the elbow POLE, which sets the forearm direction and therefore how much
+        /// wrist bend the pose demands in the first place.
+        public static float HandRollDeg = 20f;
+
+        /// S92. Arm the component for MEASUREMENT ONLY: the rest frame is built and every ROM angle
+        /// is published each frame, but no bone is written. This is how the untouched source
+        /// animation is put through the very same ruler that grades the IK pose -- the S91 rule that
+        /// a new geometric ruler must first read clean on a known-good pose before it may judge a
+        /// new one. Without it the ROM gate would have no calibration case at all.
+        public static bool RomOnly;
+
+        /// S92. Joint range-of-motion limits, degrees. Values are the clinical goniometry norms for
+        /// the adult upper limb as tabulated by the AAOS and by Norkin & White, "Measurement of
+        /// Joint Motion: A Guide to Goniometry" -- the standard reference range, not a per-subject
+        /// measurement. Where the S92 ticket specifies a tighter bound than the clinical norm, the
+        /// ticket wins and the norm is noted beside it: a reaction pose should sit comfortably
+        /// inside the envelope, not at the anatomical extreme.
+        ///
+        /// WRIST. Flexion/extension +-60 (ticket; clinical norm is ~80 palmar / ~70 dorsal).
+        /// Deviation -20 radial to +30 ulnar (ticket, and the clinical norm). Axial twist at the
+        /// wrist <= 15: the radiocarpal joint has essentially NO axial degree of freedom, and the
+        /// 15 deg allowance is slack for the rig's single-bone forearm, not an anatomical range.
+        /// Pronation/supination is a FOREARM motion (radius crossing ulna, ~80/~80) and is routed
+        /// to the forearm bone -- which is the entire subject of this ticket.
+        public const float WristFlexMinDeg = -60f, WristFlexMaxDeg = 60f;
+        public const float WristDevMinDeg = -20f, WristDevMaxDeg = 30f;      // - radial, + ulnar
+        public const float WristTwistMaxDeg = 15f;
+        /// FOREARM pronation/supination, +-80 clinically (radius crossing over ulna). This is the
+        /// joint the twist actually belongs to, and the whole point of S92.
+        public const float ForearmPronationMaxDeg = 80f;
+        /// ELBOW. Flexion 0..150 (norm 0..145-150); no hyperextension, so the floor is 0 with a
+        /// small tolerance for measurement noise in the source clip.
+        public const float ElbowFlexMinDeg = -5f, ElbowFlexMaxDeg = 150f;
+        /// SHOULDER. Elevation of the humerus from the side, 0..180 (norm: flexion 180, abduction
+        /// 180). Axial rotation of the humerus about its own shaft, +-90 (norm: internal ~70-90,
+        /// external ~90).
+        public const float ShoulderElevMaxDeg = 180f;
+        public const float ShoulderTwistMaxDeg = 90f;
+
+        /// S92 readouts: the decomposition the solver clamps against, published so the probe logs
+        /// exactly the quantity the gate grades. Nothing else may define "wrist angle".
+        public float LastWristFlexDeg { get; private set; }
+        public float LastWristDevDeg { get; private set; }
+        public float LastWristTwistDeg { get; private set; }
+        /// The pose this layer AUTHORS, at full strength, before the ramp weight blends it toward
+        /// the source animation. This is the unambiguous attribution target: the blended pose is a
+        /// mixture of an in-range authored pose and an out-of-range source clip, and because the
+        /// blend is a quaternion Slerp its decomposed ANGLES are not the linear interpolation of the
+        /// two endpoints -- treating them as such under-allowed the source's share by 1-2 deg and
+        /// failed every roll candidate on a ramp frame. At full weight, which is the entire hold and
+        /// everything that ships, the authored pose IS the pose.
+        public float AuthoredWristFlexDeg { get; private set; }
+        public float AuthoredWristDevDeg { get; private set; }
+        public float AuthoredWristTwistDeg { get; private set; }
+        /// Absolute forearm pronation from the bind pose -- the gated anatomical quantity.
+        public float LastForearmPronationDeg { get; private set; }
+        /// How much pronation this layer ADDED on top of the source animation's own.
+        public float AppliedPronationDeg { get; private set; }
+        public float LastElbowFlexDeg { get; private set; }
+        public float LastShoulderElevDeg { get; private set; }
+        public float LastShoulderTwistDeg { get; private set; }
+        /// Angle between the humerus and the spine axis -- the same quantity as elevation, kept as
+        /// a separate readout so the twist construction's conditioning is visible in the log.
+        public float LastShoulderSwingDeg { get; private set; }
+        /// Set on a frame where the ROM clamp had to give up part of the roll target. The roll is a
+        /// soft goal; ROM is not.
+        public float LastRollGivenUpDeg { get; private set; }
+        public int RomClampFrames { get; private set; }
 
         public const string StateName = "SurprisedReaction";
         private static readonly int StateHash = Animator.StringToHash(StateName);
 
         private Animator animator;
         private Transform shoulder, elbow, wrist, head, midProx, idxProx, chest;   // idxProx: palm plane
+        private Transform hips, neck;        // S92: spine axis, for shoulder elevation
+        /// S92 rest frame, taken from the mesh BIND pose, not from whatever pose the character
+        /// happens to be in when the component arms. Anatomical neutral for the wrist is "hand in
+        /// line with the forearm", which is what the biped's bind pose is; measuring against the
+        /// live pose would make the ROM reading depend on when Init ran.
+        private bool restOk;
+        private Quaternion restRelHand;      // hand rotation relative to the forearm, at bind
+        private Vector3 axLocal;             // forearm long axis, in FOREARM local space
+        private Vector3 flexLocal, devLocal; // + = palmar flexion, + = ulnar deviation
+        private Transform smrT;              // the skinned mesh's frame; the bind pose lives here
+        private Quaternion bindUpperMesh;    // upper arm's bind rotation, in mesh space
+        private Vector3 upperAxLocal;        // humerus long axis, in UPPER ARM local space
+        private Quaternion restRelFore;      // forearm relative to upper arm, at bind
+        private Vector3 foreAxInUpper;       // forearm long axis, in UPPER ARM coords at bind
         private ContactSpec spec;
         private Vector3 mouthLocal;
         private FaceSpec face;
@@ -209,18 +301,113 @@ namespace SEAN.AutoTrial
             idxProx = animator.GetBoneTransform(L ? HumanBodyBones.LeftIndexProximal : HumanBodyBones.RightIndexProximal);
             head = animator.GetBoneTransform(HumanBodyBones.Head);
             chest = animator.GetBoneTransform(HumanBodyBones.Chest) ?? animator.GetBoneTransform(HumanBodyBones.Spine);
+            hips = animator.GetBoneTransform(HumanBodyBones.Hips);
+            neck = animator.GetBoneTransform(HumanBodyBones.Neck) ?? head;
             ready = shoulder && elbow && wrist && head;
+            CaptureRestFrame();
             // env overrides so the pole and roll can be tuned against the audit without a rebuild
             string pw = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S91_POLE");
             if (!string.IsNullOrEmpty(pw)) PoleForwardWeight = float.Parse(pw, CultureInfo.InvariantCulture);
             string hr = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S91_ROLL");
             if (!string.IsNullOrEmpty(hr)) HandRollDeg = float.Parse(hr, CultureInfo.InvariantCulture);
+            RomOnly = !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("AUTOTRIAL_S92_ROM_ONLY"));
             string so = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S91_STANDOFF");
             if (!string.IsNullOrEmpty(so)) face.standoff = float.Parse(so, CultureInfo.InvariantCulture);
             Debug.Log(string.Format(CultureInfo.InvariantCulture,
                 "[S89IK] armed on '{0}' body='{1}' landmark={2} standoff={3:F5} pole={4:F2} roll={5:F1} ready={6}",
                 gameObject.name, body, mouthLocal.ToString("F5"), face.standoff,
                 PoleForwardWeight, HandRollDeg, ready));
+        }
+
+        /// S92. Build the anatomical rest frame from the skinned mesh's bind pose.
+        ///
+        /// STEP 0 finding, which this depends on: the Rocketbox biped has NO forearm twist bone.
+        /// The left arm chain is exactly Bip01 L Clavicle -> L UpperArm -> L Forearm -> L Hand ->
+        /// L Finger0..4, 82 Bip01 nodes in the rig and zero matching twist/roll/helper. Confirmed
+        /// on Medical_Female_02 too. So pronation has nowhere to go but the forearm bone's own
+        /// long axis, applied before the wrist -- there is no bone to distribute it along.
+        private void CaptureRestFrame()
+        {
+            restOk = false;
+            if (!ready || midProx == null || idxProx == null) return;
+            var smr = GetComponentInChildren<SkinnedMeshRenderer>();
+            if (smr == null || smr.sharedMesh == null) return;
+            var bones = smr.bones;
+            var bp = smr.sharedMesh.bindposes;
+            if (bones == null || bp == null || bones.Length != bp.Length) return;
+            int iU = System.Array.IndexOf(bones, shoulder), iF = System.Array.IndexOf(bones, elbow);
+            int iH = System.Array.IndexOf(bones, wrist), iM = System.Array.IndexOf(bones, midProx);
+            int iI = System.Array.IndexOf(bones, idxProx);
+            if (iU < 0 || iF < 0 || iH < 0 || iM < 0 || iI < 0) return;
+            // bindposes[i] maps MESH space -> bone i local space, so its inverse is the bone's bind
+            // pose in mesh space. Everything below is expressed in the FOREARM's bind local frame.
+            Matrix4x4 toF = bp[iF];
+            Vector3 Wl = toF.MultiplyPoint3x4(bp[iH].inverse.GetColumn(3));
+            Vector3 Ml = toF.MultiplyPoint3x4(bp[iM].inverse.GetColumn(3));
+            Vector3 Il = toF.MultiplyPoint3x4(bp[iI].inverse.GetColumn(3));
+            axLocal = Wl.normalized;                                   // elbow -> wrist
+            if (axLocal.sqrMagnitude < 1e-9f) return;
+            // Ulnar direction: index knuckle -> middle knuckle continues toward the little finger.
+            Vector3 uln = Vector3.ProjectOnPlane(Ml - Il, axLocal);
+            if (uln.sqrMagnitude < 1e-12f) return;
+            uln.Normalize();
+            // Palm normal from the hand's own geometry, the same construction the solver uses.
+            Vector3 palmN = Vector3.Cross(Ml - Wl, Il - Wl);
+            if (palmN.sqrMagnitude < 1e-12f) return;
+            palmN = Vector3.ProjectOnPlane(palmN.normalized, axLocal).normalized;
+            // A positive rotation about cross(axis, target) carries the axis TOWARD target, so:
+            devLocal = Vector3.Cross(axLocal, uln).normalized;    // + = ulnar deviation
+            flexLocal = Vector3.Cross(axLocal, palmN).normalized; // + = palmar flexion
+            restRelHand = Quaternion.Inverse(bp[iF].inverse.rotation) * bp[iH].inverse.rotation;
+            smrT = smr.transform;
+            bindUpperMesh = bp[iU].inverse.rotation;
+            restRelFore = Quaternion.Inverse(bindUpperMesh) * bp[iF].inverse.rotation;
+            foreAxInUpper = (restRelFore * axLocal).normalized;
+            upperAxLocal = bp[iU].MultiplyPoint3x4(bp[iF].inverse.GetColumn(3)).normalized;
+            restOk = upperAxLocal.sqrMagnitude > 1e-9f;
+            Debug.Log(string.Format(CultureInfo.InvariantCulture,
+                "[S92ROM] rest frame from bind pose: ok={0} axis={1} flex(+palmar)={2} dev(+ulnar)={3}",
+                restOk, axLocal.ToString("F4"), flexLocal.ToString("F4"), devLocal.ToString("F4")));
+        }
+
+        /// q = twist * swing, twist about `axis` applied FIRST (i.e. in the PARENT frame). The usual
+        /// swing-twist gives q = swing * twist; this is the mirrored form, and it is the one needed
+        /// here: moving twist out of the wrist and into the forearm pre-multiplies the relative
+        /// rotation, so only a twist-first split lets that excess cancel cleanly.
+        private static void TwistFirst(Quaternion q, Vector3 axis, out Quaternion twist, out Quaternion swing)
+        {
+            Quaternion qi = Quaternion.Inverse(q);
+            Vector3 r = new Vector3(qi.x, qi.y, qi.z);
+            Vector3 p = Vector3.Project(r, axis);
+            var t = new Quaternion(p.x, p.y, p.z, qi.w);
+            float n = Mathf.Sqrt(t.x * t.x + t.y * t.y + t.z * t.z + t.w * t.w);
+            if (n < 1e-8f) t = Quaternion.identity;
+            else { t.x /= n; t.y /= n; t.z /= n; t.w /= n; }
+            twist = Quaternion.Inverse(t);
+            swing = Quaternion.Inverse(qi * Quaternion.Inverse(t));
+        }
+
+        /// Signed rotation angle of `q` about `axis`, in (-180, 180].
+        private static float SignedAngle(Quaternion q, Vector3 axis)
+        {
+            q.ToAngleAxis(out float a, out Vector3 ax);
+            if (float.IsNaN(a) || a < 1e-5f) return 0f;
+            if (a > 180f) a -= 360f;
+            return Vector3.Dot(ax.normalized, axis) >= 0f ? a : -a;
+        }
+
+        /// Rotation-vector components of a swing on two perpendicular axes. Exact in the
+        /// exponential-map sense: a swing's axis is perpendicular to the twist axis, so its
+        /// rotation vector decomposes onto the flexion and deviation axes without residue.
+        private static void SwingComponents(Quaternion swing, Vector3 fAxis, Vector3 dAxis,
+                                            out float flex, out float dev)
+        {
+            swing.ToAngleAxis(out float a, out Vector3 ax);
+            if (float.IsNaN(a) || a < 1e-5f) { flex = dev = 0f; return; }
+            if (a > 180f) a -= 360f;
+            Vector3 rv = ax.normalized * a;
+            flex = Vector3.Dot(rv, fAxis);
+            dev = Vector3.Dot(rv, dAxis);
         }
 
         /// "Business_Male_01(Clone)" -> "Business_Male_01"
@@ -250,6 +437,10 @@ namespace SEAN.AutoTrial
             float w = Ramp(frame, spec);
             LastWeight = w;
             DeltaShoulderDeg = DeltaElbowDeg = DeltaWristDeg = 0f;
+            // S92. Measure ROM on EVERY frame of the state, w == 0 included -- the gate needs the
+            // untouched frames as its own control, and leaving them unmeasured froze the last
+            // in-window values into every subsequent row.
+            MeasureRom();
             if (w <= 0f) return;   // outside the window this component performs no write at all
 
             if (!announced)
@@ -291,21 +482,38 @@ namespace SEAN.AutoTrial
             // weight repeatedly and break the ramp.
             LastFaceNormalWorld = faceN;   // TwoBone reads this for the anterior pole; set it first
             LastMouthWorld = mouth;
+            if (RomOnly)
+            {
+                // measure the source animation through the same ruler, write nothing
+                MeasureRom();
+                LastSignedClearance = Vector3.Dot(Palm() - mouth, faceN);
+                LastPalmDist = Vector3.Distance(Palm(), mouth);
+                DeltaShoulderDeg = DeltaElbowDeg = DeltaWristDeg = 0f;
+                return;
+            }
             Quaternion l0s = shoulder.localRotation, l0e = elbow.localRotation, l0w = wrist.localRotation;
             // Three passes, not two: the pen/gap SPREAD is a property of how flat the hand lies and
             // is unaffected by standoff, which only slides both numbers together. Two passes left a
             // 20.3 mm spread against a 20 mm shell, so no standoff could satisfy both ends.
             for (int pass = 0; pass < 3; pass++)
             {
-                OrientWrist(mouth, faceN);
+                OrientHand(mouth, faceN);
                 TwoBone(palmTarget);
             }
+            // record the authored pose BEFORE the ramp blend
+            DecomposeWrist(elbow.rotation, wrist.rotation,
+                           out float af, out float ad, out float at);
+            AuthoredWristFlexDeg = af; AuthoredWristDevDeg = ad; AuthoredWristTwistDeg = at;
             shoulder.localRotation = Quaternion.Slerp(l0s, shoulder.localRotation, w);
             elbow.localRotation = Quaternion.Slerp(l0e, elbow.localRotation, w);
             wrist.localRotation = Quaternion.Slerp(l0w, wrist.localRotation, w);
             DeltaShoulderDeg = Quaternion.Angle(l0s, shoulder.localRotation);
             DeltaElbowDeg = Quaternion.Angle(l0e, elbow.localRotation);
             DeltaWristDeg = Quaternion.Angle(l0w, wrist.localRotation);
+            // AFTER the ramp blend: the gate grades the pose that is actually on screen, not the
+            // full-strength solve. At low weight the arm is mostly the source animation and its ROM
+            // reading belongs to the clip -- which is what the S91b weighted attribution then uses.
+            MeasureRom();
 
             LastFaceNormalWorld = faceN;
             LastMouthWorld = mouth;
@@ -314,9 +522,11 @@ namespace SEAN.AutoTrial
             WriteFrames++;
         }
 
+        /// Decide the hand's world orientation, then distribute it anatomically: pronation to the
+        /// forearm, flexion/deviation to the wrist, nothing outside range.
         /// Lay the palm plane flat against the face plane. The palm normal comes from the hand's own
         /// geometry -- cross(wrist->middle, wrist->index) -- oriented to point out of the palm.
-        private void OrientWrist(Vector3 mouth, Vector3 faceN)
+        private void OrientHand(Vector3 mouth, Vector3 faceN)
         {
             if (midProx == null || idxProx == null) return;
             Vector3 palmN = Vector3.Cross(midProx.position - wrist.position, idxProx.position - wrist.position);
@@ -335,6 +545,165 @@ namespace SEAN.AutoTrial
             if (faceUp.sqrMagnitude < 1e-10f) return;
             Vector3 want = Quaternion.AngleAxis(HandRollDeg, faceN) * faceUp.normalized;
             wrist.rotation = Quaternion.FromToRotation(longAxis.normalized, want) * wrist.rotation;
+
+            // S92. Everything above decided the hand's WORLD orientation, and up to S91 all of it
+            // was dumped on the wrist -- which is why the hand came out reversed relative to the
+            // forearm. The radiocarpal joint has no axial degree of freedom worth the name; the
+            // twist that turns the palm over is forearm PRONATION. Route it there, then clamp what
+            // is left at the wrist to the joint's real range.
+            RouteTwistToForearm();
+            ClampWristToRom();
+        }
+
+        /// Move the axial component of the hand's orientation out of the wrist and into the
+        /// forearm. This is pronation, and it is the whole anatomical point of S92: the radiocarpal
+        /// joint has no axial degree of freedom, so the twist that turns the palm over must live in
+        /// the forearm. Up to S91 all of it was dumped on the wrist, which is why the hand came out
+        /// reversed relative to the forearm.
+        ///
+        /// WHAT PRONATION CANNOT DO -- established here, after a wrong turn worth recording. A
+        /// search over the pronation angle was written first, on the theory that pronation decides
+        /// WHICH wrist axis absorbs the bend, so it could steer the demand into flexion (+-60 deg
+        /// of range) and away from deviation (20-30). That theory is false. Rotating the forearm
+        /// about its own axis pre-multiplies the hand-relative-to-forearm rotation by a twist about
+        /// that axis, and for the twist-first split q = twist * swing that leaves the SWING
+        /// completely unchanged -- so flexion and deviation are untouched, exactly. The search duly
+        /// returned 0-5 deg on every candidate. The bend between forearm and hand is fixed by the
+        /// two directions, and pronation moves neither: the forearm axis is invariant under
+        /// rotation about itself, and the hand is then pinned back to the orientation it wanted.
+        ///
+        /// So the only levers on an over-flexed wrist are the ROLL target (soft, relaxed by
+        /// ClampWristToRom) and the elbow POLE (which moves the forearm direction). Pronation
+        /// handles the axial term and nothing else, which is precisely what the wrist needs of it.
+        ///
+        /// Rotating the forearm about the elbow->wrist line does NOT move the wrist position -- the
+        /// axis passes through both joints -- so the two-bone position solve is untouched, and
+        /// TwoBone's FromToRotation deltas carry no twist of their own, so the pronation survives
+        /// into the next pass.
+        private void RouteTwistToForearm()
+        {
+            if (!restOk) return;
+            Quaternion target = wrist.rotation;               // orientation the roll step asked for
+            Vector3 axWorld = elbow.rotation * axLocal;
+            DecomposeWrist(elbow.rotation, target, out _, out _, out float twDeg);
+            float excess = twDeg - Mathf.Clamp(twDeg, -WristTwistMaxDeg, WristTwistMaxDeg);
+            // Do not buy wrist range at the cost of an impossible forearm: stop at the forearm's
+            // own limit and let the wrist clamp absorb whatever is left.
+            if (Mathf.Abs(excess) > 1e-4f)
+            {
+                float now = AbsolutePronation(elbow.rotation);
+                float want = Mathf.Clamp(now + excess, -ForearmPronationMaxDeg, ForearmPronationMaxDeg);
+                excess = want - now;
+            }
+            AppliedPronationDeg = excess;
+            if (Mathf.Abs(excess) < 1e-4f) return;
+            // Pre-multiplying the relative rotation by a local-axis twist subtracts exactly `excess`
+            // from the wrist's axial angle; in world terms that is a rotation of the forearm about
+            // the live elbow->wrist direction.
+            elbow.rotation = Quaternion.AngleAxis(excess, axWorld) * elbow.rotation;
+            wrist.rotation = target;                          // hand keeps the orientation it wanted
+        }
+
+        /// Forearm rotation about its own shaft, relative to the bind pose: anatomical pronation.
+        private float AbsolutePronation(Quaternion elbowRot)
+        {
+            if (!restOk || smrT == null) return 0f;
+            Quaternion foreInMesh = Quaternion.Inverse(smrT.rotation) * elbowRot;
+            Quaternion upInMesh = Quaternion.Inverse(smrT.rotation) * shoulder.rotation;
+            Quaternion rel = Quaternion.Inverse(upInMesh) * foreInMesh;
+            Quaternion dev = rel * Quaternion.Inverse(restRelFore);
+            TwistFirst(dev, foreAxInUpper, out Quaternion tw, out _);
+            return SignedAngle(tw, foreAxInUpper);
+        }
+
+        /// The wrist's flexion / deviation / twist for a given forearm and hand rotation.
+        private void DecomposeWrist(Quaternion elbowRot, Quaternion handRot,
+                                    out float flex, out float dev, out float twist)
+        {
+            Quaternion rel = Quaternion.Inverse(elbowRot) * handRot;
+            Quaternion d = rel * Quaternion.Inverse(restRelHand);
+            TwistFirst(d, axLocal, out Quaternion tw, out Quaternion sw);
+            twist = SignedAngle(tw, axLocal);
+            SwingComponents(sw, flexLocal, devLocal, out flex, out dev);
+        }
+
+        /// Clamp the hand's rotation relative to the forearm into the wrist's real range. If the
+        /// orientation the roll asked for cannot be had inside the range, the ROLL gives way --
+        /// hand orientation on the face is a soft goal, joint range is not.
+        private void ClampWristToRom()
+        {
+            if (!restOk) return;
+            Quaternion rel = Quaternion.Inverse(elbow.rotation) * wrist.rotation;
+            Quaternion dev = rel * Quaternion.Inverse(restRelHand);
+            TwistFirst(dev, axLocal, out Quaternion tw, out Quaternion sw);
+            float twDeg = SignedAngle(tw, axLocal);
+            SwingComponents(sw, flexLocal, devLocal, out float flexDeg, out float devDeg);
+            float cTw = Mathf.Clamp(twDeg, -WristTwistMaxDeg, WristTwistMaxDeg);
+            float cFlex = Mathf.Clamp(flexDeg, WristFlexMinDeg, WristFlexMaxDeg);
+            float cDev = Mathf.Clamp(devDeg, WristDevMinDeg, WristDevMaxDeg);
+            LastWristTwistDeg = cTw; LastWristFlexDeg = cFlex; LastWristDevDeg = cDev;
+            float givenUp = Mathf.Abs(twDeg - cTw) + Mathf.Abs(flexDeg - cFlex) + Mathf.Abs(devDeg - cDev);
+            LastRollGivenUpDeg = givenUp;
+            if (givenUp < 1e-3f) return;
+            RomClampFrames++;
+            Vector3 rv = flexLocal * cFlex + devLocal * cDev;
+            float ang = rv.magnitude;
+            Quaternion swC = ang < 1e-5f ? Quaternion.identity : Quaternion.AngleAxis(ang, rv / ang);
+            Quaternion twC = Quaternion.AngleAxis(cTw, axLocal);
+            wrist.rotation = elbow.rotation * (twC * swC) * restRelHand;
+        }
+
+        /// S92 G-ROM measurement. Reads the pose as it stands and publishes every angle the gate
+        /// grades. Called after the ramp blend, so it measures what is actually on screen -- not
+        /// what the solver asked for before the weight was applied.
+        private void MeasureRom()
+        {
+            if (!restOk) { LastElbowFlexDeg = LastShoulderElevDeg = LastShoulderTwistDeg = 0f; return; }
+            Quaternion rel = Quaternion.Inverse(elbow.rotation) * wrist.rotation;
+            Quaternion dev = rel * Quaternion.Inverse(restRelHand);
+            TwistFirst(dev, axLocal, out Quaternion tw, out Quaternion sw);
+            LastWristTwistDeg = SignedAngle(tw, axLocal);
+            SwingComponents(sw, flexLocal, devLocal, out float f, out float d);
+            LastWristFlexDeg = f; LastWristDevDeg = d;
+            LastForearmPronationDeg = AbsolutePronation(elbow.rotation);
+            // Elbow flexion: 180 minus the included angle at the elbow. Straight arm = 0.
+            Vector3 up = shoulder.position - elbow.position, fo = wrist.position - elbow.position;
+            LastElbowFlexDeg = (up.sqrMagnitude < 1e-12f || fo.sqrMagnitude < 1e-12f)
+                ? 0f : 180f - Vector3.Angle(up, fo);
+            // Shoulder elevation: angle of the humerus away from hanging straight down the spine.
+            // NOT chest.up -- this is a 3ds Max biped, whose bone axes run ALONG the bone, so the
+            // chest's "up" is not the spine direction at all and read elevation as 147 deg for a
+            // hand-at-mouth pose whose elbow is plainly below the shoulder. The spine axis is
+            // neck->hips, the same axis the S91 torso audit measures against.
+            Vector3 hum = elbow.position - shoulder.position;
+            Vector3 down = (hips != null && neck != null) ? (hips.position - neck.position) : Vector3.down;
+            if (down.sqrMagnitude < 1e-12f) down = Vector3.down;
+            LastShoulderElevDeg = hum.sqrMagnitude < 1e-12f ? 0f : Vector3.Angle(hum, down);
+            // Humeral axial rotation about its own shaft, relative to the bind pose. Both poses are
+            // taken into the mesh's frame first -- the bind pose lives there, the live bone lives in
+            // world -- and the difference is then expressed in the bone's own local coordinates, so
+            // the twist axis is the constant upperAxLocal rather than something that moves with the
+            // character's heading.
+            // Humeral axial rotation, from the ELBOW FLEXION PLANE rather than from the bind pose.
+            //
+            // The bind-referenced swing-twist was tried first and is unusable on this rig: the bind
+            // pose is a T-pose, so the humerus has already swung 107-163 deg from it on EVERY frame
+            // of this clip, which is deep into the region where the minimal-swing/residual-twist
+            // split degenerates. It read between -176 and +179 deg on neighbouring frames of the
+            // untouched source animation -- a sign flip, not a motion. Gating on that would have
+            // been gating on noise.
+            //
+            // With the elbow flexed (it sits at 130-140 deg through the hold) the forearm's
+            // direction perpendicular to the humerus IS the humeral rotation, and it needs no bind
+            // reference at all. Zero is defined as the forearm swinging in the plane containing the
+            // spine axis -- a convention, and declared as one, which is why this is REPORTED and
+            // not gated. It degenerates only if the elbow straightens; LastElbowFlexDeg shows that.
+            Vector3 hAx = (elbow.position - shoulder.position).normalized;
+            Vector3 fPerp = Vector3.ProjectOnPlane(wrist.position - elbow.position, hAx);
+            Vector3 refPerp = Vector3.ProjectOnPlane(down, hAx);
+            LastShoulderSwingDeg = Vector3.Angle(hAx, down);
+            LastShoulderTwistDeg = (fPerp.sqrMagnitude < 1e-10f || refPerp.sqrMagnitude < 1e-10f)
+                ? 0f : Vector3.SignedAngle(refPerp, fPerp, hAx);
         }
 
         /// Analytic two-bone solve placing the PALM (not the wrist) at the target, with the elbow

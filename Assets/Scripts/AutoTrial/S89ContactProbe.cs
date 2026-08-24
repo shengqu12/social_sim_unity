@@ -122,7 +122,11 @@ namespace SEAN.AutoTrial
                         + "wristL_x,wristL_y,wristL_z,elbowL_x,elbowL_y,elbowL_z,weight,"
                         + "dShoulderDeg,dElbowDeg,dWristDeg,signedClear,penDeepest,gapNearest,"
                         + "shX,shY,shZ,elX,elY,elZ,wrX,wrY,wrZ,tipX,tipY,tipZ,"
-                        + "hipX,hipY,hipZ,nkX,nkY,nkZ,hdX,hdY,hdZ,rgX,rgZ\n");
+                        + "hipX,hipY,hipZ,nkX,nkY,nkZ,hdX,hdY,hdZ,rgX,rgZ,"
+                        // S92 G-ROM: the joint angles the solver clamps against, logged from the
+                        // component itself so the gate grades exactly the quantity that was clamped
+                        + "wFlex,wDev,wTwist,pronation,pronApplied,eFlex,sElev,sTwist,sSwing,rollGivenUp,"
+                        + "aFlex,aDev,aTwist\n");
             hand.Append("frame,x,y,z\n");
             MakeCam();
             Debug.Log("[S89probe2] armed tag=" + tag + " body=" + body + " headVerts=" + headIdx.Length
@@ -291,7 +295,9 @@ namespace SEAN.AutoTrial
                 + "{13:F4},{14:F4},{15:F4},{16:F4},{17:F6},{18:F6},{19:F6},"
                 + "{20:F5},{21:F5},{22:F5},{23:F5},{24:F5},{25:F5},{26:F5},{27:F5},{28:F5},"
                 + "{29:F5},{30:F5},{31:F5},{32:F5},{33:F5},{34:F5},{35:F5},{36:F5},{37:F5},"
-                + "{38:F5},{39:F5},{40:F5},{41:F5},{42:F5}\n",
+                + "{38:F5},{39:F5},{40:F5},{41:F5},{42:F5},"
+                + "{43:F3},{44:F3},{45:F3},{46:F3},{47:F3},{48:F3},{49:F3},{50:F3},{51:F3},{52:F3},"
+                + "{53:F3},{54:F3},{55:F3}\n",
                 frame, ik != null ? ik.LastFrameF : frame,
                 Vector3.Distance(palm, mouth), handIdx.Min(i => Vector3.Distance(vs[i], mouth)),
                 Vector3.Dot(miss, Vector3.up), Vector3.Dot(miss, bodyRight), Vector3.Dot(miss, bodyFwd),
@@ -304,7 +310,15 @@ namespace SEAN.AutoTrial
                 tip.x, tip.y, tip.z,
                 hipsT.position.x, hipsT.position.y, hipsT.position.z,
                 neckT.position.x, neckT.position.y, neckT.position.z,
-                head.position.x, head.position.y, head.position.z, rgNow.x, rgNow.z));
+                head.position.x, head.position.y, head.position.z, rgNow.x, rgNow.z,
+                ik != null ? ik.LastWristFlexDeg : 0f, ik != null ? ik.LastWristDevDeg : 0f,
+                ik != null ? ik.LastWristTwistDeg : 0f, ik != null ? ik.LastForearmPronationDeg : 0f,
+                ik != null ? ik.AppliedPronationDeg : 0f,
+                ik != null ? ik.LastElbowFlexDeg : 0f, ik != null ? ik.LastShoulderElevDeg : 0f,
+                ik != null ? ik.LastShoulderTwistDeg : 0f, ik != null ? ik.LastShoulderSwingDeg : 0f,
+                ik != null ? ik.LastRollGivenUpDeg : 0f,
+                ik != null ? ik.AuthoredWristFlexDeg : 0f, ik != null ? ik.AuthoredWristDevDeg : 0f,
+                ik != null ? ik.AuthoredWristTwistDeg : 0f));
             if (frame >= 20 && frame <= 100)
                 foreach (int i in handIdx)
                 { var q = head.InverseTransformPoint(vs[i]);
