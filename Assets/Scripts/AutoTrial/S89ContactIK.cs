@@ -113,9 +113,21 @@ namespace SEAN.AutoTrial
 
         public static readonly Dictionary<string, FaceSpec> Face = new Dictionary<string, FaceSpec>
         {
-            { "Business_Male_01",  new FaceSpec { n = new Vector3(0.29607f, 0.95379f, 0.05130f), standoff = 0.03362f } },
+            { "Business_Male_01",  new FaceSpec { n = new Vector3(0.29607f, 0.95379f, 0.05130f), standoff = 0.03512f } },
             { "Medical_Female_02", new FaceSpec { n = new Vector3(0.42432f, 0.89455f, 0.14047f), standoff = 0.02685f } },
         };
+
+        /// S91. Weight of the anterior component in the elbow pole, against a unit "down". Tuned
+        /// against the full self-intersection audit. 0.85 and 1.6 left forearm-vs-torso at -2.9 mm;
+        /// 2.6 lifts it to -0.7 mm and upper-arm-vs-torso from +23.3 to +35.7 mm.
+        public static float PoleForwardWeight = 2.6f;
+
+        /// S91 FIX 2. Roll of the hand about the palm normal, degrees, so the hand centres on the
+        /// MOUTH rather than riding up over the nose and upper lip. 0 = the hand's long axis points
+        /// along the face-plane "up", which is the fist-over-the-nose pose S90 shipped. 100 deg lays
+        /// the hand across the lower face; it also lifts forearm-vs-head clearance from +3.3 mm to
+        /// +43.5 mm, because the forearm no longer has to stand vertically against the chin.
+        public static float HandRollDeg = 100f;
 
         public const string StateName = "SurprisedReaction";
         private static readonly int StateHash = Animator.StringToHash(StateName);
@@ -198,8 +210,17 @@ namespace SEAN.AutoTrial
             head = animator.GetBoneTransform(HumanBodyBones.Head);
             chest = animator.GetBoneTransform(HumanBodyBones.Chest) ?? animator.GetBoneTransform(HumanBodyBones.Spine);
             ready = shoulder && elbow && wrist && head;
-            Debug.Log("[S89IK] armed on '" + gameObject.name + "' body='" + body + "' landmark="
-                      + mouthLocal.ToString("F5") + " ready=" + ready);
+            // env overrides so the pole and roll can be tuned against the audit without a rebuild
+            string pw = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S91_POLE");
+            if (!string.IsNullOrEmpty(pw)) PoleForwardWeight = float.Parse(pw, CultureInfo.InvariantCulture);
+            string hr = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S91_ROLL");
+            if (!string.IsNullOrEmpty(hr)) HandRollDeg = float.Parse(hr, CultureInfo.InvariantCulture);
+            string so = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S91_STANDOFF");
+            if (!string.IsNullOrEmpty(so)) face.standoff = float.Parse(so, CultureInfo.InvariantCulture);
+            Debug.Log(string.Format(CultureInfo.InvariantCulture,
+                "[S89IK] armed on '{0}' body='{1}' landmark={2} standoff={3:F5} pole={4:F2} roll={5:F1} ready={6}",
+                gameObject.name, body, mouthLocal.ToString("F5"), face.standoff,
+                PoleForwardWeight, HandRollDeg, ready));
         }
 
         /// "Business_Male_01(Clone)" -> "Business_Male_01"
@@ -268,6 +289,8 @@ namespace SEAN.AutoTrial
             // nearest hand vertex 45 mm off the lip. So alternate twice, at FULL strength, and blend
             // the ramp weight once at the end on LOCAL rotations -- blending per-pass would apply the
             // weight repeatedly and break the ramp.
+            LastFaceNormalWorld = faceN;   // TwoBone reads this for the anterior pole; set it first
+            LastMouthWorld = mouth;
             Quaternion l0s = shoulder.localRotation, l0e = elbow.localRotation, l0w = wrist.localRotation;
             // Three passes, not two: the pen/gap SPREAD is a property of how flat the hand lies and
             // is unaffected by standoff, which only slides both numbers together. Two passes left a
@@ -301,6 +324,17 @@ namespace SEAN.AutoTrial
             palmN.Normalize();
             if (Vector3.Dot(palmN, mouth - Palm()) < 0f) palmN = -palmN;
             wrist.rotation = Quaternion.FromToRotation(palmN, -faceN) * wrist.rotation;
+
+            // Roll about the palm normal: aligns the hand's long axis (wrist -> middle finger base)
+            // to a chosen direction in the face plane, which is what decides whether the hand sits
+            // over the mouth or rides up onto the nose. Aligning the plane alone leaves this free.
+            Vector3 longAxis = midProx.position - wrist.position;
+            longAxis = Vector3.ProjectOnPlane(longAxis, faceN);
+            if (longAxis.sqrMagnitude < 1e-10f) return;
+            Vector3 faceUp = Vector3.ProjectOnPlane(Vector3.up, faceN);
+            if (faceUp.sqrMagnitude < 1e-10f) return;
+            Vector3 want = Quaternion.AngleAxis(HandRollDeg, faceN) * faceUp.normalized;
+            wrist.rotation = Quaternion.FromToRotation(longAxis.normalized, want) * wrist.rotation;
         }
 
         /// Analytic two-bone solve placing the PALM (not the wrist) at the target, with the elbow
@@ -318,9 +352,15 @@ namespace SEAN.AutoTrial
             Vector3 dir = toT / d;
             wristTarget = S + dir * dC;
 
-            Vector3 outward = shoulder.position - (chest != null ? chest.position : S); outward.y = 0f;
-            if (outward.sqrMagnitude < 1e-6f) outward = Vector3.Cross(Vector3.up, dir);
-            Vector3 pole = (Vector3.down * 1.0f + outward.normalized * 0.35f).normalized;
+            // S91 FIX 1. The pole was down + LATERAL (anti-S87). That put the elbow out to the
+            // side, so the upper arm ran down-and-out while the forearm had to come back up and
+            // across the chest to reach the face -- the arm reached the mouth THROUGH the torso.
+            // Anterior is the human way: elbow in front of the sternum, forearm vertical in front
+            // of the chest. The anterior direction is already measured -- it is the face normal,
+            // flattened to horizontal -- so no extra bone is needed to find it.
+            Vector3 anterior = LastFaceNormalWorld; anterior.y = 0f;
+            if (anterior.sqrMagnitude < 1e-6f) anterior = Vector3.Cross(Vector3.up, dir);
+            Vector3 pole = (Vector3.down * 1.0f + anterior.normalized * PoleForwardWeight).normalized;
 
             float cosA = Mathf.Clamp((l1 * l1 + dC * dC - l2 * l2) / (2f * l1 * dC), -1f, 1f);
             float a1 = Mathf.Acos(cosA) * Mathf.Rad2Deg;
