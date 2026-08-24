@@ -57,7 +57,7 @@ namespace SEAN.AutoTrial
             public float clipLength;
             public bool leftHand;
             public int rampIn0, rampIn1, rampOut0, rampOut1;   // frames at 30 fps, S87's window
-            public float palmStandoff;   // metres in front of the landmark, so the palm rests rather than sinks
+            public float palmStandoff;   // SUPERSEDED by FaceSpec.standoff (S90); kept so the row reads complete
         }
 
         public static readonly List<ContactSpec> Specs = new List<ContactSpec>
@@ -93,16 +93,47 @@ namespace SEAN.AutoTrial
             { "Police_Male_02", new Vector3(-0.01719f, 0.12960f, 0.00959f) },
         };
 
+        /// Session 90. Outward face normal AT the lip landmark, head-local unit vector, and the
+        /// standoff distance the palm CENTRE is aimed at along it.
+        ///
+        /// S89 aimed the palm centre at the lip surface point itself and gated on UNSIGNED distance,
+        /// which cannot tell 5 mm outside from 5 mm inside. The hand has thickness, so putting its
+        /// centre on the skin puts half the hand inside the head -- visible in profile, invisible
+        /// from the front, which is exactly how S89's verdict still passed.
+        ///
+        /// n_face: head vertices within 3.5 cm of the landmark, PCA-fitted plane, smallest
+        /// eigenvector, oriented away from the head centroid. Planarity residual 0.09 (bm01) and
+        /// 0.12 (medf02) -- the lip patch is curved, so this is a local fit, not an exact normal.
+        /// standoff: that body's own palm half-thickness plus a 5 mm contact allowance, less a 1 mm trim
+        /// measured back from iteration 3 (penetration had 0.73 mm of headroom under the 5 mm cap). Palm
+        /// thickness is measured across the PALM SLAB (hand vertices past the wrist), 59.24 mm on
+        /// bm01 and 45.69 mm on medf02 -- not the 130 mm first measured, which was the whole
+        /// hand+forearm+sleeve cluster.
+        public class FaceSpec { public Vector3 n; public float standoff; }
+
+        public static readonly Dictionary<string, FaceSpec> Face = new Dictionary<string, FaceSpec>
+        {
+            { "Business_Male_01",  new FaceSpec { n = new Vector3(0.29607f, 0.95379f, 0.05130f), standoff = 0.03362f } },
+            { "Medical_Female_02", new FaceSpec { n = new Vector3(0.42432f, 0.89455f, 0.14047f), standoff = 0.02685f } },
+        };
+
         public const string StateName = "SurprisedReaction";
         private static readonly int StateHash = Animator.StringToHash(StateName);
 
         private Animator animator;
-        private Transform shoulder, elbow, wrist, head, midProx, idxProx, chest;
+        private Transform shoulder, elbow, wrist, head, midProx, idxProx, chest;   // idxProx: palm plane
         private ContactSpec spec;
         private Vector3 mouthLocal;
+        private FaceSpec face;
         private bool ready, announced;
         public float LastWeight { get; private set; }
         public float LastPalmDist { get; private set; } = -1f;
+        /// Signed clearance of the palm centre along the outward face normal. POSITIVE = outside the
+        /// face. This is the quantity S90 gates on; the unsigned distance S89 used could not tell
+        /// which side of the skin the palm was on.
+        public float LastSignedClearance { get; private set; } = -99f;
+        public Vector3 LastFaceNormalWorld { get; private set; }
+        public Vector3 LastMouthWorld { get; private set; }
         /// The magnitude of the correction actually applied this frame, in degrees per bone, plus a
         /// count of frames on which any write happened. G2 grades THESE rather than a cross-trial
         /// pose diff: two runs of a wall-clock-paced trial never land on identical world poses, so
@@ -145,6 +176,8 @@ namespace SEAN.AutoTrial
             string body = BodyKey(gameObject.name);
             if (!MouthLocal.TryGetValue(body, out mouthLocal))
             { Debug.Log("[S89IK] no landmark for body '" + body + "' -- inert (this is the intended default)"); return; }
+            if (!Face.TryGetValue(body, out face))
+            { Debug.Log("[S89IK] no face normal/standoff for body '" + body + "' -- inert"); return; }
 
             if (!animator.hasTransformHierarchy)
             {
@@ -226,66 +259,81 @@ namespace SEAN.AutoTrial
         private void Solve(float w)
         {
             Vector3 mouth = head.TransformPoint(mouthLocal);
-            // face outward normal, from the head centre through the landmark
-            Vector3 faceN = (mouth - head.position); faceN.y *= 0.35f; faceN.Normalize();
-            Vector3 palmTarget = mouth + faceN * spec.palmStandoff;
+            Vector3 faceN = head.TransformDirection(face.n).normalized;
+            Vector3 palmTarget = mouth + faceN * face.standoff;
 
+            // S90 iteration 3. The two corrections are coupled: rotating the wrist moves the palm
+            // away from the point the arm was just solved for, and re-solving the arm re-tilts the
+            // hand. Iteration 2 did one pass of each and overshot to +77 mm clearance with the
+            // nearest hand vertex 45 mm off the lip. So alternate twice, at FULL strength, and blend
+            // the ramp weight once at the end on LOCAL rotations -- blending per-pass would apply the
+            // weight repeatedly and break the ramp.
+            Quaternion l0s = shoulder.localRotation, l0e = elbow.localRotation, l0w = wrist.localRotation;
+            // Three passes, not two: the pen/gap SPREAD is a property of how flat the hand lies and
+            // is unaffected by standoff, which only slides both numbers together. Two passes left a
+            // 20.3 mm spread against a 20 mm shell, so no standoff could satisfy both ends.
+            for (int pass = 0; pass < 3; pass++)
+            {
+                OrientWrist(mouth, faceN);
+                TwoBone(palmTarget);
+            }
+            shoulder.localRotation = Quaternion.Slerp(l0s, shoulder.localRotation, w);
+            elbow.localRotation = Quaternion.Slerp(l0e, elbow.localRotation, w);
+            wrist.localRotation = Quaternion.Slerp(l0w, wrist.localRotation, w);
+            DeltaShoulderDeg = Quaternion.Angle(l0s, shoulder.localRotation);
+            DeltaElbowDeg = Quaternion.Angle(l0e, elbow.localRotation);
+            DeltaWristDeg = Quaternion.Angle(l0w, wrist.localRotation);
+
+            LastFaceNormalWorld = faceN;
+            LastMouthWorld = mouth;
+            LastSignedClearance = Vector3.Dot(Palm() - mouth, faceN);
+            LastPalmDist = Vector3.Distance(Palm(), mouth);
+            WriteFrames++;
+        }
+
+        /// Lay the palm plane flat against the face plane. The palm normal comes from the hand's own
+        /// geometry -- cross(wrist->middle, wrist->index) -- oriented to point out of the palm.
+        private void OrientWrist(Vector3 mouth, Vector3 faceN)
+        {
+            if (midProx == null || idxProx == null) return;
+            Vector3 palmN = Vector3.Cross(midProx.position - wrist.position, idxProx.position - wrist.position);
+            if (palmN.sqrMagnitude < 1e-10f) return;
+            palmN.Normalize();
+            if (Vector3.Dot(palmN, mouth - Palm()) < 0f) palmN = -palmN;
+            wrist.rotation = Quaternion.FromToRotation(palmN, -faceN) * wrist.rotation;
+        }
+
+        /// Analytic two-bone solve placing the PALM (not the wrist) at the target, with the elbow
+        /// carried toward a down-and-slightly-outward pole and the chain never hyperextended.
+        private void TwoBone(Vector3 palmTarget)
+        {
             Vector3 S = shoulder.position;
-            Vector3 palm = Palm();
-            Vector3 wristTarget = palmTarget - (palm - wrist.position);
-
+            Vector3 wristTarget = palmTarget - (Palm() - wrist.position);
             float l1 = Vector3.Distance(S, elbow.position);
             float l2 = Vector3.Distance(elbow.position, wrist.position);
             Vector3 toT = wristTarget - S;
             float d = toT.magnitude;
-            // GUARD: never hyperextend, never fold past the chain minimum.
-            float dClamped = Mathf.Clamp(d, Mathf.Abs(l1 - l2) + 1e-3f, l1 + l2 - 1e-3f);
             if (d < 1e-4f) return;
+            float dC = Mathf.Clamp(d, Mathf.Abs(l1 - l2) + 1e-3f, l1 + l2 - 1e-3f);   // GUARD
             Vector3 dir = toT / d;
-            wristTarget = S + dir * dClamped;
+            wristTarget = S + dir * dC;
 
-            // Elbow pole: DOWN and slightly outward. S87's failure mode -- the elbow riding at
-            // shoulder height so the forearm swept across the face -- is the anti-goal here.
-            Vector3 outward = (shoulder.position - (chest != null ? chest.position : S)); outward.y = 0f;
+            Vector3 outward = shoulder.position - (chest != null ? chest.position : S); outward.y = 0f;
             if (outward.sqrMagnitude < 1e-6f) outward = Vector3.Cross(Vector3.up, dir);
             Vector3 pole = (Vector3.down * 1.0f + outward.normalized * 0.35f).normalized;
 
-            float cosA = Mathf.Clamp((l1 * l1 + dClamped * dClamped - l2 * l2) / (2f * l1 * dClamped), -1f, 1f);
+            float cosA = Mathf.Clamp((l1 * l1 + dC * dC - l2 * l2) / (2f * l1 * dC), -1f, 1f);
             float a1 = Mathf.Acos(cosA) * Mathf.Rad2Deg;
             Vector3 axis = Vector3.Cross(dir, pole);
             if (axis.sqrMagnitude < 1e-6f) axis = Vector3.Cross(dir, Vector3.forward);
             axis.Normalize();
-            // Sign matters and the first iteration had it backwards. axis = cross(dir, pole), and a
-            // POSITIVE rotation about that axis carries dir TOWARD pole (dir=+X, pole=+Y, axis=+Z,
-            // +90 deg takes X to Y). Negating it drove the elbow away from the pole -- up to head
-            // height -- and reproduced S87's failure exactly: forearm across the face, fingers out
-            // past the far cheek, 129 head vertices inside the forearm capsule.
+            // positive rotation about cross(dir, pole) carries dir TOWARD pole; S89 iteration 1 had
+            // this negated and drove the elbow to head height
             Vector3 elbowTarget = S + (Quaternion.AngleAxis(a1, axis) * dir) * l1;
 
-            // upper arm: current S->E onto S->elbowTarget
-            Quaternion q1 = Quaternion.FromToRotation(elbow.position - S, elbowTarget - S);
-            Quaternion before1 = shoulder.rotation;
-            shoulder.rotation = Quaternion.Slerp(shoulder.rotation, q1 * shoulder.rotation, w);
-            DeltaShoulderDeg = Quaternion.Angle(before1, shoulder.rotation);
-
-            // forearm: current E->W onto E->wristTarget, after the shoulder moved
+            shoulder.rotation = Quaternion.FromToRotation(elbow.position - S, elbowTarget - S) * shoulder.rotation;
             Vector3 E = elbow.position;
-            Quaternion q2 = Quaternion.FromToRotation(wrist.position - E, wristTarget - E);
-            Quaternion before2 = elbow.rotation;
-            elbow.rotation = Quaternion.Slerp(elbow.rotation, q2 * elbow.rotation, w);
-            DeltaElbowDeg = Quaternion.Angle(before2, elbow.rotation);
-
-            // wrist: turn the palm toward the landmark
-            Vector3 palmDir = Palm() - wrist.position;
-            if (palmDir.sqrMagnitude > 1e-8f)
-            {
-                Quaternion q3 = Quaternion.FromToRotation(palmDir, mouth - wrist.position);
-                Quaternion before3 = wrist.rotation;
-                wrist.rotation = Quaternion.Slerp(wrist.rotation, q3 * wrist.rotation, w);
-                DeltaWristDeg = Quaternion.Angle(before3, wrist.rotation);
-            }
-            LastPalmDist = Vector3.Distance(Palm(), mouth);
-            WriteFrames++;
+            elbow.rotation = Quaternion.FromToRotation(wrist.position - E, wristTarget - E) * elbow.rotation;
         }
     }
 }

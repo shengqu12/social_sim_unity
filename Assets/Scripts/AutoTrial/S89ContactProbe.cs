@@ -100,11 +100,19 @@ namespace SEAN.AutoTrial
                   return string.Format(CultureInfo.InvariantCulture, "{0:F5},{1:F5},{2:F5}", q.x, q.y, q.z); })));
             rows.Append("frame,frameF,d_palm_mouth,d_handmesh_mouth,miss_low,miss_lat,miss_fwd,"
                         + "wristL_x,wristL_y,wristL_z,elbowL_x,elbowL_y,elbowL_z,weight,"
-                        + "dShoulderDeg,dElbowDeg,dWristDeg\n");
+                        + "dShoulderDeg,dElbowDeg,dWristDeg,signedClear,penDeepest,gapNearest\n");
             hand.Append("frame,x,y,z\n");
             MakeCam();
             Debug.Log("[S89probe2] armed tag=" + tag + " body=" + body + " headVerts=" + headIdx.Length
                       + " handVerts=" + handIdx.Length + " ikPresent=" + (ik != null));
+        }
+
+        /// Used only when the IK layer is absent (the baseline arm), so the baseline can be graded
+        /// on the same signed axis as the corrected run.
+        private static Vector3 FallbackNormal(string body)
+        {
+            S89ContactIK.FaceSpec f;
+            return S89ContactIK.Face.TryGetValue(body, out f) ? f.n : Vector3.up;
         }
 
         private Vector3[] Baked()
@@ -129,24 +137,48 @@ namespace SEAN.AutoTrial
             var vs = Baked();
             Vector3 mouth = head.TransformPoint(mouthLocal);
             Vector3 palm = midProx != null ? Vector3.Lerp(wrist.position, midProx.position, 0.6f) : wrist.position;
+            // S90 signed measurements, in the LOCAL half-space at the lip. The face is only locally
+            // planar, so the test is restricted to hand vertices within 4 cm of the landmark -- the
+            // actual contact patch. Positive = outside the face.
+            Vector3 nWorld = (ik != null && ik.LastFaceNormalWorld != Vector3.zero)
+                ? ik.LastFaceNormalWorld
+                : (head.TransformDirection(FallbackNormal(S89ContactIK.BodyKey(gameObject.name)))).normalized;
+            float signedClear = Vector3.Dot(palm - mouth, nWorld);
+            float penDeepest = 0f, gapNearest = float.MaxValue;
+            foreach (int i in handIdx)
+            {
+                float r = Vector3.Distance(vs[i], mouth);
+                if (r < gapNearest) gapNearest = r;
+                if (r > 0.04f) continue;
+                float sd = Vector3.Dot(vs[i] - mouth, nWorld);
+                if (-sd > penDeepest) penDeepest = -sd;
+            }
+            if (gapNearest == float.MaxValue) gapNearest = -1f;
             Vector3 miss = mouth - palm;
             Vector3 wl = head.InverseTransformPoint(wrist.position);
             Vector3 el = head.InverseTransformPoint(elbow.position);
             rows.Append(string.Format(CultureInfo.InvariantCulture,
                 "{0},{1:F4},{2:F5},{3:F5},{4:F5},{5:F5},{6:F5},{7:F5},{8:F5},{9:F5},{10:F5},{11:F5},{12:F5},"
-                + "{13:F4},{14:F4},{15:F4},{16:F4}\n",
+                + "{13:F4},{14:F4},{15:F4},{16:F4},{17:F6},{18:F6},{19:F6}\n",
                 frame, ik != null ? ik.LastFrameF : frame,
                 Vector3.Distance(palm, mouth), handIdx.Min(i => Vector3.Distance(vs[i], mouth)),
                 Vector3.Dot(miss, Vector3.up), Vector3.Dot(miss, bodyRight), Vector3.Dot(miss, bodyFwd),
                 wl.x, wl.y, wl.z, el.x, el.y, el.z, ik != null ? ik.LastWeight : 0f,
                 ik != null ? ik.DeltaShoulderDeg : 0f, ik != null ? ik.DeltaElbowDeg : 0f,
-                ik != null ? ik.DeltaWristDeg : 0f));
+                ik != null ? ik.DeltaWristDeg : 0f, signedClear, penDeepest, gapNearest));
             if (frame >= 20 && frame <= 100)
                 foreach (int i in handIdx)
                 { var q = head.InverseTransformPoint(vs[i]);
                   hand.Append(string.Format(CultureInfo.InvariantCulture, "{0},{1:F5},{2:F5},{3:F5}\n", frame, q.x, q.y, q.z)); }
 
-            if (cam != null && frame >= 15 && frame <= 115 && shot < 220) Shoot(mouth, frame);
+            if (cam != null && frame >= 15 && frame <= 115 && shot < 440)
+            {
+                // S90: a profile shot is now mandatory. Penetration at the mouth is invisible from
+                // the front -- that is exactly how S89's frontal verdict still passed while the hand
+                // was inside the head.
+                Shoot(mouth, frame, false);
+                Shoot(mouth, frame, true);
+            }
             if (frame >= 175 && !wrote) Flush();
         }
 
@@ -170,17 +202,21 @@ namespace SEAN.AutoTrial
             Directory.CreateDirectory(Path.Combine(outDir, "frames_" + tag));
         }
 
-        private void Shoot(Vector3 mouth, int frame)
+        private void Shoot(Vector3 mouth, int frame, bool profile)
         {
             marker.transform.position = mouth;
             Vector3 focus = head.position + Vector3.up * -0.02f;
-            cam.transform.position = focus + bodyFwd * 0.70f + Vector3.up * 0.06f;
+            // profile looks from the character's RIGHT, so the face silhouette is clean and the
+            // hand's depth relative to the lips is readable
+            cam.transform.position = profile ? focus - bodyRight * 0.68f + Vector3.up * 0.04f
+                                             : focus + bodyFwd * 0.70f + Vector3.up * 0.06f;
             cam.transform.LookAt(focus);
             cam.targetTexture = rt; cam.Render();
             var prev = RenderTexture.active; RenderTexture.active = rt;
             tex.ReadPixels(new Rect(0, 0, 1000, 720), 0, 0); tex.Apply();
             RenderTexture.active = prev;
-            File.WriteAllBytes(Path.Combine(outDir, "frames_" + tag, "f_" + frame.ToString("D4") + ".png"), tex.EncodeToPNG());
+            File.WriteAllBytes(Path.Combine(outDir, "frames_" + tag,
+                (profile ? "p_" : "f_") + frame.ToString("D4") + ".png"), tex.EncodeToPNG());
             shot++;
         }
 
