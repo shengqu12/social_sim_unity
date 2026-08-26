@@ -1,5 +1,19 @@
 #!/bin/bash
 # S97 Phase 1: fixed-point inversion of the FBX -> Unity humanoid import.
+#
+# WARNING -- THIS SCRIPT CREATES A SCRATCH ASSET inside the Unity project:
+#     Assets/PedestrianAssets/Kimodo/Resources/kimodo_b2_surprised_baked.fbx
+#   It is .gitignore'd and must stay that way. A second clip named `Scene` living in a Resources
+#   folder is exactly the (name, length) collision hazard recorded as Kimodo capability boundary
+#   #4. Delete it and its .meta when the run is done.
+#
+#   The finished bake is kept OUTSIDE the project, as an exhibit, not an asset:
+#     sandbox_s72_nextgen/s97/exhibit/kimodo_b2_surprised_baked.fbx
+#   It is REJECTED for use -- 13.19 mm penetration against a 5 mm cap -- and retained only as the
+#   concrete artifact for HUMANOID PIPELINE BOUNDARY #H2. See that directory's README.
+#
+# Do NOT run this while a trial is running: run_trial.py reverts any tracked file that changes
+# during a run (it attributes the change to Unity), and this script writes into the project.
 set -e
 PROJ=/home/sheng/Desktop/research/social_navigation/social_sim_unity
 UNITY=/home/sheng/Unity/Hub/Editor/2022.3.40f1/Editor/Unity
@@ -60,3 +74,7 @@ PY
   grep -aE "S86gate|FAIL" $LOGS/imp_r$K.log | grep -av "^ #" | head -3
   MU=$DATA/mu_r$K.csv
 done
+
+echo
+echo "REMINDER: delete the scratch asset now that the run is done --"
+echo "  rm -f $PROJ/$BAKED $PROJ/$BAKED.meta"

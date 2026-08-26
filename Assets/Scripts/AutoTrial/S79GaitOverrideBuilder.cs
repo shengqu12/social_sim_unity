@@ -124,9 +124,34 @@ namespace SEAN.AutoTrial
         public const float SurprisedClipLength = 2.7667f;
         public const float ClipLengthTolerance = 0.01f;
 
+        /// S97: the opt-out. Setting AUTOTRIAL_S83_B2_OFF=1 restores the stock pointing gesture.
+        public const string B2OffEnv = "AUTOTRIAL_S83_B2_OFF";
+
+        /// DEFAULT ON since S97, and SCOPED TO KIMODO PEDESTRIANS. A Kimodo pedestrian is correct
+        /// with zero environment variables set; suppressing it is what you now have to ask for.
+        /// AUTOTRIAL_S83_B2 is retired as a switch and reading it is deliberately not restored -- a
+        /// stale caller that still exports it gets the b2 clip, which is what it was asking for.
+        ///
+        /// THIS IS THE BOOTSTRAP-LEVEL GATE ONLY. It answers "may anything arm at all", which is all
+        /// that is knowable before pedestrians spawn. Whether b2 actually applies to a given
+        /// pedestrian is B2InScope below, and that is the one that decides.
         public static bool B2Requested
         {
-            get { return !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(B2Env)); }
+            get { return string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(B2OffEnv)); }
+        }
+
+        /// WHY THE DEFAULT IS SCOPED RATHER THAN GLOBAL. planD's A1 arm runs the `surprised`
+        /// personality across 6 appearances x 3 repeats, and the stock SocialForcesAnimatorController
+        /// carries a SurprisedReaction state -- so an unscoped default-on would have succeeded on
+        /// those 18 trials and put a Kimodo clip into the frozen paper dataset, against the S73 rule
+        /// that these clips never enter it. Scoping to the pedestrians the clip was made for keeps
+        /// planD untouched and is the same predicate S80 already applies to the gait override:
+        /// one name, checked one way, so a future kimodo_* clip is in scope with no code edit.
+        public static bool B2InScope(S41MixamoClipApplier applier)
+        {
+            if (!B2Requested) return false;
+            if (applier == null) return false;                       // no gait install at all
+            return S41MixamoClipApplier.IsKimodoGait(applier.clipControllerName);
         }
 
         /// <summary>Load the b2 reaction clip. The FBX exposes its take as a sub-asset, so this

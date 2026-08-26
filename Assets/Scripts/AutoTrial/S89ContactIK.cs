@@ -48,7 +48,13 @@ namespace SEAN.AutoTrial
     /// </summary>
     public class S89ContactIK : MonoBehaviour
     {
+        /// S97: retired as a switch. The layer is DEFAULT ON; this name is kept only so the
+        /// S89-S92 record still resolves against the code.
         public const string Env = "AUTOTRIAL_S89_IK";
+
+        /// S97: the opt-out. AUTOTRIAL_S89_IK_OFF=1 leaves the b2 clip playing uncorrected, which is
+        /// the S86 pose -- hand at the cheek. Used to reproduce the pre-S89 baseline.
+        public const string OffEnv = "AUTOTRIAL_S89_IK_OFF";
 
         // ---- per-clip metadata. The ONLY entry is b2. Adding a clip is adding a row. ----
         public class ContactSpec
@@ -305,7 +311,16 @@ namespace SEAN.AutoTrial
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
-            if (string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(Env))) return;
+            if (!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(OffEnv))) return;
+            // INERT WITHOUT b2, BY CONSTRUCTION. This layer exists to pin a hand to a face landmark
+            // for the ONE clip that declares it needs it, and that clip only reaches a pedestrian
+            // through the S83 rebind. Gating on the same condition means a run with the rebind
+            // suppressed never creates the host, never finds a target, and -- the part that actually
+            // matters for the regression arms -- never calls DeoptimizeTransformHierarchy on a
+            // Business_Male_01 or Medical_Female_02 that has a landmark row but no b2 clip to
+            // correct. Without this the layer would still write nothing, but it would change the
+            // object graph of every stock trial that happens to spawn one of those two bodies.
+            if (!S79GaitOverrideBuilder.B2Requested) return;
             var host = new GameObject("S89ContactIKHost");
             Object.DontDestroyOnLoad(host);
             host.AddComponent<S89ContactIK>().StartCoroutine(nameof(FindTarget));
@@ -321,6 +336,19 @@ namespace SEAN.AutoTrial
                 if (mod == null) yield return new WaitForSeconds(0.25f);
             }
             if (mod == null) { Debug.LogWarning("[S89IK] no PedestrianModulator -- inert"); yield break; }
+            // S97. Same scope as the rebind that delivers the clip this layer corrects: no b2, no
+            // correction. Checked HERE rather than in Setup() because Setup() deoptimises the
+            // transform hierarchy for any body carrying a landmark row -- Business_Male_01 and
+            // Medical_Female_02 -- and that would change the object graph of every stock trial that
+            // happens to spawn one of them, even though the layer would go on to write nothing.
+            var applier = mod.GetComponent<S41MixamoClipApplier>();
+            if (!S79GaitOverrideBuilder.B2InScope(applier))
+            {
+                Debug.Log("[S89IK] out of scope on '" + mod.gameObject.name + "' (gait '"
+                    + (applier != null ? applier.clipControllerName : "<no applier>")
+                    + "' is not a kimodo_* gait) -- inert, nothing deoptimised.");
+                yield break;
+            }
             if (mod.GetComponent<S89ContactIK>() == null) mod.gameObject.AddComponent<S89ContactIK>().Setup();
         }
 
@@ -705,10 +733,17 @@ namespace SEAN.AutoTrial
             // 21.0 mm of clearance on those frames against 35.1 from f13 on); the ramp weight and an
             // off-manifold blend hide most of it there.
             //
-            // BAKE ONLY, deliberately. Disambiguate against the hand's OWN bind palm normal, which is
-            // rig-fixed and cannot flip with the arm's position. The runtime path keeps the shipped
-            // test untouched, so the S92 baseline it was accepted on still reproduces exactly.
-            bool flip = (BakeProject != null && restOk)
+            // FIXED IN THE RUNTIME PATH (S97, Sheng's call). Disambiguate against the hand's OWN bind
+            // palm normal, which is rig-fixed and cannot flip with the arm's position. `mouth` is no
+            // longer consulted for the sign at all. The bind normal is stored NEGATED at capture --
+            // see palmNLocal -- because this rig's joint order puts the cross product out of the BACK
+            // of the hand; the sign was settled by measurement, against the branch the old test picks
+            // on the hold frames where it is reliable.
+            //
+            // The fallback is the old test, and it is reachable only when the bind rest frame could
+            // not be built (restOk false), which also disables pronation routing and the ROM clamp.
+            // A rig in that state is already outside what S92 gates.
+            bool flip = restOk
                 ? Vector3.Dot(palmN, elbow.rotation * palmNLocal) < 0f
                 : Vector3.Dot(palmN, mouth - Palm()) < 0f;
             if (flip) palmN = -palmN;

@@ -207,7 +207,7 @@ namespace SEAN.AutoTrial
         /// AUTOTRIAL_S79_LEGACY_SWAP still forces legacy for everything, including kimodo_*, which
         /// keeps the pre-S79 behaviour reachable in one step for comparison.
         /// </summary>
-        private static bool IsKimodoGait(string controllerName)
+        public static bool IsKimodoGait(string controllerName)
         {
             return !string.IsNullOrEmpty(controllerName)
                 && controllerName.StartsWith("kimodo_", System.StringComparison.OrdinalIgnoreCase);

@@ -29,9 +29,11 @@ namespace SEAN.AutoTrial
     /// AnimatorOverrideController in place, so the gait remap and the surprise remap end up in ONE
     /// controller. It does not nest override-on-override.
     ///
-    /// SCOPE. Opt-in on AUTOTRIAL_S83_B2. Unset -- which is every run outside this ticket, planD
-    /// included -- and this class does nothing at all: the bootstrap returns before creating
-    /// anything.
+    /// SCOPE (S97). DEFAULT ON, scoped to KIMODO pedestrians: a pedestrian whose installed gait is
+    /// a kimodo_* clip gets the b2 reaction with no environment variables set at all. Everything
+    /// else -- stock, Mixamo, and planD, which runs the `surprised` personality across 18 trials --
+    /// keeps the S31 pointing gesture and is untouched. AUTOTRIAL_S83_B2_OFF=1 suppresses it
+    /// entirely. See S79GaitOverrideBuilder.B2InScope for why the default is scoped, not global.
     /// </summary>
     public class S83SurpriseRebind : MonoBehaviour
     {
@@ -78,8 +80,23 @@ namespace SEAN.AutoTrial
                 yield break;
             }
 
-            // Wait out the gait install if there is one (see class doc).
             var applier = ped.GetComponent<S41MixamoClipApplier>();
+
+            // S97 SCOPE CHECK, and it must come BEFORE the gait-install wait. b2 is the reaction for
+            // KIMODO pedestrians; a stock or Mixamo pedestrian keeps the S31 pointing gesture. This
+            // is a quiet, expected exit -- Debug.Log, not LogError -- because since S97 the layer
+            // arms on every run by default, so out-of-scope is now the common case rather than a
+            // fault. Placing it after the wait would have cost every stock trial a 10 s stall and an
+            // ERROR line, and then rebound anyway.
+            if (!S79GaitOverrideBuilder.B2InScope(applier))
+            {
+                Debug.Log("[S83] out of scope on '" + ped.name + "' (gait '"
+                    + (applier != null ? applier.clipControllerName : "<no applier>")
+                    + "' is not a kimodo_* gait) -- stock pointing gesture stays, as intended.");
+                yield break;
+            }
+
+            // Wait out the gait install if there is one (see class doc).
             if (applier != null)
             {
                 float deadline = Time.time + installTimeoutSeconds;
