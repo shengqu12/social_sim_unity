@@ -453,6 +453,46 @@ namespace SEAN.AutoTrial
             Solve(w);
         }
 
+        /// ================== S97: THE OFFLINE BAKE ENTRY POINT ==================
+        /// Runs exactly the body of LateUpdate that follows the animator-state lookup, so an offline
+        /// driver exercises THE SHIPPED SOLVE rather than a second copy of it that could drift. The
+        /// runtime path does not call this and is unchanged by it; every constant stays frozen where
+        /// S91/S92 left it. The caller is responsible for having posed the skeleton at `frame`.
+        public void BakeFrame(float frame)
+        {
+            if (!ready) return;
+            spec = Specs[0];
+            LastFrameF = frame;
+            float w = Ramp(frame, spec);
+            LastWeight = w;
+            DeltaShoulderDeg = DeltaElbowDeg = DeltaWristDeg = 0f;
+            MeasureRom();
+            if (w <= 0f) return;   // outside the window this component performs no write at all
+            Solve(w);
+        }
+
+        /// The shipped ramp, exposed so the bake harness cannot disagree with it about the window.
+        public static float BakeRamp(float frame) { return Ramp(frame, Specs[0]); }
+
+        /// S97. Measure the contact geometry WITHOUT solving anything: the signed clearance of the
+        /// palm along the outward face normal, and the raw palm-to-lip distance. This is how a clip
+        /// that already carries the correction gets graded with the runtime layer switched off --
+        /// same landmark, same normal, same standoff datum, no writes.
+        public void BakeMeasureContact()
+        {
+            if (!ready) return;
+            Vector3 mouth = head.TransformPoint(mouthLocal);
+            Vector3 faceN = head.TransformDirection(face.n).normalized;
+            LastFaceNormalWorld = faceN;
+            LastMouthWorld = mouth;
+            LastSignedClearance = Vector3.Dot(Palm() - mouth, faceN);
+            LastPalmDist = Vector3.Distance(Palm(), mouth);
+        }
+
+        /// S97. Whether Setup() found the whole chain. The offline driver has to fail loudly on
+        /// a rig it could not arm on; the runtime path just goes inert.
+        public bool Ready { get { return ready; } }
+
         private static float Ramp(float f, ContactSpec s)
         {
             if (f <= s.rampIn0 || f >= s.rampOut1) return 0f;
