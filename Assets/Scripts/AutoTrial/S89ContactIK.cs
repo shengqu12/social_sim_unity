@@ -149,6 +149,51 @@ namespace SEAN.AutoTrial
         /// new one. Without it the ROM gate would have no calibration case at all.
         public static bool RomOnly;
 
+        /// ================== S97: SOLVING ON THE MUSCLE MANIFOLD ==================
+        /// S97 measured that a humanoid clip stores SEVEN muscles for the left arm's NINE
+        /// rotational degrees of freedom: the elbow's off-hinge term and the wrist's axial twist
+        /// have nowhere to live. Solving freely and projecting afterwards therefore threw away
+        /// 39.5 deg at the forearm and 40.4 at the hand -- and it threw away the WRONG 40 deg,
+        /// because the solver had already spent its budget on rotations that were about to be
+        /// discarded.
+        ///
+        /// This hook lets the BAKE re-solve inside the representable set: the pose is snapped back
+        /// onto the muscle manifold after every pass, so each following pass re-aims the hand from
+        /// where the format can actually put it and spends its remaining freedom -- shoulder swing,
+        /// elbow, and the hand's two muscles -- recovering the roll instead of authoring it into
+        /// axes that vanish. The hand's orientation relative to the forearm is still fully
+        /// controllable on the manifold (forearm twist + hand down-up + hand in-out = 3 DOF), which
+        /// is why this is worth doing rather than a loss to be accepted.
+        ///
+        /// NULL IN THE RUNTIME PATH, AND THEREFORE INERT THERE. Only S97BakeBuild ever assigns it.
+        /// The runtime layer writes transforms directly and is not subject to the muscle format at
+        /// all, so it neither needs nor pays for this.
+        public static System.Action BakeProject;
+
+        /// Passes of the OrientHand/TwoBone alternation. Three is what S90 iteration 3 settled on
+        /// and what ships. The bake raises it, because projecting onto the manifold after each pass
+        /// perturbs the pose more than a bare pass does and the alternation needs room to settle.
+        /// This is a solution-path setting, not a tuned constant: pole, roll target and standoff are
+        /// untouched by it.
+        public static int SolvePasses = 3;
+
+        /// S97. Settling iterations run after the main alternation, BAKE ONLY (zero when
+        /// BakeProject is null, which is always at runtime).
+        ///
+        /// WHY THIS IS NEEDED, mechanism first. TwoBone rotates the forearm to aim at the wrist
+        /// target and the hand rides along with it, so it leaves the hand's rotation RELATIVE to the
+        /// forearm -- and therefore the wrist clamp -- exactly intact. The projection is what breaks
+        /// the clamp: it discards the off-hinge component TwoBone left on the forearm, and moving
+        /// the forearm without moving the hand changes the very frame the twist was clamped against.
+        /// Measured: a wrist clamped to -14.5 deg comes back out at +32.9.
+        ///
+        /// The way out is that the damage is not recurrent. Once the forearm is ON the manifold its
+        /// off-hinge term is already zero, so projecting again barely moves it -- and a clamp applied
+        /// at that point survives. So: project, re-run the orientation step against the frame that
+        /// survived, project again. RouteTwistToForearm rotates the forearm about the elbow->wrist
+        /// line, which moves the wrist not at all, so the position solve is not disturbed by this.
+        public static int BakeSettleIters = 0;
+
         /// S92. Joint range-of-motion limits, degrees. Values are the clinical goniometry norms for
         /// the adult upper limb as tabulated by the AAOS and by Norkin & White, "Measurement of
         /// Joint Motion: A Guide to Goniometry" -- the standard reference range, not a per-subject
@@ -221,6 +266,7 @@ namespace SEAN.AutoTrial
         private Quaternion restRelHand;      // hand rotation relative to the forearm, at bind
         private Vector3 axLocal;             // forearm long axis, in FOREARM local space
         private Vector3 flexLocal, devLocal; // + = palmar flexion, + = ulnar deviation
+        private Vector3 palmNLocal;          // S97: bind palm normal, FOREARM-local; a rig-fixed sign reference
         private Transform smrT;              // the skinned mesh's frame; the bind pose lives here
         private Quaternion bindUpperMesh;    // upper arm's bind rotation, in mesh space
         private Vector3 upperAxLocal;        // humerus long axis, in UPPER ARM local space
@@ -358,6 +404,12 @@ namespace SEAN.AutoTrial
             // A positive rotation about cross(axis, target) carries the axis TOWARD target, so:
             devLocal = Vector3.Cross(axLocal, uln).normalized;    // + = ulnar deviation
             flexLocal = Vector3.Cross(axLocal, palmN).normalized; // + = palmar flexion
+            // S97. Stored NEGATED, so the field means what it says: out of the PALM. The cross
+            // product above, in this rig's joint order, comes out of the BACK of the hand -- fixed
+            // by measurement, not by inspection: signing it this way reproduces the branch S89's
+            // mouth-direction test picks on the hold frames, where that test is reliable, and the
+            // un-negated one reproduces the mirrored branch on every frame.
+            palmNLocal = -palmN;
             restRelHand = Quaternion.Inverse(bp[iF].inverse.rotation) * bp[iH].inverse.rotation;
             smrT = smr.transform;
             bindUpperMesh = bp[iU].inverse.rotation;
@@ -458,12 +510,19 @@ namespace SEAN.AutoTrial
         /// driver exercises THE SHIPPED SOLVE rather than a second copy of it that could drift. The
         /// runtime path does not call this and is unchanged by it; every constant stays frozen where
         /// S91/S92 left it. The caller is responsible for having posed the skeleton at `frame`.
-        public void BakeFrame(float frame)
+        public void BakeFrame(float frame) { BakeFrame(frame, -1f); }
+
+        /// wOverride >= 0 drives the solve at a chosen strength instead of the ramp's. The bake uses
+        /// 1.0: it needs the FULL-STRENGTH solution at every frame so it can build the ramp itself,
+        /// in muscle space, where the blend is linear and cannot flip branch. Slerping the two bone
+        /// rotations and re-projecting -- which is what happens if the ramp is left to Solve -- put a
+        /// 93 deg hand flip between f12 and f13.
+        public void BakeFrame(float frame, float wOverride)
         {
             if (!ready) return;
             spec = Specs[0];
             LastFrameF = frame;
-            float w = Ramp(frame, spec);
+            float w = wOverride >= 0f ? wOverride : Ramp(frame, spec);
             LastWeight = w;
             DeltaShoulderDeg = DeltaElbowDeg = DeltaWristDeg = 0f;
             MeasureRom();
@@ -535,11 +594,14 @@ namespace SEAN.AutoTrial
             // Three passes, not two: the pen/gap SPREAD is a property of how flat the hand lies and
             // is unaffected by standoff, which only slides both numbers together. Two passes left a
             // 20.3 mm spread against a 20 mm shell, so no standoff could satisfy both ends.
-            for (int pass = 0; pass < 3; pass++)
+            for (int pass = 0; pass < SolvePasses; pass++)
             {
                 OrientHand(mouth, faceN);
                 TwoBone(palmTarget);
+                // S97: no-op unless a bake installed a projector (see BakeProject).
+                if (BakeProject != null) BakeProject();
             }
+            if (BakeProject != null) SettleOnManifold(mouth, faceN);
             // record the authored pose BEFORE the ramp blend
             DecomposeWrist(elbow.rotation, wrist.rotation,
                            out float af, out float ad, out float at);
@@ -562,6 +624,49 @@ namespace SEAN.AutoTrial
             WriteFrames++;
         }
 
+        /// S97, BAKE ONLY. Hold the wrist inside its axial range WITHOUT leaving the muscle manifold.
+        ///
+        /// ClampWristToRom cannot do this job once the pose has to be storable. On the manifold the
+        /// hand has exactly TWO muscles relative to the forearm -- down-up and in-out -- and no axial
+        /// one, so the twist this ruler reads is not a free variable: it is a FUNCTION of where the
+        /// hand points. Writing a clamped rotation straight onto the transform, which is what the
+        /// runtime layer does and is entitled to do, produces a pose the format cannot hold, and the
+        /// projection puts the twist straight back (measured: clamped to -14.5, returns at +32.9;
+        /// four settling iterations of the full orientation step changed it by 0.04 deg).
+        ///
+        /// So run S92's own trade -- "the roll is a soft goal; ROM is not" -- inside the
+        /// representable set: rotate the hand about the forearm's long axis to spend the twist
+        /// excess, project back onto the manifold, and repeat. That is an alternating projection
+        /// between the manifold and the ROM set, and what it converges to is the storable pose
+        /// closest to satisfying the clamp. It spends ROLL to buy the twist back, exactly as the
+        /// runtime clamp does; it simply pays in a currency the file can carry.
+        ///
+        /// Frozen constants are untouched: this changes neither the roll TARGET (20), the pole
+        /// (2.6), nor the standoff. It changes only how much of the roll target is given up.
+        private void SettleOnManifold(Vector3 mouth, Vector3 faceN)
+        {
+            BakeProject();
+            if (!restOk) return;
+            for (int k = 0; k < BakeSettleIters; k++)
+            {
+                DecomposeWrist(elbow.rotation, wrist.rotation, out _, out _, out float tw);
+                float excess = tw - Mathf.Clamp(tw, -WristTwistMaxDeg, WristTwistMaxDeg);
+                if (Mathf.Abs(excess) < 0.05f) break;
+                Vector3 axWorld = elbow.rotation * axLocal;
+                // full step, not damped: the projection is what limits progress, and halving the
+                // step just halves the progress per round.
+                wrist.rotation = Quaternion.AngleAxis(-excess, axWorld) * wrist.rotation;
+                // Spending the twist rotates the hand about the forearm, which slides the palm
+                // CENTRE off the standoff point -- measured at 12 mm, which would have handed the
+                // penetration gate a pose 12 mm deeper into the face than the standoff was
+                // calibrated for. TwoBone puts it back, and it is safe to run here because it
+                // rotates the forearm with the hand riding along: the twist just bought is carried
+                // through it unchanged.
+                TwoBone(mouth + faceN * face.standoff);
+                BakeProject();
+            }
+        }
+
         /// Decide the hand's world orientation, then distribute it anatomically: pronation to the
         /// forearm, flexion/deviation to the wrist, nothing outside range.
         /// Lay the palm plane flat against the face plane. The palm normal comes from the hand's own
@@ -572,7 +677,25 @@ namespace SEAN.AutoTrial
             Vector3 palmN = Vector3.Cross(midProx.position - wrist.position, idxProx.position - wrist.position);
             if (palmN.sqrMagnitude < 1e-10f) return;
             palmN.Normalize();
-            if (Vector3.Dot(palmN, mouth - Palm()) < 0f) palmN = -palmN;
+            // WHICH WAY IS "OUT OF THE PALM"? The cross product's sign is fixed by the rig, so the
+            // question is only which of the two the solve should aim at the face.
+            //
+            // S89 answered it with the direction TO THE MOUTH, and that is stable only once the hand
+            // is already near the face. S97 measured what it does before then: on frames 7..12 of the
+            // ramp, with the hand still low and far, the test picks the opposite normal and the solve
+            // converges on a MIRRORED hand -- flexion -46 where the hold wants +55, deviation +30
+            // where the hold wants -20 -- and then snaps 93 deg to the correct branch at f13. This is
+            // latent in the shipped runtime layer too (its own full-strength solve reaches only
+            // 21.0 mm of clearance on those frames against 35.1 from f13 on); the ramp weight and an
+            // off-manifold blend hide most of it there.
+            //
+            // BAKE ONLY, deliberately. Disambiguate against the hand's OWN bind palm normal, which is
+            // rig-fixed and cannot flip with the arm's position. The runtime path keeps the shipped
+            // test untouched, so the S92 baseline it was accepted on still reproduces exactly.
+            bool flip = (BakeProject != null && restOk)
+                ? Vector3.Dot(palmN, elbow.rotation * palmNLocal) < 0f
+                : Vector3.Dot(palmN, mouth - Palm()) < 0f;
+            if (flip) palmN = -palmN;
             wrist.rotation = Quaternion.FromToRotation(palmN, -faceN) * wrist.rotation;
 
             // Roll about the palm normal: aligns the hand's long axis (wrist -> middle finger base)

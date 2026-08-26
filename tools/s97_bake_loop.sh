@@ -13,6 +13,14 @@ WINDOW=7-113
 run() { ( cd $PROJ && env "$@" timeout 900 $UNITY -batchmode -nographics -quit -projectPath "$PROJ" \
         -executeMethod "$METHOD" -logFile "$LOG" >/dev/null 2>&1 ); }
 
+# Phase 1 target: the ON-MANIFOLD solve. 6 alternation passes, 12 ROM-settle iterations, and the
+# ramp built in muscle space (see S97BakeBuild). These are solution-path settings; pole 2.6, roll
+# target 20 and the standoff are untouched.
+( cd $PROJ && env AUTOTRIAL_S97_OUT=$DATA AUTOTRIAL_S97_TAG=target AUTOTRIAL_S97_MANIFOLD=1 \
+    AUTOTRIAL_S97_PASSES=6 AUTOTRIAL_S97_SETTLE=12 timeout 900 $UNITY -batchmode -nographics -quit \
+    -projectPath "$PROJ" -executeMethod SEAN.AutoTrial.S97BakeBuild.Capture \
+    -logFile $LOGS/target.log >/dev/null 2>&1 )
+
 for K in 0 1 2 3 4; do
   echo "===== round $K ====="
   if [ $K -eq 0 ]; then

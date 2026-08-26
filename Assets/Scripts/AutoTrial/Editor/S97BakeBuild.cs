@@ -178,9 +178,37 @@ namespace SEAN.AutoTrial
             sb.Append("aShX,aShY,aShZ,aShW,aElX,aElY,aElZ,aElW,aHaX,aHaY,aHaZ,aHaW,");
             sb.Append("iShX,iShY,iShZ,iShW,iElX,iElY,iElZ,iElW,iHaX,iHaY,iHaZ,iHaW,");
             sb.Append("bShX,bShY,bShZ,bShW,bElX,bElY,bElZ,bElW,bHaX,bHaY,bHaZ,bHaW,");
-            sb.Append("signedClear,dSh,dEl,dWr,aFlex,aDev,aTwist,pronApplied\n");
+            sb.Append("signedClear,dSh,dEl,dWr,aFlex,aDev,aTwist,pronApplied,");
+            // the RENDERED pose's ROM, measured on every frame including w = 0. This is the
+            // quantity s92_rom grades, and it is the only one a clip with the correction baked
+            // in can be graded on: there is no "authored" pose once the layer is off.
+            sb.Append("wFlex,wDev,wTwist,eFlex,sElev,pronation\n");
 
             var pose = new HumanPose();
+
+            // S97 iteration 2. Solve ON the muscle manifold: after every pass of the shipped
+            // alternation, round-trip the whole body through its own HumanPose. Get-then-Set is the
+            // projection -- whatever survives it is what a humanoid clip can store -- and it leaves
+            // every already-representable bone, and the body position/rotation, where they were.
+            var proj = new HumanPose();
+            int passes = 3;
+            string pe = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S97_PASSES");
+            if (!string.IsNullOrEmpty(pe)) passes = int.Parse(pe, CultureInfo.InvariantCulture);
+            bool onManifold = !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("AUTOTRIAL_S97_MANIFOLD"));
+            bool forceW = !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("AUTOTRIAL_S97_FORCEW"));
+            if (onManifold)
+            {
+                S89ContactIK.SolvePasses = passes;
+                string se = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S97_SETTLE");
+                S89ContactIK.BakeSettleIters = string.IsNullOrEmpty(se) ? 0 : int.Parse(se, CultureInfo.InvariantCulture);
+                S89ContactIK.BakeProject = () =>
+                {
+                    tgtHandler.GetHumanPose(ref proj);
+                    tgtHandler.SetHumanPose(ref proj);
+                };
+                Log("solving ON the muscle manifold, " + passes + " passes, " + S89ContactIK.BakeSettleIters + " settle iters");
+            }
+
             for (int f = 0; f < Frames; f++)
             {
                 float t = f / 30f;
@@ -213,8 +241,29 @@ namespace SEAN.AutoTrial
                 float[] mt0 = new float[ArmMuscles.Length];
                 for (int i = 0; i < mt0.Length; i++) mt0[i] = pose.muscles[mi[i]];
 
-                if (!zero) ik.BakeFrame(f);
-                else { ik.BakeFrame(-1f); }   // -1 is outside every ramp: measures, writes nothing
+                if (zero) { ik.BakeFrame(-1f); }        // -1 is outside every ramp: writes nothing
+                else if (!onManifold) ik.BakeFrame(f, forceW && S89ContactIK.BakeRamp(f) > 0f ? 1f : -1f);
+                else
+                {
+                    // S97. Build the ramp HERE, in muscle space. Solve at full strength, then blend
+                    // the seven arm muscles from the source pose toward the solved one by the ramp
+                    // weight. Muscle space is a plain vector space: the blend cannot leave the
+                    // manifold, cannot flip branch, and is continuous in w by construction. Every
+                    // other muscle, and the body position and rotation, stay the source's.
+                    float wR = forceW ? (S89ContactIK.BakeRamp(f) > 0f ? 1f : 0f) : S89ContactIK.BakeRamp(f);
+                    var blended = new HumanPose { bodyPosition = pose.bodyPosition,
+                                                  bodyRotation = pose.bodyRotation,
+                                                  muscles = (float[])pose.muscles.Clone() };
+                    if (wR > 0f)
+                    {
+                        ik.BakeFrame(f, 1f);
+                        tgtHandler.GetHumanPose(ref pose);
+                        for (int i = 0; i < mi.Length; i++)
+                            blended.muscles[mi[i]] = Mathf.Lerp(mt0[i], pose.muscles[mi[i]], wR);
+                    }
+                    tgtHandler.SetHumanPose(ref blended);
+                    ik.BakeFrame(-1f);   // re-measure ROM on the pose that is actually there
+                }
                 // grade the pose that is actually there, solved or baked-in, on every frame
                 ik.BakeMeasureContact();
 
@@ -255,9 +304,15 @@ namespace SEAN.AutoTrial
                 sb.Append(F(ik.DeltaShoulderDeg)).Append(',').Append(F(ik.DeltaElbowDeg)).Append(',')
                   .Append(F(ik.DeltaWristDeg)).Append(',');
                 sb.Append(F(ik.AuthoredWristFlexDeg)).Append(',').Append(F(ik.AuthoredWristDevDeg)).Append(',')
-                  .Append(F(ik.AuthoredWristTwistDeg)).Append(',').Append(F(ik.AppliedPronationDeg));
+                  .Append(F(ik.AuthoredWristTwistDeg)).Append(',').Append(F(ik.AppliedPronationDeg)).Append(',');
+                sb.Append(F(ik.LastWristFlexDeg)).Append(',').Append(F(ik.LastWristDevDeg)).Append(',')
+                  .Append(F(ik.LastWristTwistDeg)).Append(',').Append(F(ik.LastElbowFlexDeg)).Append(',')
+                  .Append(F(ik.LastShoulderElevDeg)).Append(',').Append(F(ik.LastForearmPronationDeg));
                 sb.Append('\n');
             }
+            S89ContactIK.BakeProject = null;   // never leave the hook armed
+            S89ContactIK.SolvePasses = 3;
+            S89ContactIK.BakeSettleIters = 0;
             graph.Destroy();
             sgraph.Destroy();
             File.WriteAllText(Path.Combine(outDir, "bake_" + tag + ".csv"), sb.ToString());
