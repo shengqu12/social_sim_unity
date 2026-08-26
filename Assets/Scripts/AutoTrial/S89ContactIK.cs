@@ -194,6 +194,13 @@ namespace SEAN.AutoTrial
         /// line, which moves the wrist not at all, so the position solve is not disturbed by this.
         public static int BakeSettleIters = 0;
 
+        /// S97, bake only. Which end of the wrist's axial range the manifold settle drives toward.
+        /// NaN = the nearest limit, which is what a clamp does. The runtime layer's own solution
+        /// sits near -14.5 deg, the opposite end from where the unconstrained on-manifold pose lands
+        /// (+26..+33), and the hand's roll is what decides how deep its EDGE goes into the face --
+        /// so which limit is chosen is a contact question, not only a ROM one.
+        public static float BakeTwistTarget = float.NaN;
+
         /// S92. Joint range-of-motion limits, degrees. Values are the clinical goniometry norms for
         /// the adult upper limb as tabulated by the AAOS and by Norkin & White, "Measurement of
         /// Joint Motion: A Guide to Goniometry" -- the standard reference range, not a per-subject
@@ -548,6 +555,13 @@ namespace SEAN.AutoTrial
             LastPalmDist = Vector3.Distance(Palm(), mouth);
         }
 
+        /// S97. Report a ramp weight for a pose the layer did NOT author -- a clip with the
+        /// correction baked in. The audit tools attribute a frame to the layer by this weight
+        /// (ATTRIB_W 0.5), so grading a baked clip with weight 0 would mark every frame
+        /// unattributable and the gates would pass on an empty set. The bake writes its own ramp
+        /// here, which is the same ramp the correction was baked with.
+        public void BakeSetReportWeight(float w) { LastWeight = w; }
+
         /// S97. Whether Setup() found the whole chain. The offline driver has to fail loudly on
         /// a rig it could not arm on; the runtime path just goes inert.
         public bool Ready { get { return ready; } }
@@ -650,7 +664,9 @@ namespace SEAN.AutoTrial
             for (int k = 0; k < BakeSettleIters; k++)
             {
                 DecomposeWrist(elbow.rotation, wrist.rotation, out _, out _, out float tw);
-                float excess = tw - Mathf.Clamp(tw, -WristTwistMaxDeg, WristTwistMaxDeg);
+                float excess = float.IsNaN(BakeTwistTarget)
+                    ? tw - Mathf.Clamp(tw, -WristTwistMaxDeg, WristTwistMaxDeg)
+                    : tw - Mathf.Clamp(BakeTwistTarget, -WristTwistMaxDeg, WristTwistMaxDeg);
                 if (Mathf.Abs(excess) < 0.05f) break;
                 Vector3 axWorld = elbow.rotation * axLocal;
                 // full step, not damped: the projection is what limits progress, and halving the

@@ -263,7 +263,40 @@ namespace SEAN.AutoTrial
             var clip = ci[0].clip;
             int frame = Mathf.RoundToInt(Mathf.Repeat(st.normalizedTime, 1f) * clip.length * 30f);
             if (frame < 0 || frame > 179) return;
+            Sample(frame);
+        }
 
+        /// S97. The per-frame measurement, lifted verbatim out of LateUpdate so an offline driver can
+        /// call it. The runtime path is unchanged: LateUpdate does its own state and clip guards and
+        /// then calls this with the frame it computed, exactly as before.
+        ///
+        /// This exists so the SHIPPED rulers can grade a clip that carries the correction with the
+        /// runtime layer switched off -- there is no trial to run one inside, and reimplementing
+        /// penetration and the capsule audit in the harness would be a second ruler that could
+        /// disagree with this one.
+        public void BakeSample(int frame) { if (init && headIdx != null) Sample(frame); }
+        public void BakeInit() { if (!init) Init(); }
+        public void BakeFlush() { Flush(); }
+
+        /// S97. Re-measure the capsule radii at the pose the caller has posed the body in.
+        ///
+        /// WHY THE CALLER SHOULD CHOOSE THAT POSE. MeasureRadii assigns every mesh vertex to its
+        /// NEAREST arm or body segment, so on a frame where the arm lies along the torso the torso's
+        /// own vertices fall to the upper arm and inflate its radius. Measured offline at frame 0,
+        /// arm at the side: upper_arm 0.0753 m and torso 0.1577 against the 0.0585 / 0.1473 the
+        /// live probe recorded in S92 -- 2.7 cm of ruler, enough on its own to drive the
+        /// upper-arm-vs-torso cell from comfortably positive to -3 mm. Measuring in the humanoid
+        /// NEUTRAL pose, where the limbs are clear of the body, removes the confound and is
+        /// reproducible, which "whatever frame the probe first fired on" is not.
+        public void BakeMeasureRadii() { MeasureRadii(Baked()); }
+        /// Set by the offline driver. The S91b render-lag correction below names each shot for the
+        /// PREVIOUS sample, because cam.Render() from LateUpdate draws the previous tick's pose.
+        /// An offline driver evaluates and renders in the same call, so there is no lag to correct
+        /// and the shot belongs to the frame being measured.
+        public bool BakeDriven;
+
+        private void Sample(int frame)
+        {
             var vs = Baked();
             Vector3 mouth = head.TransformPoint(mouthLocal);
             Vector3 palm = midProx != null ? Vector3.Lerp(wrist.position, midProx.position, 0.6f) : wrist.position;
@@ -339,11 +372,12 @@ namespace SEAN.AutoTrial
                 // Name the shots for the frame they DEPICT (the previous sample), not the frame
                 // being measured on this tick -- see prevRenderedFrame. The first sample in the
                 // state has no predecessor to name, so it is measured but not rendered.
-                if (prevRenderedFrame >= 0)
+                int shotFrame = BakeDriven ? frame : prevRenderedFrame;
+                if (shotFrame >= 0)
                 {
-                    Shoot(mouth, prevRenderedFrame, 0);   // frontal
-                    Shoot(mouth, prevRenderedFrame, 1);   // profile
-                    Shoot(mouth, prevRenderedFrame, 2);   // three-quarter
+                    Shoot(mouth, shotFrame, 0);   // frontal
+                    Shoot(mouth, shotFrame, 1);   // profile
+                    Shoot(mouth, shotFrame, 2);   // three-quarter
                 }
                 prevRenderedFrame = frame;
             }

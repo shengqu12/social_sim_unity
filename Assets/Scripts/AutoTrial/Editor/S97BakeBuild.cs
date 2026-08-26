@@ -184,6 +184,27 @@ namespace SEAN.AutoTrial
             // in can be graded on: there is no "authored" pose once the layer is off.
             sb.Append("wFlex,wDev,wTwist,eFlex,sElev,pronation\n");
 
+            // S97. Optionally attach the SHIPPED probe and drive it frame by frame, so the baked
+            // clip is graded by tools/s91_audit.py and tools/s92_rom.py reading exactly the CSV they
+            // were written against -- no second implementation of penetration or the capsule audit.
+            S89ContactProbe probe = null;
+            if (!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(S89ContactProbe.Env)))
+            {
+                probe = body.AddComponent<S89ContactProbe>();
+                probe.BakeDriven = true;
+                // The probe's stills are rendered with cam.Render() from an edit-mode loop. Skinning
+                // matrices are otherwise only refreshed as part of the normal player loop, so every
+                // shot came back in the BIND pose -- a neutral standing character with the arm down,
+                // while BakeMesh (which recomputes on demand) was correctly reporting the hand at
+                // the mouth 35 mm off the lip. Measurement and picture disagreed, and the picture
+                // was the wrong one. Force the recalculation and stop the renderer being culled.
+                foreach (var r in body.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                {
+                    r.forceMatrixRecalculationPerRender = true;
+                    r.updateWhenOffscreen = true;
+                }
+            }
+
             var pose = new HumanPose();
 
             // S97 iteration 2. Solve ON the muscle manifold: after every pass of the shipped
@@ -201,12 +222,32 @@ namespace SEAN.AutoTrial
                 S89ContactIK.SolvePasses = passes;
                 string se = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S97_SETTLE");
                 S89ContactIK.BakeSettleIters = string.IsNullOrEmpty(se) ? 0 : int.Parse(se, CultureInfo.InvariantCulture);
+                string tw = System.Environment.GetEnvironmentVariable("AUTOTRIAL_S97_TWTARGET");
+                S89ContactIK.BakeTwistTarget = string.IsNullOrEmpty(tw)
+                    ? float.NaN : float.Parse(tw, CultureInfo.InvariantCulture);
                 S89ContactIK.BakeProject = () =>
                 {
                     tgtHandler.GetHumanPose(ref proj);
                     tgtHandler.SetHumanPose(ref proj);
                 };
                 Log("solving ON the muscle manifold, " + passes + " passes, " + S89ContactIK.BakeSettleIters + " settle iters");
+            }
+
+            if (probe != null)
+            {
+                // Init partitions the baked mesh into head and hand vertex sets by proximity, so it
+                // must see a frame where the hand is NOT at the face or the two sets bleed together.
+                // Frame 0 is that frame, and it is also where the runtime probe first fires.
+                cp.SetTime(0f); cp.SetTime(0f); graph.Evaluate(0f);
+                probe.BakeInit();
+                // Then re-measure the capsule radii in the humanoid NEUTRAL pose, where the limbs
+                // are clear of the body -- see S89ContactProbe.BakeMeasureRadii for what measuring
+                // them with the arm against the torso costs.
+                var neutral = new HumanPose();
+                tgtHandler.GetHumanPose(ref neutral);
+                for (int i = 0; i < neutral.muscles.Length; i++) neutral.muscles[i] = 0f;
+                tgtHandler.SetHumanPose(ref neutral);
+                probe.BakeMeasureRadii();
             }
 
             for (int f = 0; f < Frames; f++)
@@ -266,6 +307,18 @@ namespace SEAN.AutoTrial
                 }
                 // grade the pose that is actually there, solved or baked-in, on every frame
                 ik.BakeMeasureContact();
+                if (probe != null)
+                {
+                    // A baked clip carries the correction at full strength; the layer wrote nothing,
+                    // so LastWeight is 0 and every frame would read as unattributable. Report the
+                    // ramp the clip was baked with, which is the weight the correction is present at.
+                    // Both the baked path and the on-manifold path finish with a BakeFrame(-1) to
+                    // re-measure ROM on the pose that is actually there, and that call sets
+                    // LastWeight to Ramp(-1) = 0. Restore the ramp the correction is present at, or
+                    // the audit tools see no attributable frames and pass on an empty set.
+                    if (zero || onManifold) ik.BakeSetReportWeight(S89ContactIK.BakeRamp(f));
+                    probe.BakeSample(f);
+                }
 
                 Quaternion s1 = tSh.localRotation, e1 = tEl.localRotation, w1 = tWr.localRotation;
 
@@ -313,11 +366,13 @@ namespace SEAN.AutoTrial
             S89ContactIK.BakeProject = null;   // never leave the hook armed
             S89ContactIK.SolvePasses = 3;
             S89ContactIK.BakeSettleIters = 0;
+            S89ContactIK.BakeTwistTarget = float.NaN;
             graph.Destroy();
             sgraph.Destroy();
             File.WriteAllText(Path.Combine(outDir, "bake_" + tag + ".csv"), sb.ToString());
             Log("wrote bake_" + tag + ".csv to " + outDir);
 
+            if (probe != null) { probe.BakeFlush(); Log("probe flushed"); }
             Object.DestroyImmediate(body);
             Object.DestroyImmediate(src);
             Log("S97 BAKE CAPTURE OK");

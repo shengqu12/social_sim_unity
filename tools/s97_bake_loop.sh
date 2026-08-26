@@ -17,7 +17,7 @@ run() { ( cd $PROJ && env "$@" timeout 900 $UNITY -batchmode -nographics -quit -
 # ramp built in muscle space (see S97BakeBuild). These are solution-path settings; pole 2.6, roll
 # target 20 and the standoff are untouched.
 ( cd $PROJ && env AUTOTRIAL_S97_OUT=$DATA AUTOTRIAL_S97_TAG=target AUTOTRIAL_S97_MANIFOLD=1 \
-    AUTOTRIAL_S97_PASSES=6 AUTOTRIAL_S97_SETTLE=12 timeout 900 $UNITY -batchmode -nographics -quit \
+    AUTOTRIAL_S97_PASSES=6 AUTOTRIAL_S97_SETTLE=12 AUTOTRIAL_S97_TWTARGET=${S97_TWTARGET:--15} timeout 900 $UNITY -batchmode -nographics -quit \
     -projectPath "$PROJ" -executeMethod SEAN.AutoTrial.S97BakeBuild.Capture \
     -logFile $LOGS/target.log >/dev/null 2>&1 )
 
