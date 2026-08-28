@@ -149,9 +149,24 @@ namespace SEAN.AutoTrial
                 name = t.name, position = t.localPosition, rotation = t.localRotation, scale = t.localScale,
             }).ToArray();
 
-            var donorImp = AssetImporter.GetAtPath(ReferenceDonorFbx) as ModelImporter;
-            if (donorImp == null) { Fail("reference donor missing: " + ReferenceDonorFbx); return; }
-            var donor = donorImp.humanDescription.skeleton.ToDictionary(s => s.name, s => s);
+            // S104 Phase 0: the reference is rig data and now lives in its own file. The FBX donor
+            // remains as a fallback ONLY so this keeps working if the data file is missing, and it
+            // says which one it used -- a silent fallback here would reintroduce exactly the
+            // clip-shaped reference S100 found.
+            var donor = S104CanonicalReference.TryLoad();
+            if (donor != null)
+            {
+                Debug.Log("[S86] reference source: canonical " + S104CanonicalReference.Path_
+                          + " (" + donor.Count + " bones)");
+            }
+            else
+            {
+                var donorImp = AssetImporter.GetAtPath(ReferenceDonorFbx) as ModelImporter;
+                if (donorImp == null) { Fail("reference donor missing: " + ReferenceDonorFbx); return; }
+                donor = donorImp.humanDescription.skeleton.ToDictionary(s => s.name, s => s);
+                Debug.LogWarning("[S86] canonical reference absent -- FELL BACK to the clip donor "
+                                 + ReferenceDonorFbx + ". Run S104CanonicalReference.Export.");
+            }
 
             var unmatched = new List<string>();
             int taken = 0;
