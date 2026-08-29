@@ -88,6 +88,9 @@ namespace SEAN.AutoTrial
         // Unity Humanoid slot -> SOMA bone, verbatim from Assets/PedestrianAssets/Kimodo/README.md
         // section 4. The five traps are marked there: SOMA names the thigh `LeftLeg` and the shin
         // `LeftShin`, and its four-segment spine puts Unity's Chest slot on `Spine2`.
+        /// S104b reads the same map to configure scratch candidates through the same slots.
+        public static string[,] BoneMapPublic { get { return BoneMap; } }
+
         private static readonly string[,] BoneMap =
         {
             { "Hips", "Hips" }, { "Spine", "Spine1" }, { "Head", "Head" },
