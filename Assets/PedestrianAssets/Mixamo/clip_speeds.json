@@ -6,12 +6,12 @@
  "_inPlace": "true = the clip carries no root translation, so authoredSpeedMps could not be measured and animation scaling is meaningless for it.",
  "clips": [
   {
-   "clip": "kimodo_relaxed_walk",
-   "asset": "kimodo_relaxed_walk.fbx",
+   "clip": "kimodo_relaxed_walk_s73",
+   "asset": "kimodo_relaxed_walk_s73.fbx",
    "authoredSpeedMps": 0.9715,
    "inPlace": false,
    "targetSpeedMps": 0.9715,
-   "refSource": "S73 Kimodo-SOMA-RP-v1.1 seed 42, post-processing ON, env kimodo313. authoredSpeedMps = net Hips displacement / duration measured Blender-headless from the exported FBX and cross-checked against the source npz (agree to 4 dp); net/path 0.9891 so net displacement is a valid pace measure. targetSpeedMps set equal to authored (ratio 1.00) per _targetRule. CONFIRMED indirectly 2026-08-19: same rig/export chain and scale as kimodo_elderly_shuffle, which passed in-engine (ratio 1.067, clampHi=0). Not itself trial-validated."
+   "refSource": "RETIRED S106 (2026-08-30): this is the S73 seed-42 relaxed walk, renamed kimodo_relaxed_walk_s73 and removed from the roster after S102/S103 isolated an 88.6 mm rendered ankle-height asymmetry (stride 0.8713) manufactured by the humanoid bake. Asset kept on disk for planD-era provenance; not a paper artifact. Original refSource: S73 Kimodo-SOMA-RP-v1.1 seed 42, post-processing ON, env kimodo313. authoredSpeedMps = net Hips displacement / duration measured Blender-headless from the exported FBX and cross-checked against the source npz (agree to 4 dp); net/path 0.9891 so net displacement is a valid pace measure. targetSpeedMps set equal to authored (ratio 1.00) per _targetRule. CONFIRMED indirectly 2026-08-19: same rig/export chain and scale as kimodo_elderly_shuffle, which passed in-engine (ratio 1.067, clampHi=0). Not itself trial-validated."
   },
   {
    "clip": "kimodo_elderly_shuffle",
@@ -82,6 +82,14 @@
    "authoredSpeedMps": 0.0,
    "inPlace": true,
    "targetSpeedMps": 0
+  },
+  {
+   "clip": "kimodo_relaxed_walk",
+   "asset": "kimodo_relaxed_walk.fbx",
+   "authoredSpeedMps": 1.1477,
+   "inPlace": false,
+   "targetSpeedMps": 1.1477,
+   "refSource": "S106 promotion of S104 candidate r1_seed2042: Kimodo-SOMA-RP-v1.1 seed 2042, prompt 'a person walks forward at a relaxed, unhurried pace with natural arm swing', --duration 8, post-processing ON, env kimodo313, same Blender 4.5.12 BVH->FBX chain as S73. authoredSpeedMps = net Hips displacement / duration, Blender-headless from the exported FBX (scripts/s73_root_speed.py: net 9.1431 m / 7.9667 s; net/path 0.9934 so net displacement is a valid pace measure). targetSpeedMps set equal to authored (ratio 1.00) per _targetRule. Gates (S104b, rendered on Business_Male_01): ankle-height |L-R| 2.9 mm, stride 0.9832, seam 19.32 deg, arms below shoulder; G-speed relaxed [0.85,1.30] (Bohannon, Age and Ageing 1997;26(1):15-19). Replaces kimodo_relaxed_walk_s73 (88.6 mm / 0.8713)."
   }
  ],
  "_targetRule": "Session 55: for a clip with a CHARACTERFUL gait, targetSpeedMps should stay within +/-20% of authoredSpeedMps. Beyond that the clip is being stretched to a pace it was not animated for. Current ratios: carry_and_walk 1.11 OK, Drunk_Walk 0.84 OK, Old_Man_Walk 1.15 OK after this change, Pacing_And_Talking_On_A_Phone 1.42 OUT OF RANGE (rule-consistent target would be <= 0.68) -- left at 0.8 for the S55 batch so the eyeball pass decides."
