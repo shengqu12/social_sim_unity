@@ -24,9 +24,20 @@
 
 | Asset | Prompt | Seed | Duration | Generated | Source sha256 |
 |---|---|---|---|---|---|
-| `kimodo_relaxed_walk.fbx` | "a person walks forward at a relaxed pace" | 42 | 8.0 s (240 f) | 2026-08-15 | `66e1158e…525e1c73` |
+| `kimodo_relaxed_walk.fbx` **(S106)** | "a person walks forward at a relaxed, unhurried pace with natural arm swing" | 2042 | 8.0 s (240 f) | 2026-08-28 (S104 `r1_seed2042`) | `f3b537cb1fc4a9d8` |
+| `kimodo_relaxed_walk_s73.fbx` **(RETIRED, off-roster)** | "a person walks forward at a relaxed pace" | 42 | 8.0 s (240 f) | 2026-08-15 | `66e1158e…525e1c73` |
 | `kimodo_elderly_shuffle.fbx` | "a person shuffles forward slowly, hunched, like an elderly person" | 42 | 8.0 s (240 f) | 2026-08-15 | `b9e00830…f85a81cd` |
 | `kimodo_relaxed_walk_24s.fbx` | relaxed-walk prompt **repeated 3×**, `--duration "8 8 8"`, `--num_transition_frames 5` | 42 | 24.0 s (720 f) | 2026-08-18 | `6c8a70be…0ab555bd` |
+
+### Roster notes (S106, 2026-08-30)
+
+| Roster name (`--mixamo-clip`) | Semantic label | Status |
+|---|---|---|
+| `kimodo_relaxed_walk` | **relaxed adult walk**, 1.1477 m/s | **SHIPPING.** S104 candidate `r1_seed2042`, promoted in S106. Rendered ankle-height \|L−R\| **2.9 mm**, stride 0.9832, wrap seam 19.32°, arms below shoulder (S104b gates, Business_Male_01). Imported headlessly by `S106KimodoImport.Promote` against the canonical reference (`kimodo_reference_skeleton.json`); `.meta` identical to the S104b scratch import the gates were measured on. b2 composition re-verified: `[S83]` rebind + `[S89IK]` engaged on the R1-config cell, S92 contact numbers reproduce (clearance 34.96–35.10 mm, penetration ≤ 2.63 mm, gap 11.74–14.18 mm). |
+| `kimodo_relaxed_walk_s73` | — | **RETIRED from the roster** (S106). The S73 seed-42 relaxed walk, renamed in place (git mv, guid kept). Rendered ankle-height asymmetry **88.6 mm** / stride 0.8713 — the defect S102/S103 isolated as manufactured by the humanoid muscle bake. Kept on disk (and in `clip_speeds` under its new key) as planD-era provenance; not a paper artifact; do not put it on a reel. |
+| `kimodo_elderly_shuffle` | **slow-gait specimen** (0.48 m/s) | **RETAINED, reclassified.** No longer the *elderly* semantic label: 0.40–0.55 m/s encodes a shuffling impairment, not typical elderly gait (healthy 70–79 comfortable 1.13–1.26 m/s, Bohannon, *Age and Ageing* 1997;26(1):15–19). Kept for **POV observability** — S94: the only gait that keeps the reaction in frame. S99 finding 1 (left arm raised to the face in the gait pose) stands. |
+| `kimodo_elderly_walk` | **normal elderly walk** (target) | **NOT YET SHIPPED.** S106 generated 6 candidates (2 prompts × seeds 42/1042/2042) under G-speed-elderly = [0.95, 1.30]; all six measured 0.19–0.49 m/s and none passed. See the S106 record. |
+| `kimodo_relaxed_walk_24s` | — | unchanged (S73 chained variant). |
 
 The 24 s variant is **chained multi-prompt generation**, not a long single-shot clip:
 Kimodo splits `--prompt` on `"."` and generates one chunk per segment, blending
@@ -43,7 +54,8 @@ net endpoint displacement over duration is the headline, path length alongside,
 
 | Clip | Frames | Duration | Net disp. | **Net speed** | Path speed | net/path |
 |---|---|---|---|---|---|---|
-| `kimodo_relaxed_walk` | 240 | 7.967 s | 7.7396 m | **0.9715 m/s** | 0.9822 | 0.9891 |
+| `kimodo_relaxed_walk` (S106, `r1_seed2042`) | 240 | 7.967 s | 9.1431 m | **1.1477 m/s** | 1.1553 | 0.9934 |
+| `kimodo_relaxed_walk_s73` (retired) | 240 | 7.967 s | 7.7396 m | **0.9715 m/s** | 0.9822 | 0.9891 |
 | `kimodo_elderly_shuffle` | 240 | 7.967 s | 3.8130 m | **0.4786 m/s** | 0.5012 | 0.9549 |
 | `kimodo_relaxed_walk_24s` | 720 | 23.967 s | 24.4032 m | **1.0182 m/s** | 1.0265 | 0.9919 |
 
