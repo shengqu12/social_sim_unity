@@ -24,18 +24,20 @@
 
 | Asset | Prompt | Seed | Duration | Generated | Source sha256 |
 |---|---|---|---|---|---|
-| `kimodo_relaxed_walk.fbx` **(S106)** | "a person walks forward at a relaxed, unhurried pace with natural arm swing" | 2042 | 8.0 s (240 f) | 2026-08-28 (S104 `r1_seed2042`) | `f3b537cb1fc4a9d8` |
+| `kimodo_relaxed_walk.fbx` **(S109 trim)** | S104 `r1_seed2042` BVH rows 97–168 (matching foot-contact phase; `scripts/s109_trim_bvh.py`) | 2042 | 2.4 s (72 f) | 2026-08-31 | `0e2ba0e4…cd259fa1` |
+| `kimodo_relaxed_walk_s106.fbx` **(RETIRED, off-roster)** | "a person walks forward at a relaxed, unhurried pace with natural arm swing" | 2042 | 8.0 s (240 f) | 2026-08-28 (S104 `r1_seed2042`) | `f3b537cb1fc4a9d8` |
 | `kimodo_relaxed_walk_s73.fbx` **(RETIRED, off-roster)** | "a person walks forward at a relaxed pace" | 42 | 8.0 s (240 f) | 2026-08-15 | `66e1158e…525e1c73` |
-| `kimodo_elderly_shuffle.fbx` | "a person shuffles forward slowly, hunched, like an elderly person" | 42 | 8.0 s (240 f) | 2026-08-15 | `b9e00830…f85a81cd` |
+| `kimodo_elderly_shuffle.fbx` **(S109 trim)** | S73 `c_pp` BVH rows 57–155, same trim path | 42 | 3.3 s (99 f) | 2026-08-31 | `906741bb…50ba8dc1` |
+| `kimodo_elderly_shuffle_s73.fbx` **(RETIRED, off-roster)** | "a person shuffles forward slowly, hunched, like an elderly person" | 42 | 8.0 s (240 f) | 2026-08-15 | `b9e00830…f85a81cd` |
 | `kimodo_relaxed_walk_24s.fbx` | relaxed-walk prompt **repeated 3×**, `--duration "8 8 8"`, `--num_transition_frames 5` | 42 | 24.0 s (720 f) | 2026-08-18 | `6c8a70be…0ab555bd` |
 
-### Roster notes (S106, 2026-08-30)
+### Roster notes (S109, 2026-08-31)
 
 | Roster name (`--mixamo-clip`) | Semantic label | Status |
 |---|---|---|
-| `kimodo_relaxed_walk` | **relaxed adult walk**, 1.1477 m/s | **SHIPPING.** S104 candidate `r1_seed2042`, promoted in S106. Rendered ankle-height \|L−R\| **2.9 mm**, stride 0.9832, wrap seam 19.32°, arms below shoulder (S104b gates, Business_Male_01). Imported headlessly by `S106KimodoImport.Promote` against the canonical reference (`kimodo_reference_skeleton.json`); `.meta` identical to the S104b scratch import the gates were measured on. b2 composition re-verified: `[S83]` rebind + `[S89IK]` engaged on the R1-config cell, S92 contact numbers reproduce (clearance 34.96–35.10 mm, penetration ≤ 2.63 mm, gap 11.74–14.18 mm). |
+| `kimodo_relaxed_walk` | **relaxed adult walk**, 1.3563 m/s | **SHIPPING (S109 trim).** The S106-promoted S104 `r1_seed2042` clip trimmed to its cruise region (BVH rows 97–168, 72 f / 2.367 s) after S108 showed the untrimmed loop stalls to ~0.12 m/s at every 7.967 s seam (authored standing-start→standing-stop). Winner of 4 in-engine-measured cut candidates. Same S72/S104 export chain, same `S106KimodoImport.Promote` path. G-continuity PASS (0.89–1.05 of loop median, 0.5 s windowed, wrap included — the NEW S109 gate, `scripts/s109_continuity_gate.py`; untrimmed reads 0.15); wrap seam **5.79°** (was 19.32°); rendered ankle-height \|L−R\| **1.4 mm**, stride 1.0136; arms below shoulder; G-speed relaxed **[0.85, 1.40]** (S109 correction — Bohannon 1997 comfortable 1.2–1.4 m/s; the 1.30 cap was uncited). Untrimmed predecessor retired to `kimodo_relaxed_walk_s106`. |
 | `kimodo_relaxed_walk_s73` | — | **RETIRED from the roster** (S106). The S73 seed-42 relaxed walk, renamed in place (git mv, guid kept). Rendered ankle-height asymmetry **88.6 mm** / stride 0.8713 — the defect S102/S103 isolated as manufactured by the humanoid muscle bake. Kept on disk (and in `clip_speeds` under its new key) as planD-era provenance; not a paper artifact; do not put it on a reel. |
-| `kimodo_elderly_shuffle` | **slow-gait specimen** (0.48 m/s) | **RETAINED, reclassified.** No longer the *elderly* semantic label: 0.40–0.55 m/s encodes a shuffling impairment, not typical elderly gait (healthy 70–79 comfortable 1.13–1.26 m/s, Bohannon, *Age and Ageing* 1997;26(1):15–19). Kept for **POV observability** — S94: the only gait that keeps the reaction in frame. S99 finding 1 (left arm raised to the face in the gait pose) stands. |
+| `kimodo_elderly_shuffle` | **slow-gait specimen** (0.4899 m/s) | **SHIPPING (S109 trim).** S73 `c_pp` trimmed to its cruise region (BVH rows 57–155, 99 f / 3.267 s) for the same S108 seam-stall reason (untrimmed G-continuity 0.43× median). G-continuity PASS (0.87–1.11); wrap seam **7.01°**; rendered \|L−R\| **0.1 mm**, stride 1.0067; arms below shoulder. Speed reported, not band-gated (slow-gait specimen, S106 reclassification — unchanged). POV-observability role and the S99 raised-arm backlog item both stand. Untrimmed predecessor retired to `kimodo_elderly_shuffle_s73`. |
 | `kimodo_elderly_walk` | **normal elderly walk** (target) | **NOT YET SHIPPED.** S106 generated 6 candidates (2 prompts × seeds 42/1042/2042) under G-speed-elderly = [0.95, 1.30]; all six measured 0.19–0.49 m/s and none passed. See the S106 record. |
 | `kimodo_relaxed_walk_24s` | — | unchanged (S73 chained variant). |
 
@@ -54,9 +56,11 @@ net endpoint displacement over duration is the headline, path length alongside,
 
 | Clip | Frames | Duration | Net disp. | **Net speed** | Path speed | net/path |
 |---|---|---|---|---|---|---|
-| `kimodo_relaxed_walk` (S106, `r1_seed2042`) | 240 | 7.967 s | 9.1431 m | **1.1477 m/s** | 1.1553 | 0.9934 |
+| `kimodo_relaxed_walk` (S109 trim of `r1_seed2042`) | 72 | 2.367 s | 3.2100 m | **1.3563 m/s** | 1.3608 | 0.9967 |
+| `kimodo_relaxed_walk_s106` (retired, untrimmed) | 240 | 7.967 s | 9.1431 m | **1.1477 m/s** | 1.1553 | 0.9934 |
 | `kimodo_relaxed_walk_s73` (retired) | 240 | 7.967 s | 7.7396 m | **0.9715 m/s** | 0.9822 | 0.9891 |
-| `kimodo_elderly_shuffle` | 240 | 7.967 s | 3.8130 m | **0.4786 m/s** | 0.5012 | 0.9549 |
+| `kimodo_elderly_shuffle` (S109 trim of `c_pp`) | 99 | 3.267 s | 1.6003 m | **0.4899 m/s** | 0.5114 | 0.9580 |
+| `kimodo_elderly_shuffle_s73` (retired, untrimmed) | 240 | 7.967 s | 3.8130 m | **0.4786 m/s** | 0.5012 | 0.9549 |
 | `kimodo_relaxed_walk_24s` | 720 | 23.967 s | 24.4032 m | **1.0182 m/s** | 1.0265 | 0.9919 |
 
 All `net/path` ≥ 0.95, far above the 0.7 floor below which the root reverses and net
