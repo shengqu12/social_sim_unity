@@ -63,8 +63,58 @@ namespace SEAN.AutoTrial
         /// Overridable at runtime via AUTOTRIAL_S68_STOP_DIST for eyeball retuning without a
         /// recompile.
         /// </summary>
-        public float stopDistance = 10.0f;
+        public float stopDistance = 6.5f;
         public const string StopDistanceEnv = "AUTOTRIAL_S68_STOP_DIST";
+
+        // ---- S113 PART 1: the coupled triple, solved at STOP entry from the measured closure ----
+        //
+        // The three knobs (stopDistance, pauseBeforeCrouch, standUpDistance) are coupled through
+        // one quantity this component never measured before: the robot's closure rate c. With a
+        // 2.767 s crouch-in the robot travels 2.767*c during the descent, so "crouch-in completes
+        // with the robot at D_complete" pins the START distance to D_complete + c*(pause + clip),
+        // and "hold >= H" pins standUp to <= D_complete - H*c. July's run9 measured c ~ 0.92 m/s;
+        // the S99 X cell on the shipping nav measured 0.42-0.54 m/s and S112's P5 crawled at
+        // 0.20 m/s (hold TIMED OUT with the robot still 5.4 m away). One static triple cannot hit
+        // the declared targets across that range, so:
+        //   stopDistance    fixed in the declared 6-7 m start band (6.5; the sidestep, when it
+        //                   fires, spends ~0.5 s of it);
+        //   pause           solved at STOP entry so the crouch-in COMPLETES at crouchCompleteDistance:
+        //                   pause = (dist_at_stop - D_complete)/c - clipLength, clamped [0.3, 6];
+        //   standUpDistance solved for the hold floor: D_complete - minHoldSeconds*c, clamped to the
+        //                   declared 2.0-2.5 m band -- and the CrouchHold exit additionally refuses
+        //                   to stand before minHoldSeconds, which is what makes the hold a gate
+        //                   rather than an emergent consequence of two distances.
+        // c is the EMA of the robot's radial closing speed (physics velocity, never position
+        // differencing) over Approach/Sidestep; a run with no usable reading falls back to
+        // closureDefault. Explicit env overrides (STOP_DIST / STANDUP_DIST) still win.
+        public float crouchCompleteDistance = 4.25f;
+        public float minHoldSeconds = 3.0f;
+        public float standUpMin = 2.0f, standUpMax = 2.5f;
+        public float pauseMin = 0.3f, pauseMax = 6.0f;
+        public float closureDefault = 0.5f, closureFloor = 0.15f, closureCeil = 1.5f;
+        public float closureTau = 1.0f;
+        private float closureEma = -1f;
+        // S113 iteration 2. The physics-velocity EMA read 0.233 m/s in A1 where the realised
+        // closure during the crouch-in was 0.511 (the robot's articulation velocity understates
+        // its progress while it weaves). Closure is now the robot's own DISPLACEMENT over a
+        // trailing window, projected on the pedestrian->robot line -- long enough (2 s) that the
+        // discrete transform steps S68 forbids differencing per-frame average out. Not the
+        // pedestrian's: only the robot moves once the pedestrian has stopped, so that is the rate
+        // the pause and the hold are solved against. The EMA stays as the fallback.
+        public float closureWindow = 2.0f;
+        private readonly System.Collections.Generic.List<Vector4> robotTrail = new System.Collections.Generic.List<Vector4>();   // (x, z, t, -)
+        private float closureWin = -1f;
+        // Sidestep allowance: A1 lost 1.68 m of range between the stop trigger (6.40 m) and the
+        // actual stop (4.72 m) while stepping aside for 1.42 s. Budgeted into the trigger as a
+        // fixed pedestrian share plus the robot's share at the measured closure, only when a
+        // sidestep is likely (lateral clearance below the requirement at the time of the check).
+        public float sidestepAllowanceMeters = 1.7f, sidestepAllowanceSeconds = 1.4f;   // iteration 4: A1/A2/A3 lost 1.68 / 2.16 / 1.68 m -- the body walks where the S35 facing points, so the step is diagonal whatever velocity is asked for
+        public float stopDistanceMin = 6.0f, stopDistanceMax = 7.5f;
+        private bool stopExplicit;
+        public float ClosureWindowed { get { return closureWin; } }
+        private bool standUpExplicit;
+        private float solvedPause = -1f;
+        public float ClosureEstimate { get { return closureEma; } }
 
         /// <summary>
         /// S68-D. The robot is "about to arrive" at or inside this range, and the pedestrian stands
@@ -75,7 +125,7 @@ namespace SEAN.AutoTrial
         /// about 4 s -- an emergent consequence of the two distances, not a target. Raise
         /// stopDistance or lower this to watch for longer.
         /// </summary>
-        public float standUpDistance = 4.0f;
+        public float standUpDistance = 4.0f;   // S113: placeholder -- overwritten by SolveTiming() at STOP unless the env override is set
         public const string StandUpDistanceEnv = "AUTOTRIAL_S68_STANDUP_DIST";
 
         /// <summary>
@@ -139,6 +189,16 @@ namespace SEAN.AutoTrial
 
         private State state = State.Frozen;
         private float stateEnteredAt;
+
+        /// <summary>S113. Read-only view of the state machine for sibling layers (S113CuriousGaze
+        /// keys its active window on it). Nothing outside this file may drive a transition.</summary>
+        public State CurrentState { get { return state; } }
+        /// <summary>S113. The four states in which the pedestrian is stationary and watching.</summary>
+        public bool IsWatching
+        {
+            get { return state == State.Stop || state == State.CrouchEnter || state == State.CrouchHold || state == State.CrouchExit; }
+        }
+        public float SecondsInState { get { return Time.time - stateEnteredAt; } }
         private Scenario.Agents.PedestrianModulator modulator;
         private Animator animator;
         private RuntimeAnimatorController originalController;
@@ -199,8 +259,12 @@ namespace SEAN.AutoTrial
                 enabled = false;
                 return;
             }
+            float sd0 = stopDistance;
             stopDistance = EnvOverride(StopDistanceEnv, stopDistance, "stopDistance");
+            stopExplicit = stopDistance != sd0;   // S113: an explicit override is never re-solved
+            float su0 = standUpDistance;
             standUpDistance = EnvOverride(StandUpDistanceEnv, standUpDistance, "standUpDistance");
+            standUpExplicit = standUpDistance != su0;   // S113: an explicit override is never re-solved
 
             modulator.velocityOverride = this;
             stateEnteredAt = Time.time;
@@ -259,9 +323,21 @@ namespace SEAN.AutoTrial
 
             float inState = Time.time - stateEnteredAt;
 
+            // S113: sample the closure rate while the pedestrian is still on its way to the stop.
+            if (state == State.Approach || state == State.Sidestep || state == State.Stop) { UpdateClosure(self, robot); }
+            // S113 iteration 4: face the thing being watched. Inside S35HeadingAlignmentGuardian's
+            // 4 m back-off nothing holds the body's yaw and A3 knelt 53 deg away from the robot,
+            // leaving the gaze layer to turn the head most of the way -- anatomically legal, but it
+            // reads as a strained glance rather than watching. Slerp the body yaw toward the robot
+            // while stationary (tau 0.5 s); beyond 4 m the guardian's own facing (the corridor
+            // heading, within ~20 deg of the robot's bearing here) still wins its LateUpdate, which
+            // is fine. Yaw only; the crouch clip owns everything else.
+            if (IsWatching) { FaceRobot(self, robot); }
+
             switch (state)
             {
                 case State.Approach:
+                    if (!stopExplicit) { stopDistance = SolveStopDistance(self, robot); }
                     if (dist <= stopDistance)
                     {
                         float clr0 = LateralClearance(self, robot);
@@ -269,13 +345,13 @@ namespace SEAN.AutoTrial
                         {
                             // Already clear of the robot's path -- no reason to shuffle sideways.
                             PinAndStop(self, dist, string.Format(
-                                "reached stopDistance, already clear ({0:F2} m)", clr0));
+                                "reached stopDistance {1:F2} (solved, closure {2:F3}), already clear ({0:F2} m)", clr0, stopDistance, closureWin));
                             velocity = Vector3.zero;
                             return true;
                         }
                         Transition(State.Sidestep, dist, string.Format(
-                            "reached stopDistance, lateral {0:F2} m < {1:F2} -- stepping aside",
-                            clr0, lateralClearance));
+                            "reached stopDistance {2:F2} (solved, closure {3:F3}), lateral {0:F2} m < {1:F2} -- stepping aside",
+                            clr0, lateralClearance, stopDistance, closureWin));
                         velocity = Vector3.zero;
                         return true;
                     }
@@ -312,29 +388,47 @@ namespace SEAN.AutoTrial
                         }
                         Vector3 stepTarget = SidestepTarget(self, robot);
                         RetargetTo(self, stepTarget);
-                        // Direction normally comes from the social force, but it has no opinion when
-                        // it believes the agent has arrived -- and a zero direction becomes a zero
-                        // velocity. Fall back to steering straight at the step target so the state
-                        // can always make progress. Magnitude is still an absolute target (e).
-                        Vector3 stepDir = socialForceVelocity;
+                        // S113 iteration 3: steer STRAIGHT at the step target, always. The social-force
+                        // direction carries the approach's momentum toward the robot for the first
+                        // second or two of the step, and the measured cost was the whole timing
+                        // budget: A1 lost 1.68 m of range in a 1.42 s sidestep, A2 2.16 m in 1.93 s
+                        // (pedestrian closing at ~0.8 m/s of its own while the robot did 0.2-0.3),
+                        // so the stop landed at 4.7 / 4.2 m and the crouch-in completed at 3.3 / 3.4 m
+                        // against a 4.0-4.5 m target. A sidestep is a lateral move by definition; the
+                        // social force only re-enters at LEAVE. Magnitude is still an absolute target (e).
+                        Vector3 stepDir = stepTarget - self.transform.position;
                         stepDir.y = 0f;
-                        if (stepDir.sqrMagnitude < 1e-6f)
-                        {
-                            stepDir = stepTarget - self.transform.position;
-                            stepDir.y = 0f;
-                        }
                         velocity = Absolute(stepDir,
                             modulator.baseWalkSpeedMps * modulator.walkSpeedMultiplier);
                         return true;
                     }
 
                 case State.Stop:
-                    if (inState >= pauseBeforeCrouch)
                     {
-                        BeginCrouch(dist);
+                        // S113 iteration 5: the pause is no longer a number solved once at STOP entry.
+                        // A4 solved 6.0 s from a 0.15 m/s closure and the robot then ran at 0.27-0.47,
+                        // so the crouch-in completed at 3.02 m. The robot's closure keeps being
+                        // measured through the stop (only the robot moves now, the cleanest reading)
+                        // and the crouch starts the moment the LIVE prediction says it will complete
+                        // at crouchCompleteDistance -- dist - c_live*clip <= D_complete -- with the
+                        // solved pause kept only as the ceiling (pauseMax) and pauseMin as the floor.
+                        string csrc; float cLive = Mathf.Clamp(BestClosure(out csrc), closureFloor, closureCeil);
+                        float clip = crouchController != null && crouchController.animationClips != null
+                            && crouchController.animationClips.Length > 0 && crouchController.animationClips[0] != null
+                            ? crouchController.animationClips[0].length : 2.767f;
+                        float predictedComplete = dist - cLive * clip;
+                        float ceiling = solvedPause > 0f ? Mathf.Max(solvedPause, pauseMax) : pauseBeforeCrouch;
+                        string why = null;
+                        if (inState >= pauseMin && predictedComplete <= crouchCompleteDistance)
+                            why = string.Format("live closure {0:F3} m/s ({1}) predicts crouch-in complete @ {2:F2} m", cLive, csrc, predictedComplete);
+                        else if (inState >= pauseMin && dist <= crouchCompleteDistance)
+                            why = string.Format("robot already inside {0:F2} m", crouchCompleteDistance);
+                        else if (inState >= ceiling)
+                            why = string.Format("pause ceiling {0:F1}s (live closure {1:F3})", ceiling, cLive);
+                        if (why != null) { Debug.Log("[S68Curious] crouch trigger: " + why); BeginCrouch(dist); }
+                        velocity = Vector3.zero;
+                        return true;
                     }
-                    velocity = Vector3.zero;
-                    return true;
 
                 case State.CrouchEnter:
                     // Descend: standing end -> kneel end, driven off elapsed time.
@@ -355,14 +449,16 @@ namespace SEAN.AutoTrial
                     // then get up and clear out as the thing bears down -- so "robot passed" drops
                     // to a fallback for the case where the robot detours so widely it never comes
                     // within standUpDistance at all.
-                    if (RobotIsApproaching(self, robot, dist))
+                    // S113: the hold is a GATE (>= minHoldSeconds). The approach exit waits for it;
+                    // "passed" and the timeout do not, because neither can be shortened by waiting.
+                    if (RobotIsApproaching(self, robot, dist) && inState >= minHoldSeconds)
                     {
                         Transition(State.CrouchExit, dist, string.Format(
-                            "robot approaching (<= {0:F1} m and closing)", standUpDistance));
+                            "robot approaching (<= {0:F2} m and closing) hold={1:F2}s", standUpDistance, inState));
                     }
                     else if (RobotHasPassed(self, robot, dist))
                     {
-                        Transition(State.CrouchExit, dist, "robot passed");
+                        Transition(State.CrouchExit, dist, string.Format("robot passed hold={0:F2}s", inState));
                     }
                     else if (inState >= holdTimeout)
                     {
@@ -731,7 +827,95 @@ namespace SEAN.AutoTrial
             // stopped agent whose destination is somewhere else is still an agent with somewhere to
             // be, and the navigation layer is entitled to act on that.
             self.InitDest(self.transform.position);
+            SolveTiming(dist);
             Transition(State.Stop, dist, why);
+        }
+
+        // ---- S113 PART 1 helpers ----
+
+        public float faceRobotTau = 0.5f;
+        private void FaceRobot(Scenario.Agents.Base self, Scenario.Robot robot)
+        {
+            Vector3 to = RobotPosition(robot) - self.transform.position; to.y = 0f;
+            if (to.sqrMagnitude < 1e-4f) { return; }
+            float want = Mathf.Atan2(to.x, to.z) * Mathf.Rad2Deg;
+            Vector3 e = self.transform.eulerAngles;
+            float a = 1f - Mathf.Exp(-Time.deltaTime / Mathf.Max(0.05f, faceRobotTau));
+            self.transform.eulerAngles = new Vector3(e.x, Mathf.LerpAngle(e.y, want, a), e.z);
+        }
+
+        /// <summary>Radial closing speed of the robot (physics velocity projected on the
+        /// pedestrian->robot line, positive = gap shrinking), low-passed with closureTau. Readings
+        /// below 0.05 m/s are a stalled or spinning robot and are not folded in.</summary>
+        private void UpdateClosure(Scenario.Agents.Base self, Scenario.Robot robot)
+        {
+            Vector3 toRobot = RobotPosition(robot) - self.transform.position; toRobot.y = 0f;
+            if (toRobot.sqrMagnitude < 1e-6f) { return; }
+            // displacement window (S113 iteration 2)
+            Vector3 rp = RobotPosition(robot);
+            robotTrail.Add(new Vector4(rp.x, rp.z, Time.time, 0f));
+            while (robotTrail.Count > 0 && Time.time - robotTrail[0].z > closureWindow) { robotTrail.RemoveAt(0); }
+            if (robotTrail.Count >= 2)
+            {
+                Vector4 a0 = robotTrail[0]; float span = Time.time - a0.z;
+                if (span >= 0.5f * closureWindow)
+                {
+                    Vector3 disp = new Vector3(rp.x - a0.x, 0f, rp.z - a0.y);
+                    float closingW = -Vector3.Dot(disp, toRobot.normalized) / span;
+                    closureWin = closingW;
+                }
+            }
+            Vector3 v = RobotVelocity(robot); v.y = 0f;
+            float closing = -Vector3.Dot(v, toRobot.normalized);
+            if (closing < 0.05f) { return; }
+            if (closureEma < 0f) { closureEma = closing; return; }
+            float a = 1f - Mathf.Exp(-Time.deltaTime / Mathf.Max(0.05f, closureTau));
+            closureEma = Mathf.Lerp(closureEma, closing, a);
+        }
+
+        /// <summary>The solve, once, at STOP entry (see the field block above for the algebra).</summary>
+        private float BestClosure(out string source)
+        {
+            if (closureWin > 0.05f) { source = "robot displacement over " + closureWindow.ToString("F1") + "s"; return closureWin; }
+            if (closureEma > 0f) { source = "physics-velocity EMA"; return closureEma; }
+            source = "DEFAULT, no reading"; return closureDefault;
+        }
+
+        /// <summary>S113 iteration 2: the sequence trigger, re-solved every Approach frame from the
+        /// current closure so the crouch-in can still complete at crouchCompleteDistance after the
+        /// minimum pause and, when one is likely, the sidestep.</summary>
+        private float SolveStopDistance(Scenario.Agents.Base self, Scenario.Robot robot)
+        {
+            string src; float c = Mathf.Clamp(BestClosure(out src), closureFloor, closureCeil);
+            float clip = crouchController != null && crouchController.animationClips != null
+                && crouchController.animationClips.Length > 0 && crouchController.animationClips[0] != null
+                ? crouchController.animationClips[0].length : 2.767f;
+            float d = crouchCompleteDistance + c * (clip + pauseMin);
+            bool sidestepLikely = LateralClearance(self, robot) < lateralClearance;
+            if (sidestepLikely) { d += sidestepAllowanceMeters + c * sidestepAllowanceSeconds; }
+            return Mathf.Clamp(d, stopDistanceMin, stopDistanceMax);
+        }
+
+        private void SolveTiming(float distAtStop)
+        {
+            string src; float cRaw = BestClosure(out src);
+            float c = Mathf.Clamp(cRaw, closureFloor, closureCeil);
+            float clip = crouchController != null && crouchController.animationClips != null
+                && crouchController.animationClips.Length > 0 && crouchController.animationClips[0] != null
+                ? crouchController.animationClips[0].length : 2.767f;
+            float pauseRaw = (distAtStop - crouchCompleteDistance) / c - clip;
+            solvedPause = Mathf.Clamp(pauseRaw, pauseMin, pauseMax);
+            float suRaw = crouchCompleteDistance - minHoldSeconds * c;
+            float su = standUpExplicit ? standUpDistance : Mathf.Clamp(suRaw, standUpMin, standUpMax);
+            standUpDistance = su;
+            float predictedComplete = distAtStop - c * (solvedPause + clip);
+            float predictedHold = (predictedComplete - su) / c;
+            Debug.Log(string.Format("[S68Curious] SOLVE closure={0:F3} m/s ({1}) dist_at_stop={2:F2} clip={3:F3}s "
+                + "-> pause={4:F2}s (raw {5:F2}) standUp={6:F2} m (raw {7:F2}{8}) | predicted crouch-in complete "
+                + "@ {9:F2} m, hold {10:F2}s (floor {11:F1}s); targets complete@{12:F2} hold>={11:F1}",
+                c, src + (closureEma > 0f ? string.Format(", ema {0:F3}", closureEma) : ""), distAtStop, clip, solvedPause, pauseRaw,
+                su, suRaw, standUpExplicit ? ", env override kept" : "", predictedComplete, predictedHold,
+                minHoldSeconds, crouchCompleteDistance));
         }
 
         private float GroundDistanceToRobot(Scenario.Agents.Base self, Scenario.Robot robot)
