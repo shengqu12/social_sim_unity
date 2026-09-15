@@ -249,6 +249,30 @@ piece and the component does nothing at all — that is what keeps the regressio
 - generator does not enforce human joint limits
 - looping-gait promotion gate: 0.5 s windowed root speed within ±15% of median
 
+> **Annotation added 2026-09-15 (S116) — the list above is unchanged and remains the verbatim
+> S114 text. This note qualifies its first bullet; it does not rewrite it.**
+>
+> The **~0.97 m/s ceiling applies to the whole-clip average speed of UNTRIMMED generator
+> output.** It is not a ceiling on reachable gait speed.
+>
+> Cruise-region trimming reached **1.19–2.12 m/s across 5 of 5 S116 candidates**, every one with
+> G-continuity intact (0.5 s windowed root speed, ±15% band, measured on the loop). Measured
+> post-trim: 1.1919, 1.2254, 1.5323, 1.5531 and 2.1185 m/s.
+>
+> Those trims were checked for the obvious failure mode — a momentary peak inside an
+> accelerate/decelerate arc would pass a gate that only tests consistency *within* the trimmed
+> window. They are **sustained cruise, not arc apexes**: the surrounding flat region runs
+> **1.18–2.03× longer than the trim even at a ±5% band**, and the trim median sits at
+> **90.7–97.7% of each clip's own peak** windowed speed (an apex would read ≈100%).
+>
+> **SCOPE LIMIT — read this before relying on the numbers.** This is **source-clip analysis
+> only**. **No trial was run on any of the five.** The speeds are **not in-engine confirmed**,
+> and **nothing from S116 is promoted** — no `clip_speeds.json` entries, no controller assets.
+> Treat them as evidence about what the generator can reach, not as shipping figures.
+>
+> Full method, per-candidate tables and figures:
+> `/mnt/ssd/Social_Navigation/sandbox_s72_nextgen/s116/analysis/s116_screening_report.md`
+
 Two notes on applying these in practice:
 
 - The `(name, length)` compound key is not theoretical. Every Kimodo clip exports with the
@@ -256,7 +280,9 @@ Two notes on applying these in practice:
   `clipName = "Scene", clipLength = 5.9667f`. Name alone will collide.
 - `kimodo_relaxed_walk` at **1.3563 m/s** is above the ~0.97 m/s prompt ceiling. It is not a
   counterexample: it reached that speed by the S109 cruise-region **trim** (cutting the
-  standing-start/standing-stop ease off an 8 s clip), not by prompting.
+  standing-start/standing-stop ease off an 8 s clip), not by prompting. S116 showed this
+  trim route is **not a one-off**: it generalises to 5 of 5 candidates screened, over the
+  1.19–2.12 m/s range (source-clip measurement; not in-engine confirmed).
 
 ---
 
